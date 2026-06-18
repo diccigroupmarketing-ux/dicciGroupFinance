@@ -1,0 +1,8 @@
+# Tema asas Streamlit, warna brand Dicci (dicci.com.my).
+# Inter disuntik penuh + semua polish lain dalam theme.py (inject_css).
+[theme]
+primaryColor = "#0A3D45"             # teal dalam (butang, widget aktif, kontras putih ok)
+backgroundColor = "#FBFAF7"          # off-white hangat (kanvas)
+secondaryBackgroundColor = "#FFFFFF" # putih (sidebar, input, kad)
+textColor = "#1E3B40"                # teal-charcoal untuk teks badan
+font = "sans serif"                  # Manrope + Fraunces dipaksa via CSS dalam theme.py

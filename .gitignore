@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Data kewangan, JANGAN sekali kali push ke GitHub
+recon.db
+recon.db-journal
+data/
+output/
+*.xlsx
+*.xls
+*.csv
+
+# Secrets (connection string Supabase, dll)
+.streamlit/secrets.toml
+
+# OS
+.DS_Store
