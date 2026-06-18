@@ -111,8 +111,8 @@ conn = db.get_conn()
 db.init_db(conn)
 if conn.execute(text("SELECT COUNT(*) FROM orders")).scalar() == 0:
     conn.close()
-    st.info("Belum ada data. Buka **Data & Upload** di sidebar dan muat naik "
-            "export Fighter (dan bil J&T) dulu.")
+    st.info("Belum ada data. Buka **Panel operasi** di atas, bahagian **Data & Upload**, "
+            "dan muat naik export Fighter (dan bil J&T) dulu.")
     st.stop()
 
 m, lines, info = reconcile(conn, pending_days=pending_days)
