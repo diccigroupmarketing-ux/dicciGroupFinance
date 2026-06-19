@@ -223,6 +223,19 @@ def get_sku_map(conn=None):
     return {str(r.sku).strip().upper(): (int(r.paid or 0), int(r.free or 0)) for r in df.itertuples()}
 
 
+def confirmed_paid_order_ids(conn):
+    """Set order_id yang duitnya disahkan masuk oleh feed duit sebenar.
+
+    Titik sambungan TUNGGAL untuk pengesahan paid. Hari ni cuma feed J&T COD wujud,
+    jadi order disahkan = tracking ada dalam cod_bill_lines (duit dikutip + remit).
+    Bila feed lain masuk nanti (settlement courier lain, report CHIP / online transfer),
+    cukup union set order_id dia di sini, semua paparan yang guna fungsi ni update sendiri.
+    """
+    awb = set(pd.read_sql(text("SELECT awb FROM cod_bill_lines"), conn)["awb"].dropna())
+    od = pd.read_sql(text("SELECT order_id, tracking FROM orders"), conn)
+    return set(od.loc[od["tracking"].isin(awb), "order_id"])
+
+
 def save_sku_map(df, conn=None):
     own = conn is None
     conn = conn or get_conn()

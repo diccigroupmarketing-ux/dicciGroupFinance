@@ -18,7 +18,7 @@ from sqlalchemy import text
 import db
 import theme
 from ingest import ingest_buffer
-from reconcile import reconcile, INTEGRITY_EXC, AGED
+from reconcile import reconcile, bottles_per_order, INTEGRITY_EXC, AGED
 
 st.set_page_config(page_title="Dicci Group Finance , Recon J&T COD",
                    page_icon=theme.page_icon(), layout="wide",
@@ -116,6 +116,7 @@ if conn.execute(text("SELECT COUNT(*) FROM orders")).scalar() == 0:
     st.stop()
 
 m, lines, info = reconcile(conn, pending_days=pending_days)
+od = bottles_per_order(conn)
 conn.close()
 
 tally = m["kategori"] == "tally"
@@ -183,8 +184,8 @@ else:
 
 # ============ Drill-down tabs ============
 theme.section("Butiran", "drill-down ikut tempoh, bil, dan audit")
-tab_tempoh, tab_bill, tab_audit, tab_sku = st.tabs(
-    ["Per Tempoh", "Per Bil", "Audit", "SKU / Botol"])
+tab_tempoh, tab_bill, tab_stokis, tab_audit, tab_sku = st.tabs(
+    ["Per Tempoh", "Per Bil", "Per Stokis", "Audit", "SKU / Botol"])
 
 # ===== Per Tempoh: jadual penuh =====
 with tab_tempoh:
@@ -247,6 +248,52 @@ with tab_bill:
                                  "selling_price", "cod_amount", "fee", "remit"] if c in b.columns]
         st.dataframe(theme.style_kategori(b[bill_cols]), width="stretch", hide_index=True,
                      column_config=rm_cols("selling_price", "cod_amount", "fee", "remit"))
+
+# ===== Per Stokis: botol setiap stokis (semua courier, kira bila duit disahkan) =====
+with tab_stokis:
+    theme.section("Botol per stokis",
+                  "paid (jualan) + free (kos), kira bila duit dah disahkan masuk")
+    st.caption("Kira botol untuk semua courier, tapi hanya order Completed yang duitnya "
+               "dah disahkan masuk (setakat ni feed J&T COD sahaja). 'Belum disahkan' "
+               "akan flip automatik bila feed duit lain (bil courier lain, CHIP / online "
+               "transfer) di-upload.")
+
+    comp = od[od["status"] == db.COMPLETED].copy()
+    comp["seller_name"] = comp["seller_name"].fillna("(takde stokis)")
+    if not len(comp):
+        st.info("Belum ada order Completed. Upload export Fighter dulu.")
+    else:
+        paid = comp[comp["duit_disahkan"]]
+        belum = comp[~comp["duit_disahkan"]]
+        ringkas = pd.DataFrame(index=sorted(comp["seller_name"].unique()))
+        ringkas["Order disahkan"] = paid.groupby("seller_name")["order_id"].size()
+        ringkas["Botol paid"] = paid.groupby("seller_name")["botol_paid"].sum()
+        ringkas["Botol free"] = paid.groupby("seller_name")["botol_free"].sum()
+        ringkas["Botol total"] = paid.groupby("seller_name")["botol_total"].sum()
+        ringkas["Botol belum disahkan"] = belum.groupby("seller_name")["botol_total"].sum()
+        ringkas = ringkas.fillna(0).astype(int).sort_values("Botol total", ascending=False)
+        ringkas = ringkas.rename_axis("Stokis").reset_index()
+
+        t = int(ringkas["Botol total"].sum())
+        tf = int(ringkas["Botol free"].sum())
+        tb = int(ringkas["Botol belum disahkan"].sum())
+        st.caption(f"Disahkan: {t:,} botol ({tf:,} free) merentas {len(ringkas)} stokis. "
+                   f"Tertunggu pengesahan duit: {tb:,} botol.")
+        st.dataframe(ringkas, width="stretch", hide_index=True)
+
+        theme.section("Drill-down satu stokis", "tengok order satu satu")
+        names = sorted(od["seller_name"].fillna("(takde stokis)").unique())
+        pick = st.selectbox("Pilih stokis", names)
+        d = od.copy()
+        d["seller_name"] = d["seller_name"].fillna("(takde stokis)")
+        d = d[d["seller_name"] == pick].copy()
+        d["duit"] = d["duit_disahkan"].map({True: "disahkan", False: "belum disahkan"})
+        det_cols = [c for c in ["order_id", "order_date", "status", "payment_method",
+                                "shipping_provider", "tracking", "botol_paid",
+                                "botol_free", "botol_total", "duit"] if c in d.columns]
+        st.dataframe(d[det_cols].sort_values(["duit", "order_date"]),
+                     width="stretch", hide_index=True)
+
 
 # ===== Audit: integriti penuh =====
 with tab_audit:

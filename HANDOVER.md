@@ -115,6 +115,45 @@ Anthropic (frontend-design). Audience dua dua (alat kerja harian + boleh ditunju
 - Detail operasi (akaun, URL app, secret, langkah pending) disimpan dalam memory peribadi
   + `CLAUDE.md` tempatan (di-gitignore), TAK dimasukkan ke HANDOVER sebab repo ini public.
 
+## Milestone 4: Paparan Botol Per Stokis + foundation pengesahan duit (2026-06-19)
+
+Tab baru "Per Stokis" untuk tengok botol setiap stokis (paid = jualan, free = kos giveaway).
+
+- **Skop:** SEMUA order stokis (semua courier, semua payment), bukan J&T sahaja. Sebab
+  stokis hantar lintas courier, kira J&T je akan undercount botol dia.
+- **Apa dipapar:** jadual ringkas (satu baris per stokis: order disahkan, botol paid,
+  botol free, botol total, botol belum disahkan) + drill-down pilih stokis tengok order
+  satu satu berserta status duit (disahkan / belum disahkan).
+
+### Keputusan seni bina (PENTING untuk fasa depan): pengesahan "duit dah masuk"
+
+- **Fighter = foundation / "apa yang sepatutnya".** Fighter sahaja TAK boleh sahkan duit
+  dah masuk, dia cuma kata order ni sepatutnya berlaku.
+- **Pengesahan "dah paid" datang dari feed duit sebenar, di-upload BERASINGAN:** bil
+  courier untuk order COD (J&T sekarang, Ninja/DHL nanti), report CHIP / online transfer
+  untuk order prepaid. Satu order kira botol bila dipadan dengan feed duitnya.
+- **Botol dikira HANYA bila order Completed DAN duit disahkan.** Yang belum ada feed =
+  "belum disahkan", dan flip jadi disahkan AUTOMATIK bila feed masing masing di-upload,
+  tanpa rework.
+- **Titik sambungan TUNGGAL:** `db.confirmed_paid_order_ids(conn)`. Hari ni ia padan
+  order ke `cod_bill_lines` (J&T COD) ikut tracking. Nak tambah feed baru nanti, cukup
+  union set order_id di sini, semua paparan yang guna fungsi ni update sendiri.
+
+### Fail / fungsi (TAMBAH sahaja, logik recon tak disentuh)
+
+- `db.confirmed_paid_order_ids(conn)` , set order_id yang duitnya disahkan (extension point).
+- `reconcile.bottles_per_order(conn)` , botol per order untuk SEMUA order + flag
+  `duit_disahkan` / `botol_dikira`. ASING dari `reconcile()`, guna semula `_bottles_for_skus`.
+- `app.py` , tab "Per Stokis" (import + 1 panggilan + 1 tab). Tiada perubahan schema.
+
+### Verifikasi
+
+- `python reconcile.py` output IDENTIK baseline (logik enjin langsung tak disentuh).
+- Cross-check: botol dikira (369 order, 1099 botol) == J&T COD tally dari recon (369/1099),
+  sahkan set "disahkan" hari ni betul betul = set duit J&T dalam bil.
+- AppTest tiada exception, 5 tab render. Snapshot data semasa: 1208 order, 369 disahkan,
+  selebihnya belum disahkan (courier lain / prepaid / J&T belum masuk bil).
+
 ## Status sekarang
 
 - [x] Borak, kunci skop + keputusan Fasa 1.
@@ -123,6 +162,7 @@ Anthropic (frontend-design). Audience dua dua (alat kerja harian + boleh ditunju
 - [x] UI web Streamlit (`app.py`) siap, upload + papar di localhost:8501. Adi test sendiri dari browser.
 - [x] Milestone 2: UI berjenama Dicci penuh (tema teal+emas, Fraunces+Manrope, overview+drill-down, buang sidebar). `theme.py` reusable. Logik recon tak berubah.
 - [x] Milestone 3: Deploy LIVE ke Streamlit Cloud (private) + Neon Postgres persistent. `db.py` di-port ke SQLAlchemy.
+- [x] Milestone 4: tab Per Stokis + foundation pengesahan duit (feed di-upload berasingan, extension point `db.confirmed_paid_order_ids`). Recon output identik baseline.
 - [ ] Hardening keselamatan: rotate kredential DB Neon + audit akses team.
 - [ ] Adi kumpul SEMUA bil COD J&T cover period (+ nama fail kekal ada bill no + tarikh) untuk recon penuh.
 - [ ] Run period penuh: Tier 2 (397 sekarang) patut mengecut bila bil ditambah; tala REMIT_PENDING_DAYS dari lag remit sebenar.

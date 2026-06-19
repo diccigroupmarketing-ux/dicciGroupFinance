@@ -114,6 +114,29 @@ def reconcile(conn, pending_days=REMIT_PENDING_DAYS):
     return m, lines, info
 
 
+def bottles_per_order(conn):
+    """Botol per order untuk SEMUA order (semua courier + semua payment) + flag duit.
+
+    Asing dari reconcile() (yang J&T-only) sebab paparan Per Stokis nak gambaran penuh
+    botol setiap stokis. Guna semula _bottles_for_skus + sku_map yang sama.
+
+    Lajur tambahan:
+      botol_paid / botol_free / botol_total , botol per order ikut mapping SKU.
+      duit_disahkan , True bila feed duit sebenar dah sahkan order ni paid.
+      botol_dikira  , True bila order Completed DAN duit dah disahkan (botol "betul betul").
+    """
+    od = pd.read_sql("SELECT * FROM orders", conn)
+    sku_map = db.get_sku_map(conn)
+    res = od["skus"].apply(lambda s: _bottles_for_skus(s, sku_map))
+    od["botol_paid"] = res.map(lambda x: x[0])
+    od["botol_free"] = res.map(lambda x: x[1])
+    od["botol_total"] = od["botol_paid"] + od["botol_free"]
+    paid_ids = db.confirmed_paid_order_ids(conn)
+    od["duit_disahkan"] = od["order_id"].isin(paid_ids)
+    od["botol_dikira"] = od["duit_disahkan"] & (od["status"] == COMPLETED)
+    return od
+
+
 def report(m, lines, info):
     db.OUTPUT_DIR.mkdir(exist_ok=True)
     L = []
