@@ -101,6 +101,20 @@ Anthropic (frontend-design). Audience dua dua (alat kerja harian + boleh ditunju
 - **Nota dev:** `.streamlit/config.toml` tema TAK hot-reload, restart server bila tukar.
   Streamlit cache aset agresif, guna incognito / hard refresh bila uji perubahan UI.
 
+## Milestone 3: Deploy (live, 2026-06)
+
+- App di-deploy ke **Streamlit Community Cloud**, diset **PRIVATE** (viewer allowlist
+  team finance, mereka sign in dengan email yang dijemput).
+- DB produksi: **Neon Postgres** (persistent, region Singapore). `db.py` di-port ke
+  **SQLAlchemy**, auto pilih Postgres (env/secret `DATABASE_URL`) atau fallback SQLite
+  lokal. Output `reconcile.py` IDENTIK baseline, ingest idempotent (diuji atas SQLite).
+  Asalnya pilih Supabase tapi project creation Supabase down masa deploy, tukar Neon
+  (kod Postgres-agnostic, drop-in).
+- **Python 3.12** wajib di Streamlit Cloud (3.14 pecahkan import altair).
+- Push ke GitHub = **auto-redeploy** Streamlit Cloud. Lokal kekal guna SQLite untuk dev.
+- Detail operasi (akaun, URL app, secret, langkah pending) disimpan dalam memory peribadi
+  + `CLAUDE.md` tempatan (di-gitignore), TAK dimasukkan ke HANDOVER sebab repo ini public.
+
 ## Status sekarang
 
 - [x] Borak, kunci skop + keputusan Fasa 1.
@@ -108,6 +122,8 @@ Anthropic (frontend-design). Audience dua dua (alat kerja harian + boleh ditunju
 - [x] Milestone 1 sistem siap: DB SQLite + ingest idempotent + reconcile DB-backed. Baseline reproduce 186/RM32,919, idempotency lulus.
 - [x] UI web Streamlit (`app.py`) siap, upload + papar di localhost:8501. Adi test sendiri dari browser.
 - [x] Milestone 2: UI berjenama Dicci penuh (tema teal+emas, Fraunces+Manrope, overview+drill-down, buang sidebar). `theme.py` reusable. Logik recon tak berubah.
+- [x] Milestone 3: Deploy LIVE ke Streamlit Cloud (private) + Neon Postgres persistent. `db.py` di-port ke SQLAlchemy.
+- [ ] Hardening keselamatan: rotate kredential DB Neon + audit akses team.
 - [ ] Adi kumpul SEMUA bil COD J&T cover period (+ nama fail kekal ada bill no + tarikh) untuk recon penuh.
 - [ ] Run period penuh: Tier 2 (397 sekarang) patut mengecut bila bil ditambah; tala REMIT_PENDING_DAYS dari lag remit sebenar.
 - [ ] Review dengan Adi (pilih order dia tahu, sahkan kategori betul).

@@ -13,8 +13,11 @@ output/
 *.xls
 *.csv
 
-# Secrets (connection string Supabase, dll)
+# Secrets (connection string Supabase/Neon, dll)
 .streamlit/secrets.toml
+
+# Konteks projek tempatan untuk Claude (jangan masuk repo public)
+CLAUDE.md
 
 # OS
 .DS_Store
