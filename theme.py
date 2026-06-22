@@ -309,20 +309,20 @@ def hero_band(label, value, sublines="", flag_text=None, flag_ok=True, prefix="R
     )
 
 
-def alert_band(n_leak, risk=None, hint="butiran penuh di tab Audit"):
-    """Band merah bila ada exception integriti (bocor), jalur hijau nipis bila bersih."""
+def alert_band(n_leak, risk=None, hint="full details in the Audit tab"):
+    """Red band when integrity exceptions (leaks) exist, thin green strip when clean."""
     if n_leak and n_leak > 0:
-        meta = f"RM {risk:,.2f} berisiko · {hint}" if risk else hint
+        meta = f"RM {risk:,.2f} at risk · {hint}" if risk else hint
         st.markdown(
             f'<div class="dicciAlert leak"><div class="lead"><span class="ico">⚠</span>'
-            f'{int(n_leak)} exception integriti, perlu siasat</div>'
+            f'{int(n_leak)} integrity exceptions to investigate</div>'
             f'<div class="meta">{meta}</div></div>',
             unsafe_allow_html=True,
         )
     else:
         st.markdown(
             '<div class="dicciAlert clean"><div class="lead"><span class="ico">✓</span>'
-            'Buku bersih, tiada bocor integriti dikesan</div></div>',
+            'Clean books · no integrity leak detected</div></div>',
             unsafe_allow_html=True,
         )
 
@@ -360,13 +360,37 @@ def bar_chart_brand(df, x, y, x_title="", y_title="Net remit (RM)"):
             y=alt.Y(f"{y}:Q",
                     axis=alt.Axis(title=y_title, labelColor=MUTED, titleColor=MUTED,
                                   gridColor=BORDER, domainColor=BORDER, tickColor=BORDER)),
-            tooltip=[alt.Tooltip(f"{x}:N", title="Tempoh"),
+            tooltip=[alt.Tooltip(f"{x}:N", title="Period"),
                      alt.Tooltip(f"{y}:Q", title="Net remit", format=",.2f")],
         )
         .properties(height=280)
         .configure_view(strokeWidth=0)
         .configure_axis(labelFont="Manrope", titleFont="Manrope")
     )
+
+
+# ====================================================================
+# Label English untuk kod kategori recon (UI sahaja, enjin kekal kod asal)
+# ====================================================================
+KAT_LABEL_EN = {
+    "tally": "Tally",
+    "amount_mismatch": "Amount mismatch",
+    "duit_hantu": "Ghost money",
+    "duit_masuk_order_returned": "Paid, order returned",
+    "duit_masuk_order_rejected": "Paid, order rejected",
+    "in_bil_tapi_intransit": "In bill, in-transit",
+    "takde_awb_jnt": "No J&T AWB",
+    "match_luar_skop": "Out-of-scope match",
+    "hilang_lewat": "Overdue / missing",
+    "belum_remit": "Awaiting remit",
+    "returned": "Returned",
+    "rejected": "Rejected",
+    "pending": "Pending",
+}
+
+
+def kat_label(v):
+    return KAT_LABEL_EN.get(v, v)
 
 
 # ====================================================================
@@ -378,4 +402,5 @@ def style_kategori(df):
     def paint(v):
         fg, bg = KAT_COLORS.get(v, (MUTED, BG_SUNKEN))
         return f"color:{fg}; background-color:{bg}; font-weight:600;"
-    return df.style.applymap(paint, subset=["kategori"])
+    # applymap dapat nilai kod asal (warna betul), format papar label English.
+    return df.style.applymap(paint, subset=["kategori"]).format({"kategori": kat_label})

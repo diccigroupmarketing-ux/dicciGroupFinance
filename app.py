@@ -1,9 +1,13 @@
 """
 app.py , dicciGroupFinance
 
-UI web (Streamlit) untuk reconciliation J&T COD.
-Balut enjin Python sedia ada (db.py, ingest.py, reconcile.py).
-Struktur: OVERVIEW sentiasa di atas (cerita duit), tab cuma drill-down.
+Web UI (Streamlit) for the Dicci Group finance dashboard.
+Shell: Group level -> company (subsidiary) -> income stream. Phase 1 wires
+Dicci Impact + J&T COD; other companies/streams are placeholders ("coming soon").
+Wraps the existing engine (db.py, ingest.py, reconcile.py) untouched.
+
+No sidebar by design (Streamlit's reopen button can vanish); navigation is button
+driven via st.session_state.
 
 Run: streamlit run app.py
 """
@@ -20,354 +24,513 @@ import theme
 from ingest import ingest_buffer
 from reconcile import reconcile, bottles_per_order, INTEGRITY_EXC, AGED
 
-st.set_page_config(page_title="Dicci Group Finance , Recon J&T COD",
-                   page_icon=theme.page_icon(), layout="wide",
-                   initial_sidebar_state="collapsed")
+st.set_page_config(page_title="Dicci Group Finance", page_icon=theme.page_icon(),
+                   layout="wide", initial_sidebar_state="collapsed")
 theme.inject_css()
 db.init_db()
 
-theme.page_header("Reconciliation J&T COD",
-                  "Dicci Impact · Fasa 1 · padan ikut nombor tracking")
+# ============ Navigation state (no sidebar) ============
+if "subsidiary" not in st.session_state:
+    st.session_state.subsidiary = None
+if "stream" not in st.session_state:
+    st.session_state.stream = "jnt"
+
+SUBSIDIARIES = [
+    {"key": "impact", "name": "Dicci Impact", "tag": "Active · Phase 1", "active": True},
+    {"key": "flux", "name": "Flux", "tag": "Coming soon", "active": False},
+    {"key": "hub", "name": "HUB", "tag": "Coming soon", "active": False},
+    {"key": "group", "name": "Dicci Group", "tag": "Coming soon", "active": False},
+]
+STREAMS = [
+    {"key": "jnt", "name": "J&T COD", "active": True},
+    {"key": "dhl", "name": "DHL", "active": False},
+    {"key": "ninja", "name": "Ninja Van", "active": False},
+    {"key": "chip", "name": "CHIP (prepaid)", "active": False},
+    {"key": "transfer", "name": "Bank Transfer", "active": False},
+    {"key": "tiktok", "name": "TikTok", "active": False},
+]
 
 SHOW_COLS = ["order_id", "seller_name", "tracking", "awb", "kategori",
              "selling_price", "cod_amount", "umur_hari"]
-GRAINS = ["Harian", "Mingguan", "Bulanan", "Suku Tahun", "Tahunan"]
+GRAINS = ["Daily", "Weekly", "Monthly", "Quarterly", "Yearly"]
 
 
-def rm_cols(*names):
-    # Papar lajur harga dengan prefix "RM " (nilai kekal nombor, boleh sort).
-    return {n: st.column_config.NumberColumn(format="RM %.2f") for n in names}
+# ============ Display helpers ============
+def colcfg(*names):
+    """English column labels (+ money format) for st.dataframe; internal names kept."""
+    base = {
+        "order_id": st.column_config.TextColumn("Order ID"),
+        "seller_name": st.column_config.TextColumn("Stockist"),
+        "tracking": st.column_config.TextColumn("Tracking"),
+        "awb": st.column_config.TextColumn("AWB"),
+        "kategori": st.column_config.TextColumn("Status"),
+        "order_date": st.column_config.TextColumn("Order date"),
+        "status": st.column_config.TextColumn("Order status"),
+        "payment_method": st.column_config.TextColumn("Payment"),
+        "shipping_provider": st.column_config.TextColumn("Courier"),
+        "umur_hari": st.column_config.NumberColumn("Age (days)"),
+        "botol_paid": st.column_config.NumberColumn("Paid bottles"),
+        "botol_free": st.column_config.NumberColumn("Free bottles"),
+        "botol_total": st.column_config.NumberColumn("Total bottles"),
+        "duit": st.column_config.TextColumn("Payment status"),
+        "selling_price": st.column_config.NumberColumn("Selling price", format="RM %.2f"),
+        "cod_amount": st.column_config.NumberColumn("COD amount", format="RM %.2f"),
+        "fee": st.column_config.NumberColumn("J&T fee", format="RM %.2f"),
+        "remit": st.column_config.NumberColumn("Net remit", format="RM %.2f"),
+    }
+    return {n: base[n] for n in names if n in base}
 
 
 def period_key(ts, grain):
-    if grain == "Mingguan":
+    if grain == "Weekly":
         return (ts - pd.to_timedelta(ts.dt.weekday, unit="D")).dt.normalize()
-    if grain == "Bulanan":
+    if grain == "Monthly":
         return ts.dt.to_period("M").dt.start_time
-    if grain == "Suku Tahun":
+    if grain == "Quarterly":
         return ts.dt.to_period("Q").dt.start_time
-    if grain == "Tahunan":
+    if grain == "Yearly":
         return ts.dt.to_period("Y").dt.start_time
     return ts.dt.normalize()
 
 
 def period_label(d, grain):
     d = pd.Timestamp(d)
-    if grain == "Mingguan":
-        return "Minggu " + d.strftime("%d %b %Y")
-    if grain == "Bulanan":
+    if grain == "Weekly":
+        return "Week " + d.strftime("%d %b %Y")
+    if grain == "Monthly":
         return d.strftime("%b %Y")
-    if grain == "Suku Tahun":
-        return f"S{(d.month - 1) // 3 + 1} {d.year}"
-    if grain == "Tahunan":
+    if grain == "Quarterly":
+        return f"Q{(d.month - 1) // 3 + 1} {d.year}"
+    if grain == "Yearly":
         return str(d.year)
     return d.strftime("%d %b %Y")
 
 
-# ============ Panel operasi (upload + tetapan + status), di halaman utama ============
-# Sengaja di main page, BUKAN sidebar: expander main page toggle dia reliable,
-# sidebar Streamlit ada bug butang buka balik hilang bila ditutup.
-with st.expander("Panel operasi , upload data, tetapan & status stor", expanded=False):
-    op_up, op_set = st.columns(2)
-    with op_up:
-        st.markdown("**Data & Upload**")
-        files = st.file_uploader(
-            "Export Fighter atau bil COD J&T (.xlsx / .csv). Boleh banyak sekali.",
-            type=["xlsx", "xls", "csv"], accept_multiple_files=True,
-        )
-        if files and st.button("Ingest ke stor", type="primary"):
-            conn = db.get_conn()
-            db.init_db(conn)
-            for f in files:
-                try:
-                    kind, n = ingest_buffer(f, f.name, conn)
-                    if kind:
-                        st.success(f"{f.name}: **{kind}**, {n} baris di-upsert")
-                    else:
-                        st.warning(f"{f.name}: tak kenal format")
-                except Exception as e:
-                    st.error(f"{f.name}: gagal , {e}")
-            conn.close()
-            st.rerun()
-    with op_set:
-        st.markdown("**Tetapan**")
-        pending_days = st.slider("Aging: hari sebelum 'hilang_lewat'", 3, 45, db.REMIT_PENDING_DAYS)
-        confirm = st.checkbox("Saya faham, benarkan reset stor")
-        if st.button("Reset stor (kosongkan semua)", disabled=not confirm):
-            db.reset_db()
-            st.success("Stor dikosongkan.")
-            st.rerun()
-
-    conn = db.get_conn()
-    n_ord = conn.execute(text("SELECT COUNT(*) FROM orders")).scalar()
-    n_line = conn.execute(text("SELECT COUNT(*) FROM cod_bill_lines")).scalar()
-    n_bill = conn.execute(text("SELECT COUNT(*) FROM cod_bills")).scalar()
-    conn.close()
-    st.caption(f"Stor: {n_ord:,} order · {n_line:,} baris bil · {n_bill} bil COD")
+# ============ Group landing ============
+def render_group_landing():
+    theme.page_header("Companies", "Finance reconciliation across Dicci Group")
+    theme.section("Select a company", "open a company to upload data and view numbers")
+    cols = st.columns(len(SUBSIDIARIES))
+    for col, s in zip(cols, SUBSIDIARIES):
+        with col, st.container(border=True):
+            st.markdown(f"**{s['name']}**")
+            st.caption(s["tag"])
+            if s["active"]:
+                if st.button("Open", key=f"open_{s['key']}", type="primary",
+                             use_container_width=True):
+                    st.session_state.subsidiary = s["key"]
+                    st.rerun()
+            else:
+                st.button("Coming soon", key=f"open_{s['key']}", disabled=True,
+                          use_container_width=True)
 
 
-# ============ Reconcile ============
-conn = db.get_conn()
-db.init_db(conn)
-if conn.execute(text("SELECT COUNT(*) FROM orders")).scalar() == 0:
-    conn.close()
-    st.info("Belum ada data. Buka **Panel operasi** di atas, bahagian **Data & Upload**, "
-            "dan muat naik export Fighter (dan bil J&T) dulu.")
-    st.stop()
+# ============ Operations panel (upload + settings + store status) ============
+def render_ops_panel():
+    pending_days = db.REMIT_PENDING_DAYS
+    with st.expander("Operations panel · upload data, settings & store status",
+                     expanded=False):
+        op_up, op_set = st.columns(2)
+        with op_up:
+            st.markdown("**Data & Upload**")
+            files = st.file_uploader(
+                "Fighter export or J&T COD bill (.xlsx / .csv). Multiple files allowed.",
+                type=["xlsx", "xls", "csv"], accept_multiple_files=True,
+            )
+            if files and st.button("Ingest to store", type="primary"):
+                conn = db.get_conn()
+                db.init_db(conn)
+                for f in files:
+                    try:
+                        kind, n = ingest_buffer(f, f.name, conn)
+                        if kind:
+                            st.success(f"{f.name}: **{kind}** · {n} rows upserted")
+                        else:
+                            st.warning(f"{f.name}: unrecognized format")
+                    except Exception as e:
+                        st.error(f"{f.name}: failed · {e}")
+                conn.close()
+                st.rerun()
+        with op_set:
+            st.markdown("**Settings**")
+            pending_days = st.slider("Aging: days before 'overdue'", 3, 45,
+                                     db.REMIT_PENDING_DAYS)
+            confirm = st.checkbox("I understand, allow store reset")
+            if st.button("Reset store (clear all)", disabled=not confirm):
+                db.reset_db()
+                st.success("Store cleared.")
+                st.rerun()
 
-m, lines, info = reconcile(conn, pending_days=pending_days)
-od = bottles_per_order(conn)
-conn.close()
-
-tally = m["kategori"] == "tally"
-integ = m[m["kategori"].isin(INTEGRITY_EXC)]
-aged = m[m["kategori"].isin(AGED)]
-total_cod = float(lines["cod_amount"].sum())
-total_fee = float(lines["fee"].sum())
-show_cols = [c for c in SHOW_COLS if c in m.columns]
+        conn = db.get_conn()
+        n_ord = conn.execute(text("SELECT COUNT(*) FROM orders")).scalar()
+        n_line = conn.execute(text("SELECT COUNT(*) FROM cod_bill_lines")).scalar()
+        n_bill = conn.execute(text("SELECT COUNT(*) FROM cod_bills")).scalar()
+        conn.close()
+        st.caption(f"Store: {n_ord:,} orders · {n_line:,} bill lines · {n_bill} COD bills")
+    return pending_days
 
 
-# ============ OVERVIEW (sentiasa di atas, cerita duit) ============
-bill_rows = m[m["bill_id"].notna()].copy()
-g = None
-if not len(bill_rows):
-    st.info("Belum ada bil COD dimuatkan. Upload bil J&T di sidebar untuk lihat aliran tunai.")
-else:
-    pcol1, pcol2 = st.columns([2, 1])
-    with pcol1:
-        grain = st.segmented_control("Tempoh", GRAINS, default="Harian", key="grain") or "Harian"
+# ============ Income stream strip ============
+def render_stream_strip():
+    theme.section("Income streams", "J&T COD is live · other streams coming soon")
+    cols = st.columns(len(STREAMS))
+    for col, s in zip(cols, STREAMS):
+        with col:
+            if s["active"]:
+                selected = st.session_state.stream == s["key"]
+                if st.button(s["name"], key=f"stream_{s['key']}",
+                             type="primary" if selected else "secondary",
+                             use_container_width=True):
+                    st.session_state.stream = s["key"]
+                    st.rerun()
+            else:
+                st.button(s["name"], key=f"stream_{s['key']}", disabled=True,
+                          use_container_width=True)
 
-    bill_rows["dt"] = pd.to_datetime(bill_rows["delivered_date"], errors="coerce")
-    bill_rows = bill_rows.dropna(subset=["dt"])
-    bill_rows["pkey"] = period_key(bill_rows["dt"], grain)
-    g = bill_rows.groupby("pkey").agg(
-        parcel=("awb", "size"),
-        botol=("botol_total", "sum"),
-        botol_free=("botol_free", "sum"),
-        cod_dikutip=("cod_amount", "sum"),
-        fee=("fee", "sum"),
-        tally=("kategori", lambda s: int((s == "tally").sum())),
-        exception=("kategori", lambda s: int(s.isin(INTEGRITY_EXC).sum())),
-    ).reset_index().sort_values("pkey")
-    g["net_remit"] = (g["cod_dikutip"] - g["fee"]).round(2)
-    g["cod_dikutip"] = g["cod_dikutip"].round(2)
-    g["fee"] = g["fee"].round(2)
-    g["tempoh"] = g["pkey"].map(lambda d: period_label(d, grain))
 
-    labels = g["tempoh"].tolist()
-    with pcol2:
-        sel = st.selectbox("Pilih tempoh", labels, index=len(labels) - 1, key=f"period_{grain}")
-    row = g[g["tempoh"] == sel].iloc[0]
-
-    exc_n = int(row["exception"])
-    theme.hero_band(
-        label=f"Duit patut masuk bank · {sel}",
-        value=float(row["net_remit"]),
-        sublines=f"net remit selepas fee · {int(row['parcel'])} parcel · {int(row['botol'])} botol",
-        flag_text=("Tiada exception tempoh ni" if exc_n == 0 else f"{exc_n} exception tempoh ni"),
-        flag_ok=(exc_n == 0),
+def render_stream_placeholder(stream_key):
+    name = next(s["name"] for s in STREAMS if s["key"] == stream_key)
+    theme.section(name, "coming soon")
+    st.info(
+        f"The {name} income stream is not wired yet. Once you share a sample export, "
+        "we will add upload and reconciliation here. All payment channels reconcile "
+        "against the same Fighter orders, except TikTok which stands alone."
     )
 
-    risk = float(integ["cod_amount"].sum()) if len(integ) else None
-    theme.alert_band(len(integ), risk=risk)
 
-    theme.kpi_row([
-        ("COD dikutip", f"RM {row['cod_dikutip']:,.0f}"),
-        ("Fee J&T", f"RM {row['fee']:,.0f}"),
-        ("Parcel", f"{int(row['parcel'])}"),
-        ("Botol", f"{int(row['botol'])}"),
-    ])
-
-    theme.section("Net remit ikut tempoh", "semua tempoh, untuk lihat trend")
-    st.altair_chart(theme.bar_chart_brand(g, "tempoh", "net_remit"), use_container_width=True)
-
-
-# ============ Drill-down tabs ============
-theme.section("Butiran", "drill-down ikut tempoh, bil, dan audit")
-tab_tempoh, tab_bill, tab_stokis, tab_audit, tab_sku = st.tabs(
-    ["Per Tempoh", "Per Bil", "Per Stokis", "Audit", "SKU / Botol"])
-
-# ===== Per Tempoh: jadual penuh =====
-with tab_tempoh:
-    if g is None:
-        st.info("Belum ada bil COD dimuatkan.")
-    else:
-        st.caption(f"Keseluruhan {len(g)} tempoh: {int(g['parcel'].sum())} parcel, "
-                   f"{int(g['botol'].sum())} botol, RM {g['net_remit'].sum():,.2f} net remit.")
-        st.dataframe(
-            g[["tempoh", "parcel", "botol", "botol_free", "cod_dikutip", "fee", "net_remit", "tally", "exception"]],
-            width="stretch", hide_index=True,
-            column_config=rm_cols("cod_dikutip", "fee", "net_remit"),
-        )
-        st.caption("Net remit = COD dikutip tolak fee J&T (patut mendarat bank). "
-                   "botol = jumlah botol fizikal, botol_free = portion percuma (untuk kira kos nanti). "
-                   "Lajur 'bank sebenar' + 'sepadan?' ditambah bila data bank tiba.")
-
-# ===== Per Bil =====
-with tab_bill:
-    bills = info["bills"]
-    if not len(bills):
-        st.info("Belum ada bil COD dimuatkan. Upload bil J&T di sidebar dulu.")
-    else:
-        opts = {}
-        for _, r in bills.iterrows():
-            opts[f"{r['bill_id']}  ({r['settlement_date'] or 'tarikh?'})"] = r["bill_id"]
-        choice = st.selectbox("Pilih bil (satu settlement = satu kali duit masuk)", list(opts.keys()))
-        bid = opts[choice]
-
-        b = m[m["bill_id"] == bid].copy()
-        b_cod = float(b["cod_amount"].sum())
-        b_fee = float(b["fee"].sum())
-        b_net = b_cod - b_fee
-        b_tally = int((b["kategori"] == "tally").sum())
-        b_exc = b[b["kategori"].isin(INTEGRITY_EXC)]
-
-        d1, d2, d3, d4 = st.columns(4)
-        d1.metric("Parcel dalam bil", len(b))
-        d2.metric("COD dikutip", f"RM {b_cod:,.2f}")
-        d3.metric("Net remit (patut masuk bank)", f"RM {b_net:,.2f}", f"tolak fee RM {b_fee:,.2f}")
-        d4.metric("Tally / Exception", f"{b_tally} / {len(b_exc)}")
-
-        if len(b_exc) == 0:
-            st.success(f"Bil ni bersih: semua {len(b)} parcel tally. RM {b_net:,.2f} patut masuk bank.")
-        else:
-            st.warning(f"Bil ni ada {len(b_exc)} parcel perlu siasat (duit hantu atau amount mismatch). Lihat jadual bawah.")
-
-        theme.section("Semak lawan bank")
-        bank_amt = st.number_input("Jumlah sebenar masuk bank untuk bil ni (RM)",
-                                   min_value=0.0, value=0.0, step=1.0, format="%.2f")
-        if bank_amt > 0:
-            diff = bank_amt - b_net
-            if abs(diff) < 0.01:
-                st.success(f"Padan tepat dengan Net remit (RM {b_net:,.2f}).")
-            else:
-                st.error(f"Beza RM {diff:,.2f}  (bank RM {bank_amt:,.2f} vs Net remit RM {b_net:,.2f}). Perlu siasat.")
-
-        theme.section("Senarai parcel dalam bil ni")
-        bill_cols = [c for c in ["awb", "order_id", "seller_name", "kategori",
-                                 "selling_price", "cod_amount", "fee", "remit"] if c in b.columns]
-        st.dataframe(theme.style_kategori(b[bill_cols]), width="stretch", hide_index=True,
-                     column_config=rm_cols("selling_price", "cod_amount", "fee", "remit"))
-
-# ===== Per Stokis: botol setiap stokis (semua courier, kira bila duit disahkan) =====
-with tab_stokis:
-    theme.section("Botol per stokis",
-                  "paid (jualan) + free (kos), kira bila duit dah disahkan masuk")
-    st.caption("Kira botol untuk semua courier, tapi hanya order Completed yang duitnya "
-               "dah disahkan masuk (setakat ni feed J&T COD sahaja). 'Belum disahkan' "
-               "akan flip automatik bila feed duit lain (bil courier lain, CHIP / online "
-               "transfer) di-upload.")
-
-    comp = od[od["status"] == db.COMPLETED].copy()
-    comp["seller_name"] = comp["seller_name"].fillna("(takde stokis)")
-    if not len(comp):
-        st.info("Belum ada order Completed. Upload export Fighter dulu.")
-    else:
-        paid = comp[comp["duit_disahkan"]]
-        belum = comp[~comp["duit_disahkan"]]
-        ringkas = pd.DataFrame(index=sorted(comp["seller_name"].unique()))
-        ringkas["Order disahkan"] = paid.groupby("seller_name")["order_id"].size()
-        ringkas["Botol paid"] = paid.groupby("seller_name")["botol_paid"].sum()
-        ringkas["Botol free"] = paid.groupby("seller_name")["botol_free"].sum()
-        ringkas["Botol total"] = paid.groupby("seller_name")["botol_total"].sum()
-        ringkas["Botol belum disahkan"] = belum.groupby("seller_name")["botol_total"].sum()
-        ringkas = ringkas.fillna(0).astype(int).sort_values("Botol total", ascending=False)
-        ringkas = ringkas.rename_axis("Stokis").reset_index()
-
-        t = int(ringkas["Botol total"].sum())
-        tf = int(ringkas["Botol free"].sum())
-        tb = int(ringkas["Botol belum disahkan"].sum())
-        st.caption(f"Disahkan: {t:,} botol ({tf:,} free) merentas {len(ringkas)} stokis. "
-                   f"Tertunggu pengesahan duit: {tb:,} botol.")
-        st.dataframe(ringkas, width="stretch", hide_index=True)
-
-        theme.section("Drill-down satu stokis", "tengok order satu satu")
-        names = sorted(od["seller_name"].fillna("(takde stokis)").unique())
-        pick = st.selectbox("Pilih stokis", names)
-        d = od.copy()
-        d["seller_name"] = d["seller_name"].fillna("(takde stokis)")
-        d = d[d["seller_name"] == pick].copy()
-        d["duit"] = d["duit_disahkan"].map({True: "disahkan", False: "belum disahkan"})
-        det_cols = [c for c in ["order_id", "order_date", "status", "payment_method",
-                                "shipping_provider", "tracking", "botol_paid",
-                                "botol_free", "botol_total", "duit"] if c in d.columns]
-        st.dataframe(d[det_cols].sort_values(["duit", "order_date"]),
-                     width="stretch", hide_index=True)
-
-
-# ===== Audit: integriti penuh =====
-with tab_audit:
-    c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("Tally (padan tepat)", int(tally.sum()), f"RM {m.loc[tally, 'cod_amount'].sum():,.0f}")
-    c2.metric("COD dikutip", f"RM {total_cod:,.0f}")
-    c3.metric("Net remit", f"RM {total_cod - total_fee:,.0f}")
-    c4.metric("Tier 1 (masalah)", int(len(integ)))
-    c5.metric("Tier 2 (aged)", int(len(aged)))
-
-    with st.expander(f"Bil COD dimuatkan ({info['n_bills']})"):
-        st.dataframe(info["bills"], width="stretch", hide_index=True)
-
-    col_a, col_b = st.columns(2)
-    with col_a:
-        theme.section("Ringkasan kategori")
-        cc = m["kategori"].value_counts().rename_axis("kategori").reset_index(name="bilangan")
-        st.dataframe(theme.style_kategori(cc), width="stretch", hide_index=True)
-    with col_b:
-        if info["other_courier"]:
-            theme.section("Luar skop Fasa 1", "courier lain")
-            oc = pd.DataFrame([
-                {"courier": k, "order": int(v["order"]), "nilai_RM": round(v["nilai"], 2)}
-                for k, v in info["other_courier"].items()
-            ])
-            st.dataframe(oc, width="stretch", hide_index=True,
-                         column_config=rm_cols("nilai_RM"))
-
-    theme.section("Tier 1 , exception integriti", "perlu siasat")
-    if len(integ):
-        st.dataframe(theme.style_kategori(integ[show_cols]), width="stretch", hide_index=True,
-                     column_config=rm_cols("selling_price", "cod_amount"))
-    else:
-        st.success("Tiada exception integriti. Buku bersih untuk data yang dimuatkan.")
-
-    theme.section("Tier 2 , aged unmatched")
-    st.caption(f"Order Completed melebihi {pending_days} hari tapi belum jumpa dalam mana mana bil. "
-               "Dalam fasa data tak lengkap, ni biasanya artifak sebab bil belum cukup. "
-               "Sepatutnya mengecut bila Adi tambah lebih banyak bil COD.")
-    if len(aged):
-        st.dataframe(theme.style_kategori(aged[show_cols]), width="stretch", hide_index=True,
-                     column_config=rm_cols("selling_price", "cod_amount"))
-
-    theme.section("Pecahan ikut stokis")
-    seller = m["seller_name"].fillna("(takde order)")
-    st.dataframe(pd.crosstab(seller, m["kategori"]), width="stretch")
-
-    exc = m[m["kategori"].isin(INTEGRITY_EXC + AGED)][show_cols]
-    st.download_button("Muat turun exceptions.csv", exc.to_csv(index=False),
-                       "exceptions.csv", "text/csv")
-
-# ===== SKU / Botol (editable, Finance maintain sendiri) =====
-with tab_sku:
-    theme.section("Jadual SKU ke botol", "Finance boleh edit atau tambah SKU baru di sini")
-    st.caption("paid = botol bayar, free = botol percuma (contoh +1 / +2 KORBAN). Total botol = paid + free.")
+# ============ J&T COD stream (existing recon engine, unchanged) ============
+def render_jnt_stream(pending_days):
     conn = db.get_conn()
     db.init_db(conn)
-    sku_df = pd.read_sql("SELECT sku, product_name, paid, free FROM sku_bottles ORDER BY sku", conn)
+    if conn.execute(text("SELECT COUNT(*) FROM orders")).scalar() == 0:
+        conn.close()
+        st.info("No data yet. Open the **Operations panel** above and upload a Fighter "
+                "export (and J&T bills) first.")
+        return
+
+    m, lines, info = reconcile(conn, pending_days=pending_days)
+    od = bottles_per_order(conn)
     conn.close()
-    edited = st.data_editor(
-        sku_df, num_rows="dynamic", width="stretch", key="sku_editor",
-        column_config={
-            "sku": st.column_config.TextColumn("SKU", required=True),
-            "product_name": st.column_config.TextColumn("Nama produk"),
-            "paid": st.column_config.NumberColumn("Botol bayar", min_value=0, step=1),
-            "free": st.column_config.NumberColumn("Botol free", min_value=0, step=1),
-        },
-    )
-    if st.button("Simpan jadual SKU", type="primary"):
-        db.save_sku_map(edited)
-        st.success("Jadual SKU disimpan. Hasil dikemas kini di overview.")
-        st.rerun()
-    if info["unmapped_skus"]:
-        st.warning("SKU dalam order tapi BELUM dipetakan (botol dikira 0): "
-                   + ", ".join(info["unmapped_skus"]) + ". Tambah dalam jadual di atas.")
+
+    tally = m["kategori"] == "tally"
+    integ = m[m["kategori"].isin(INTEGRITY_EXC)]
+    aged = m[m["kategori"].isin(AGED)]
+    total_cod = float(lines["cod_amount"].sum())
+    total_fee = float(lines["fee"].sum())
+    show_cols = [c for c in SHOW_COLS if c in m.columns]
+
+    # ----- Overview (the money story) -----
+    bill_rows = m[m["bill_id"].notna()].copy()
+    g = None
+    if not len(bill_rows):
+        st.info("No COD bill loaded yet. Upload a J&T bill in the Operations panel "
+                "to see cash flow.")
     else:
-        st.success("Semua SKU dalam order ada dalam jadual.")
+        pcol1, pcol2 = st.columns([2, 1])
+        with pcol1:
+            grain = st.segmented_control("Period", GRAINS, default="Daily",
+                                         key="grain") or "Daily"
+
+        bill_rows["dt"] = pd.to_datetime(bill_rows["delivered_date"], errors="coerce")
+        bill_rows = bill_rows.dropna(subset=["dt"])
+        bill_rows["pkey"] = period_key(bill_rows["dt"], grain)
+        g = bill_rows.groupby("pkey").agg(
+            parcel=("awb", "size"),
+            botol=("botol_total", "sum"),
+            botol_free=("botol_free", "sum"),
+            cod_dikutip=("cod_amount", "sum"),
+            fee=("fee", "sum"),
+            tally=("kategori", lambda s: int((s == "tally").sum())),
+            exception=("kategori", lambda s: int(s.isin(INTEGRITY_EXC).sum())),
+        ).reset_index().sort_values("pkey")
+        g["net_remit"] = (g["cod_dikutip"] - g["fee"]).round(2)
+        g["cod_dikutip"] = g["cod_dikutip"].round(2)
+        g["fee"] = g["fee"].round(2)
+        g["tempoh"] = g["pkey"].map(lambda d: period_label(d, grain))
+
+        labels = g["tempoh"].tolist()
+        with pcol2:
+            sel = st.selectbox("Select period", labels, index=len(labels) - 1,
+                               key=f"period_{grain}")
+        row = g[g["tempoh"] == sel].iloc[0]
+
+        exc_n = int(row["exception"])
+        theme.hero_band(
+            label=f"Expected to land in bank · {sel}",
+            value=float(row["net_remit"]),
+            sublines=f"net remit after fee · {int(row['parcel'])} parcels · "
+                     f"{int(row['botol'])} bottles",
+            flag_text=("No exceptions this period" if exc_n == 0
+                       else f"{exc_n} exceptions this period"),
+            flag_ok=(exc_n == 0),
+        )
+
+        risk = float(integ["cod_amount"].sum()) if len(integ) else None
+        theme.alert_band(len(integ), risk=risk)
+
+        theme.kpi_row([
+            ("COD collected", f"RM {row['cod_dikutip']:,.0f}"),
+            ("J&T fee", f"RM {row['fee']:,.0f}"),
+            ("Parcels", f"{int(row['parcel'])}"),
+            ("Bottles", f"{int(row['botol'])}"),
+        ])
+
+        theme.section("Net remit by period", "all periods, to see the trend")
+        st.altair_chart(theme.bar_chart_brand(g, "tempoh", "net_remit"),
+                        use_container_width=True)
+
+    # ----- Drill-down tabs -----
+    theme.section("Details", "drill down by period, bill, stockist, and audit")
+    tab_period, tab_bill, tab_stockist, tab_audit, tab_sku = st.tabs(
+        ["By Period", "By Bill", "By Stockist", "Audit", "SKU / Bottles"])
+
+    # ===== By Period =====
+    with tab_period:
+        if g is None:
+            st.info("No COD bill loaded yet.")
+        else:
+            st.caption(f"Across {len(g)} periods: {int(g['parcel'].sum())} parcels, "
+                       f"{int(g['botol'].sum())} bottles, "
+                       f"RM {g['net_remit'].sum():,.2f} net remit.")
+            st.dataframe(
+                g[["tempoh", "parcel", "botol", "botol_free", "cod_dikutip", "fee",
+                   "net_remit", "tally", "exception"]],
+                width="stretch", hide_index=True,
+                column_config={
+                    "tempoh": st.column_config.TextColumn("Period"),
+                    "parcel": st.column_config.NumberColumn("Parcels"),
+                    "botol": st.column_config.NumberColumn("Bottles"),
+                    "botol_free": st.column_config.NumberColumn("Free bottles"),
+                    "cod_dikutip": st.column_config.NumberColumn("COD collected",
+                                                                 format="RM %.2f"),
+                    "fee": st.column_config.NumberColumn("J&T fee", format="RM %.2f"),
+                    "net_remit": st.column_config.NumberColumn("Net remit",
+                                                              format="RM %.2f"),
+                    "tally": st.column_config.NumberColumn("Tally"),
+                    "exception": st.column_config.NumberColumn("Exceptions"),
+                },
+            )
+            st.caption("Net remit = COD collected minus J&T fee (expected to land in "
+                       "bank). Bottles = physical bottle count, free bottles = the "
+                       "giveaway portion (for costing later). 'Actual bank' + 'matched?' "
+                       "columns will be added once bank data arrives.")
+
+    # ===== By Bill =====
+    with tab_bill:
+        bills = info["bills"]
+        if not len(bills):
+            st.info("No COD bill loaded yet. Upload a J&T bill in the Operations panel "
+                    "first.")
+        else:
+            opts = {}
+            for _, r in bills.iterrows():
+                opts[f"{r['bill_id']}  ({r['settlement_date'] or 'date?'})"] = r["bill_id"]
+            choice = st.selectbox("Select a bill (one settlement = one payout)",
+                                  list(opts.keys()))
+            bid = opts[choice]
+
+            b = m[m["bill_id"] == bid].copy()
+            b_cod = float(b["cod_amount"].sum())
+            b_fee = float(b["fee"].sum())
+            b_net = b_cod - b_fee
+            b_tally = int((b["kategori"] == "tally").sum())
+            b_exc = b[b["kategori"].isin(INTEGRITY_EXC)]
+
+            d1, d2, d3, d4 = st.columns(4)
+            d1.metric("Parcels in bill", len(b))
+            d2.metric("COD collected", f"RM {b_cod:,.2f}")
+            d3.metric("Net remit (expected in bank)", f"RM {b_net:,.2f}",
+                      f"after fee RM {b_fee:,.2f}")
+            d4.metric("Tally / Exceptions", f"{b_tally} / {len(b_exc)}")
+
+            if len(b_exc) == 0:
+                st.success(f"This bill is clean: all {len(b)} parcels tally. "
+                           f"RM {b_net:,.2f} expected in bank.")
+            else:
+                st.warning(f"This bill has {len(b_exc)} parcels to investigate "
+                           "(ghost money or amount mismatch). See the table below.")
+
+            theme.section("Check against bank")
+            bank_amt = st.number_input("Actual amount received in bank for this bill (RM)",
+                                       min_value=0.0, value=0.0, step=1.0, format="%.2f")
+            if bank_amt > 0:
+                diff = bank_amt - b_net
+                if abs(diff) < 0.01:
+                    st.success(f"Matches Net remit exactly (RM {b_net:,.2f}).")
+                else:
+                    st.error(f"Off by RM {diff:,.2f}  (bank RM {bank_amt:,.2f} vs "
+                             f"Net remit RM {b_net:,.2f}). Needs investigation.")
+
+            theme.section("Parcels in this bill")
+            bill_cols = [c for c in ["awb", "order_id", "seller_name", "kategori",
+                                     "selling_price", "cod_amount", "fee", "remit"]
+                         if c in b.columns]
+            st.dataframe(theme.style_kategori(b[bill_cols]), width="stretch",
+                         hide_index=True, column_config=colcfg(*bill_cols))
+
+    # ===== By Stockist =====
+    with tab_stockist:
+        theme.section("Bottles per stockist",
+                      "paid (sales) + free (cost), counted once payment is confirmed")
+        st.caption("Bottles are counted across all couriers, but only for Completed "
+                   "orders whose money is confirmed received (J&T COD feed for now). "
+                   "'Unconfirmed' flips automatically once other money feeds (other "
+                   "courier bills, CHIP / online transfer) are uploaded.")
+
+        comp = od[od["status"] == db.COMPLETED].copy()
+        comp["seller_name"] = comp["seller_name"].fillna("(no stockist)")
+        if not len(comp):
+            st.info("No Completed orders yet. Upload a Fighter export first.")
+        else:
+            paid = comp[comp["duit_disahkan"]]
+            belum = comp[~comp["duit_disahkan"]]
+            ringkas = pd.DataFrame(index=sorted(comp["seller_name"].unique()))
+            ringkas["Confirmed orders"] = paid.groupby("seller_name")["order_id"].size()
+            ringkas["Paid bottles"] = paid.groupby("seller_name")["botol_paid"].sum()
+            ringkas["Free bottles"] = paid.groupby("seller_name")["botol_free"].sum()
+            ringkas["Total bottles"] = paid.groupby("seller_name")["botol_total"].sum()
+            ringkas["Unconfirmed bottles"] = belum.groupby("seller_name")["botol_total"].sum()
+            ringkas = ringkas.fillna(0).astype(int).sort_values("Total bottles",
+                                                                ascending=False)
+            ringkas = ringkas.rename_axis("Stockist").reset_index()
+
+            t = int(ringkas["Total bottles"].sum())
+            tf = int(ringkas["Free bottles"].sum())
+            tb = int(ringkas["Unconfirmed bottles"].sum())
+            st.caption(f"Confirmed: {t:,} bottles ({tf:,} free) across "
+                       f"{len(ringkas)} stockists. Awaiting payment confirmation: "
+                       f"{tb:,} bottles.")
+            st.dataframe(ringkas, width="stretch", hide_index=True)
+
+            theme.section("Drill down a stockist", "view orders one by one")
+            names = sorted(od["seller_name"].fillna("(no stockist)").unique())
+            pick = st.selectbox("Select stockist", names)
+            d = od.copy()
+            d["seller_name"] = d["seller_name"].fillna("(no stockist)")
+            d = d[d["seller_name"] == pick].copy()
+            d["duit"] = d["duit_disahkan"].map({True: "confirmed", False: "unconfirmed"})
+            det_cols = [c for c in ["order_id", "order_date", "status", "payment_method",
+                                    "shipping_provider", "tracking", "botol_paid",
+                                    "botol_free", "botol_total", "duit"]
+                        if c in d.columns]
+            st.dataframe(d[det_cols].sort_values(["duit", "order_date"]),
+                         width="stretch", hide_index=True, column_config=colcfg(*det_cols))
+
+    # ===== Audit =====
+    with tab_audit:
+        c1, c2, c3, c4, c5 = st.columns(5)
+        c1.metric("Tally (exact match)", int(tally.sum()),
+                  f"RM {m.loc[tally, 'cod_amount'].sum():,.0f}")
+        c2.metric("COD collected", f"RM {total_cod:,.0f}")
+        c3.metric("Net remit", f"RM {total_cod - total_fee:,.0f}")
+        c4.metric("Tier 1 (issues)", int(len(integ)))
+        c5.metric("Tier 2 (aged)", int(len(aged)))
+
+        with st.expander(f"COD bills loaded ({info['n_bills']})"):
+            st.dataframe(info["bills"], width="stretch", hide_index=True)
+
+        col_a, col_b = st.columns(2)
+        with col_a:
+            theme.section("Category summary")
+            cc = m["kategori"].value_counts().rename_axis("kategori").reset_index(
+                name="count")
+            st.dataframe(theme.style_kategori(cc), width="stretch", hide_index=True,
+                         column_config={"kategori": st.column_config.TextColumn("Status"),
+                                        "count": st.column_config.NumberColumn("Count")})
+        with col_b:
+            if info["other_courier"]:
+                theme.section("Out of Phase 1 scope", "other couriers")
+                oc = pd.DataFrame([
+                    {"courier": k, "orders": int(v["order"]),
+                     "value": round(v["nilai"], 2)}
+                    for k, v in info["other_courier"].items()
+                ])
+                st.dataframe(oc, width="stretch", hide_index=True, column_config={
+                    "courier": st.column_config.TextColumn("Courier"),
+                    "orders": st.column_config.NumberColumn("Orders"),
+                    "value": st.column_config.NumberColumn("Value", format="RM %.2f"),
+                })
+
+        theme.section("Tier 1 · integrity exceptions", "need investigation")
+        if len(integ):
+            st.dataframe(theme.style_kategori(integ[show_cols]), width="stretch",
+                         hide_index=True, column_config=colcfg(*show_cols))
+        else:
+            st.success("No integrity exceptions. Clean books for the data loaded.")
+
+        theme.section("Tier 2 · aged unmatched")
+        st.caption(f"Orders Completed over {pending_days} days but not found in any "
+                   "bill. While data is incomplete this is usually an artifact of "
+                   "missing bills. It should shrink as more COD bills are added.")
+        if len(aged):
+            st.dataframe(theme.style_kategori(aged[show_cols]), width="stretch",
+                         hide_index=True, column_config=colcfg(*show_cols))
+
+        theme.section("Breakdown by stockist")
+        seller = m["seller_name"].fillna("(no order)")
+        ct = pd.crosstab(seller, m["kategori"])
+        ct.columns = [theme.kat_label(c) for c in ct.columns]
+        st.dataframe(ct, width="stretch")
+
+        exc = m[m["kategori"].isin(INTEGRITY_EXC + AGED)][show_cols]
+        st.download_button("Download exceptions.csv", exc.to_csv(index=False),
+                           "exceptions.csv", "text/csv")
+
+    # ===== SKU / Bottles (editable, Finance maintains) =====
+    with tab_sku:
+        theme.section("SKU to bottle mapping", "Finance can edit or add SKUs here")
+        st.caption("paid = paid bottles, free = free bottles (e.g. +1 / +2 KORBAN). "
+                   "Total bottles = paid + free.")
+        conn = db.get_conn()
+        db.init_db(conn)
+        sku_df = pd.read_sql("SELECT sku, product_name, paid, free FROM sku_bottles "
+                             "ORDER BY sku", conn)
+        conn.close()
+        edited = st.data_editor(
+            sku_df, num_rows="dynamic", width="stretch", key="sku_editor",
+            column_config={
+                "sku": st.column_config.TextColumn("SKU", required=True),
+                "product_name": st.column_config.TextColumn("Product name"),
+                "paid": st.column_config.NumberColumn("Paid bottles", min_value=0, step=1),
+                "free": st.column_config.NumberColumn("Free bottles", min_value=0, step=1),
+            },
+        )
+        if st.button("Save SKU mapping", type="primary"):
+            db.save_sku_map(edited)
+            st.success("SKU mapping saved. Numbers updated in the overview.")
+            st.rerun()
+        if info["unmapped_skus"]:
+            st.warning("SKUs found in orders but NOT mapped (counted as 0 bottles): "
+                       + ", ".join(info["unmapped_skus"]) + ". Add them in the table above.")
+        else:
+            st.success("All SKUs in orders are mapped.")
+
+
+# ============ Subsidiary page (Impact wired; others coming soon) ============
+def render_impact():
+    if st.button("← All companies"):
+        st.session_state.subsidiary = None
+        st.rerun()
+    theme.page_header("Dicci Impact", "Income reconciliation · Phase 1")
+    pending_days = render_ops_panel()
+    render_stream_strip()
+    if st.session_state.stream == "jnt":
+        render_jnt_stream(pending_days)
+    else:
+        render_stream_placeholder(st.session_state.stream)
+
+
+# ============ Router ============
+if st.session_state.subsidiary is None:
+    render_group_landing()
+elif st.session_state.subsidiary == "impact":
+    render_impact()
+else:
+    # Defensive: a non-active company was somehow selected.
+    if st.button("← All companies"):
+        st.session_state.subsidiary = None
+        st.rerun()
+    name = next((s["name"] for s in SUBSIDIARIES
+                 if s["key"] == st.session_state.subsidiary), "This company")
+    theme.page_header(name, "coming soon")
+    st.info(f"{name} is not wired yet. Phase 1 focuses on Dicci Impact.")

@@ -50,11 +50,19 @@ def load(path):
     return df
 
 
+# Feed registry: tambah feed baru (courier lain, dll) = daftar satu entry di sini.
+# Setiap feed dikenal ikut lajur tandatangan uniknya. Urutan dikekalkan (jnt dulu).
+FEEDS = [
+    {"name": "jnt", "signature": J_AWB},
+    {"name": "fighter", "signature": F_ORDER},
+]
+
+
 def detect(df):
-    if J_AWB in df.columns:
-        return "jnt"
-    if F_ORDER in df.columns:
-        return "fighter"
+    cols = set(df.columns)
+    for feed in FEEDS:
+        if feed["signature"] in cols:
+            return feed["name"]
     return None
 
 

@@ -154,6 +154,64 @@ Tab baru "Per Stokis" untuk tengok botol setiap stokis (paid = jualan, free = ko
 - AppTest tiada exception, 5 tab render. Snapshot data semasa: 1208 order, 369 disahkan,
   selebihnya belum disahkan (courier lain / prepaid / J&T belum masuk bil).
 
+## Milestone 5: Shell berbilang anak syarikat + UI English (2026-06-22)
+
+Rombak app dari satu page recon J&T jadi **shell dashboard berbilang anak syarikat**,
+langkah bina pertama dari blueprint architecture (lihat bawah). Enjin recon TAK disentuh.
+
+- **Navigasi (tiada sidebar, butang + `st.session_state`):** landing peringkat Group
+  papar kad per anak syarikat (Dicci Impact aktif; Flux/HUB/Dicci Group "coming soon").
+  Tekan "Open" → page anak syarikat.
+- **Page Impact:** butang "← All companies", Operations panel (upload/tetapan/status),
+  strip "Income streams" (J&T COD live; DHL/Ninja Van/CHIP/Bank Transfer/TikTok slot
+  "coming soon" disabled), kemudian dashboard recon J&T sedia ada di bawah.
+- **UI English sepenuhnya** (ikut preference owner, produk kerja default English): shell +
+  semua bahagian sedia ada ditukar. Kod kategori recon kekal (enjin), tapi DIPAPAR English
+  via `theme.KAT_LABEL_EN` + `theme.kat_label` (`style_kategori` guna `Styler.format`,
+  warna kekal ikut kod). Header jadual relabel via `st.column_config` (nama lajur dalaman
+  kekal). `reconcile.py` report.txt KEKAL BM (artifak CLI, itu baseline regression).
+- **Feed registry:** `ingest.detect()` jadi senarai `FEEDS` (tandatangan lajur → nama).
+  Tambah courier/feed baru = daftar satu entry, tingkah laku jnt/fighter kekal.
+
+### Fail disentuh
+- `app.py` , rewrite jadi shell (router + render_group_landing / render_impact /
+  render_jnt_stream / render_stream_placeholder / render_ops_panel / render_stream_strip).
+- `theme.py` , `KAT_LABEL_EN` + `kat_label` + `style_kategori` format English + string
+  `alert_band`/tooltip chart English.
+- `ingest.py` , `detect()` jadi registry `FEEDS`.
+- `db.py`, `reconcile.py` , TIDAK disentuh.
+
+### Verifikasi
+- `python reconcile.py` output IDENTIK baseline (enjin tak tersentuh).
+- AppTest tiada exception untuk semua view (group landing, Impact+J&T, placeholder
+  DHL/TikTok/Flux), 5 tab render. `detect()` registry kekal kenal jnt/fighter/None.
+- Screenshot headless (chrome-headless-shell + node CDP) sahkan dua dua page render
+  cantik, English, navigasi butang berfungsi.
+
+## BLUEPRINT ARCHITECTURE (vision penuh, walkthrough owner 2026-06-21/22)
+
+Skop projek diperluas: dari alat recon J&T jadi **satu sistem dashboard finance untuk
+seluruh Dicci Group**. Keputusan seni bina dikunci:
+
+- **Struktur:** Dicci **Group** = induk. Anak syarikat: **Impact**, **Flux** (= team HQ
+  in-house yang run ads), **HUB**, dll. Roadmap: Impact dulu → Flux/HUB → Group. Dashboard
+  = button per anak syarikat → page upload + tengok angka. Pengguna = team finance.
+- **Fasa 1 DIPERLUAS:** bukan J&T COD sahaja, tapi **SEMUA duit masuk Dicci Impact**.
+  J&T siap; sambung DHL, Ninja Van, prepaid (CHIP/transfer), TikTok satu satu.
+- **Model bisnes Impact:** Sistem Fighter = app pihak ketiga, sumber kebenaran order.
+  Sejak ~Mac 2026 setiap anak syarikat ada Fighter sendiri (Impact bersih). Hampir semua
+  duit tercatat di Fighter KECUALI TikTok (standalone, takde padanan). Setiap saluran
+  bayaran = "feed duit masuk" direkonsiliasi lawan Fighter ikut tracking.
+- **Platform berperingkat (TERKUNCI):** kekal Streamlit untuk Fasa 1 (guna semula enjin
+  terbukti, murah), reka data model multi-syarikat + terasing dari sekarang, migrate ke
+  **Next.js + Vercel** bila enjin semua stream terbukti (di situ keselamatan penuh:
+  firewall/WAF, auth, pengasingan data). **Keselamatan = tiang reka bentuk** (owner nak
+  hardened in future). Reset password Neon = sebahagian security hygiene ni.
+- **Diperlukan dari owner (langkah seterusnya):** PDF sampel J&T/DHL/Ninja Van + bentuk
+  export TikTok & report CHIP/online transfer, untuk bina parser feed setiap saluran.
+- **Diparkir:** laluan komisen sebenar Impact (duit Impact hakikatnya komisen), 2 bank
+  Impact, jualan offline, operasi anak syarikat lain.
+
 ## Status sekarang
 
 - [x] Borak, kunci skop + keputusan Fasa 1.
@@ -163,6 +221,9 @@ Tab baru "Per Stokis" untuk tengok botol setiap stokis (paid = jualan, free = ko
 - [x] Milestone 2: UI berjenama Dicci penuh (tema teal+emas, Fraunces+Manrope, overview+drill-down, buang sidebar). `theme.py` reusable. Logik recon tak berubah.
 - [x] Milestone 3: Deploy LIVE ke Streamlit Cloud (private) + Neon Postgres persistent. `db.py` di-port ke SQLAlchemy.
 - [x] Milestone 4: tab Per Stokis + foundation pengesahan duit (feed di-upload berasingan, extension point `db.confirmed_paid_order_ids`). Recon output identik baseline.
+- [x] Milestone 5: shell berbilang anak syarikat (button nav, tiada sidebar) + UI English penuh + feed registry. Enjin tak disentuh, output identik baseline. Blueprint architecture dikunci.
+- [ ] Wire feed courier seterusnya (DHL, Ninja Van): perlu PDF sampel dari Adi dulu.
+- [ ] Wire feed prepaid (CHIP/transfer) + TikTok: perlu bentuk export dari Adi.
 - [ ] Hardening keselamatan: rotate kredential DB Neon + audit akses team.
 - [ ] Adi kumpul SEMUA bil COD J&T cover period (+ nama fail kekal ada bill no + tarikh) untuk recon penuh.
 - [ ] Run period penuh: Tier 2 (397 sekarang) patut mengecut bila bil ditambah; tala REMIT_PENDING_DAYS dari lag remit sebenar.
