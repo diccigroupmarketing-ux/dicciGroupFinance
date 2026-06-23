@@ -60,6 +60,35 @@ def is_real_awb(t: str) -> bool:
     return t.isdigit() and len(t) >= 10
 
 
+def _awb_present(t: str) -> bool:
+    t = str(t).strip()
+    return bool(t) and t.lower() != "nan"
+
+
+# Config per courier income stream (Fasa 1). Tambah courier = tambah entry.
+# provider       = nilai orders.shipping_provider untuk courier ni.
+# courier_label  = nilai cod_bills.courier (padan masa ingest).
+# awb_valid      = check tracking sah (J&T = 10+ digit; DHL/NV = ada nilai).
+# no_awb_cat     = kategori bila order Completed tapi tracking tak sah.
+COURIERS = {
+    "jnt":   {"name": "J&T COD", "provider": {"J&T Express"},
+              "courier_label": "J&T Express", "awb_valid": is_real_awb,
+              "no_awb_cat": "takde_awb_jnt"},
+    "dhl":   {"name": "DHL", "provider": {"DHL eCommerce"},
+              "courier_label": "DHL eCommerce", "awb_valid": _awb_present,
+              "no_awb_cat": "takde_tracking"},
+    "ninja": {"name": "Ninja Van", "provider": {"Ninja Van"},
+              "courier_label": "Ninja Van", "awb_valid": _awb_present,
+              "no_awb_cat": "takde_tracking"},
+}
+
+# Config per gateway prepaid (bayar online, padan ikut order_id, BUKAN tracking).
+# methods = nilai orders.payment_method untuk gateway ni.
+PREPAID = {
+    "chip": {"name": "CHIP", "methods": {"CHIP"}},
+}
+
+
 def to_records(df: pd.DataFrame):
     """DataFrame -> list of dict, NaN/NaT jadi None, numpy scalar jadi native Python.
     Perlu supaya psycopg2 (Postgres) tak tercekik dengan numpy.int64/float64."""
@@ -126,6 +155,21 @@ CREATE TABLE IF NOT EXISTS cod_bill_lines (
     ingested_at    TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_lines_bill ON cod_bill_lines(bill_id);
+
+CREATE TABLE IF NOT EXISTS prepaid_payments (
+    gateway      TEXT,
+    order_ref    TEXT,
+    amount       DOUBLE PRECISION,
+    fee          DOUBLE PRECISION,
+    status       TEXT,
+    paid_on      TEXT,
+    settled_on   TEXT,
+    statement_id TEXT,
+    source_file  TEXT,
+    ingested_at  TEXT,
+    PRIMARY KEY (gateway, order_ref)
+);
+CREATE INDEX IF NOT EXISTS idx_prepaid_ref ON prepaid_payments(order_ref);
 """
 
 DEFAULT_SKU_BOTTLES = [
@@ -233,7 +277,10 @@ def confirmed_paid_order_ids(conn):
     """
     awb = set(pd.read_sql(text("SELECT awb FROM cod_bill_lines"), conn)["awb"].dropna())
     od = pd.read_sql(text("SELECT order_id, tracking FROM orders"), conn)
-    return set(od.loc[od["tracking"].isin(awb), "order_id"])
+    cod_ids = set(od.loc[od["tracking"].isin(awb), "order_id"])
+    # Prepaid (CHIP / online transfer): padan ikut order_ref = order_id.
+    prepaid = set(pd.read_sql(text("SELECT order_ref FROM prepaid_payments"), conn)["order_ref"].dropna())
+    return cod_ids | prepaid
 
 
 def save_sku_map(df, conn=None):

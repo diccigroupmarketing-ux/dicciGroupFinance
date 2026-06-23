@@ -212,6 +212,51 @@ seluruh Dicci Group**. Keputusan seni bina dikunci:
 - **Diparkir:** laluan komisen sebenar Impact (duit Impact hakikatnya komisen), 2 bank
   Impact, jualan offline, operasi anak syarikat lain.
 
+## ARCHITECTURE TERKUNCI (kunci 2026-06-23)
+
+Prinsip teras + keputusan skala, dikunci selepas borak owner. Ini "architecture solid"
+rujukan untuk semua kerja seterusnya.
+
+**1. Lapisan KEKAL vs SEMENTARA (paling penting):**
+- DURABLE (hidup merentas platform, dalam Neon Postgres): schema/model jadual kongsi
+  normalized, index, dan (nanti) recon sebagai SQL view. Constant untuk Streamlit DAN Next.js.
+- SEMENTARA (Streamlit-only, terbuang bila pindah): `@st.cache_data`, vectorize pandas
+  engine, had paparan `st.dataframe`, semua kod UI Streamlit.
+- **Prinsip: LABUR pada lapisan DB + fasa Next.js. JANGAN over-invest optimization khas Streamlit.**
+
+**2. Corak feed (auto-detect):**
+- Satu titik upload. Tiap fail: KATEGORI dulu (cap jari lajur unik) → HALA ke parser →
+  NORMALISE → simpan ke jadual betul (idempotent).
+- Cap jari: Fighter=`Order ID`, J&T=`AWB No.`, DHL=`DHL Parcel ID` (UTF-16), Ninja=
+  `Global Shipper ID`, CHIP=`Reference Nr.`.
+- Tambah courier/feed baru = daftar parser + nilai courier, **SIFAR perubahan schema**.
+- Fail tak dikenal = ditanda, tiada ditulis. Upload ulang = tak double count.
+
+**3. Model data (jadual kongsi normalized , JANGAN pecah per courier):**
+- `orders` (Fighter), `cod_bills` + `cod_bill_lines` (courier COD, dibeza lajur `courier`),
+  `prepaid_payments` (gateway prepaid), `sku_bottles`.
+- Pecah jadual per courier = anti-pattern (UNION kompleks, tambah jadual tiap courier).
+
+**4. Pengesahan duit:**
+- Fighter = sumber kebenaran order. Courier COD padan ikut **tracking**; prepaid padan ikut
+  **order_id**; TikTok standalone. `db.confirmed_paid_order_ids` = titik sambungan TUNGGAL.
+
+**5. Skala (ratus ribu+ baris):**
+- Bukan masalah saiz DB (Postgres boleh juta baris). Bottleneck = recompute tiap rerun Streamlit.
+- Jawapan skala SEBENAR = **fasa Next.js**: push recon ke SQL view/aggregation + index;
+  frontend cuma query ringkasan.
+- JANGAN SQL-ify sekarang , logik recon masih berkembang (pandas lagi senang iterate).
+  Konsisten dgn keputusan asal "jangan SQL view lagi".
+- Perf Streamlit (cache/vectorize) = TANGGUH, buat HANYA kalau Streamlit betul betul lembab.
+
+**6. Subsidiary scoping:**
+- CHIP = duit mendarat bank Dicci GROUP, bukan Impact. Dikekalkan DORMAN bawah Impact
+  (`active=False`), diaktif bila subsidiary Group dibina.
+
+**7. UI / nav:**
+- Nav kiri guna KOLUM biasa (bukan `st.sidebar`), boleh buka/tutup jadi rail ikon , immune
+  dari bug `st.sidebar` collapse. Dashboard roll-up = default. UI English penuh.
+
 ## Status sekarang
 
 - [x] Borak, kunci skop + keputusan Fasa 1.

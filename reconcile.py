@@ -25,7 +25,7 @@ from db import (COD_VALUES, JNT_PROVIDER, COMPLETED, RETURNED, REJECTED,
 INTEGRITY_EXC = [
     "duit_hantu", "amount_mismatch", "duit_masuk_order_returned",
     "duit_masuk_order_rejected", "in_bil_tapi_intransit", "takde_awb_jnt",
-    "match_luar_skop",
+    "takde_tracking", "match_luar_skop",
 ]
 # Aged: tak padan + dah lama. Dalam fasa data tak lengkap, ni didominasi artifak bil tak cukup.
 AGED = ["hilang_lewat"]
@@ -53,26 +53,45 @@ def _bottles_for_skus(skus_str, sku_map):
     return paid, free, unmapped
 
 
-def reconcile(conn, pending_days=REMIT_PENDING_DAYS):
+def reconcile(conn, pending_days=REMIT_PENDING_DAYS, courier="jnt"):
+    """Recon satu courier income stream. Default 'jnt' = tingkah laku asal (baseline).
+
+    Padan order (shipping_provider courier ni) lawan baris bil (courier ni) ikut
+    tracking. Schema cod_bills/cod_bill_lines dikongsi semua courier; kita tapis ikut
+    cod_bills.courier supaya setiap stream berasingan dan baseline J&T kekal identik.
+    """
+    cfg = db.COURIERS[courier]
+    provider = cfg["provider"]
+    courier_label = cfg["courier_label"]
+    awb_valid = cfg["awb_valid"]
+    no_awb_cat = cfg["no_awb_cat"]
+
     orders = pd.read_sql("SELECT * FROM orders", conn)
     lines = pd.read_sql("SELECT * FROM cod_bill_lines", conn)
+    bills_all = pd.read_sql(
+        "SELECT bill_id, courier, settlement_date, source_file FROM cod_bills", conn)
+
+    # Tapis baris bil kepada courier ni sahaja (via bill -> courier).
+    courier_bill_ids = set(bills_all.loc[bills_all["courier"] == courier_label, "bill_id"])
+    lines = lines[lines["bill_id"].isin(courier_bill_ids)].copy()
 
     all_trk = set(orders["tracking"].dropna())
 
     cod = orders[orders["payment_method"].isin(COD_VALUES)].copy()
-    other = cod[~cod["shipping_provider"].isin(JNT_PROVIDER)]
+    other = cod[~cod["shipping_provider"].isin(provider)]
+    cbills = bills_all[bills_all["courier"] == courier_label][
+        ["bill_id", "settlement_date", "source_file"]].sort_values("settlement_date")
     info = {
         "other_courier": other.groupby("shipping_provider").agg(
             order=("selling_price", "size"), nilai=("selling_price", "sum")
         ).to_dict("index"),
-        "n_bills": pd.read_sql("SELECT COUNT(*) n FROM cod_bills", conn)["n"][0],
-        "bills": pd.read_sql(
-            "SELECT bill_id, settlement_date, source_file FROM cod_bills ORDER BY settlement_date", conn),
+        "n_bills": len(courier_bill_ids),
+        "bills": cbills,
     }
 
-    jnt = cod[cod["shipping_provider"].isin(JNT_PROVIDER)].copy()
-    m = jnt.merge(lines, left_on="tracking", right_on="awb",
-                  how="outer", indicator=True, suffixes=("_o", "_l"))
+    scoped = cod[cod["shipping_provider"].isin(provider)].copy()
+    m = scoped.merge(lines, left_on="tracking", right_on="awb",
+                     how="outer", indicator=True, suffixes=("_o", "_l"))
     m["umur_hari"] = (TODAY - pd.to_datetime(m["order_date"], errors="coerce")).dt.days
 
     def cat(r):
@@ -88,11 +107,11 @@ def reconcile(conn, pending_days=REMIT_PENDING_DAYS):
             if st == REJECTED:
                 return "duit_masuk_order_rejected"
             return "in_bil_tapi_intransit"
-        # left_only: order J&T COD, takde dalam mana mana bil
+        # left_only: order COD courier ni, takde dalam mana mana bil
         st = r["status"]
         if st == COMPLETED:
-            if not is_real_awb(str(r["tracking"])):
-                return "takde_awb_jnt"
+            if not awb_valid(str(r["tracking"])):
+                return no_awb_cat
             if pd.notna(r["umur_hari"]) and r["umur_hari"] > pending_days:
                 return "hilang_lewat"
             return "belum_remit"
@@ -135,6 +154,65 @@ def bottles_per_order(conn):
     od["duit_disahkan"] = od["order_id"].isin(paid_ids)
     od["botol_dikira"] = od["duit_disahkan"] & (od["status"] == COMPLETED)
     return od
+
+
+def reconcile_prepaid(conn, gateway="chip", pending_days=REMIT_PENDING_DAYS):
+    """Recon satu gateway prepaid (CHIP / online transfer). Padan ikut order_id (BUKAN
+    tracking) sebab prepaid dibayar online masa order. Pulang (m, lines, info) dengan
+    nama lajur serasi renderer COD (amount->cod_amount, order_ref->awb, statement->bill_id).
+    """
+    cfg = db.PREPAID[gateway]
+    methods = cfg["methods"]
+
+    orders = pd.read_sql("SELECT * FROM orders", conn)
+    pays = pd.read_sql(
+        "SELECT order_ref, amount, fee, status, paid_on, settled_on, statement_id, "
+        "source_file FROM prepaid_payments WHERE gateway = :g",
+        conn, params={"g": gateway})
+
+    scoped = orders[orders["payment_method"].isin(methods)].copy()
+    # Elak lajur bertembung masa merge (orders.status vs payment status).
+    p = pays.rename(columns={"status": "pay_status", "source_file": "pay_source"})
+    m = scoped.merge(p, left_on="order_id", right_on="order_ref",
+                     how="outer", indicator=True)
+    m["umur_hari"] = (TODAY - pd.to_datetime(m["order_date"], errors="coerce")).dt.days
+
+    # Lajur serasi renderer COD.
+    m["cod_amount"] = m["amount"]
+    m["awb"] = m["order_ref"]
+    m["bill_id"] = m["statement_id"]
+    m["delivered_date"] = m["paid_on"]
+
+    def cat(r):
+        side = r["_merge"]
+        if side == "right_only":
+            return "duit_hantu"            # bayaran masuk, takde order Fighter dimuat
+        if side == "both":
+            return "tally" if round(r["selling_price"], 2) == round(r["amount"], 2) else "amount_mismatch"
+        return "belum_bayar"               # order prepaid, takde rekod bayaran lagi
+
+    m["kategori"] = m.apply(cat, axis=1)
+    m["remit"] = m["amount"] - m["fee"]
+
+    sku_map = db.get_sku_map(conn)
+    res = m["skus"].apply(lambda s: _bottles_for_skus(s, sku_map))
+    m["botol_paid"] = res.map(lambda x: x[0])
+    m["botol_free"] = res.map(lambda x: x[1])
+    m["botol_total"] = m["botol_paid"] + m["botol_free"]
+
+    stmts = (p[["statement_id", "paid_on", "pay_source"]]
+             .dropna(subset=["statement_id"]).drop_duplicates("statement_id")
+             .rename(columns={"statement_id": "bill_id", "paid_on": "settlement_date",
+                              "pay_source": "source_file"})
+             .sort_values("settlement_date"))
+    lines = pd.DataFrame({"cod_amount": pays["amount"], "fee": pays["fee"]})
+    info = {
+        "other_courier": {},
+        "n_bills": int(stmts["bill_id"].nunique()) if len(stmts) else 0,
+        "bills": stmts,
+        "unmapped_skus": sorted({u for x in res for u in x[2]}),
+    }
+    return m, lines, info
 
 
 def report(m, lines, info):

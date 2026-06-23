@@ -64,11 +64,13 @@ FONT_BODY = "'Manrope', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-seri
 KAT_COLORS = {
     "tally": (POSITIVE_TEXT, POSITIVE_BG),
     "belum_remit": (MUTED, BG_SUNKEN),
+    "belum_bayar": (MUTED, BG_SUNKEN),
     "hilang_lewat": (GOLD_DARK, CAUTION_BG),
     "returned": (MUTED, BG_SUNKEN),
     "rejected": (MUTED, BG_SUNKEN),
     "pending": (MUTED, BG_SUNKEN),
     "duit_hantu": (DANGER_TEXT, DANGER_BG),
+    "takde_tracking": (DANGER_TEXT, DANGER_BG),
     "amount_mismatch": (DANGER_TEXT, DANGER_BG),
     "duit_masuk_order_returned": (DANGER_TEXT, DANGER_BG),
     "duit_masuk_order_rejected": (DANGER_TEXT, DANGER_BG),
@@ -254,6 +256,59 @@ def inject_css():
             align-self:center; }}
         .dicciSection .t {{ color:{INK_STRONG}; font-size:1.1rem; }}
         .dicciSection .s {{ color:{MUTED}; font-size:0.8rem; }}
+
+        /* ===== Segmented control: pill switcher berjenama ===== */
+        [data-testid="stSegmentedControl"] [role="group"],
+        [data-testid="stSegmentedControl"] > div {{
+            gap:4px; background:{BG_SUNKEN}; padding:4px; border-radius:12px;
+            border:1px solid {BORDER}; display:inline-flex; }}
+        button[data-testid="stBaseButton-segmented_control"],
+        button[data-testid="stBaseButton-segmented_controlActive"] {{
+            border:none !important; border-radius:9px !important; font-weight:600;
+            color:{MUTED} !important; background:transparent !important;
+            padding:6px 18px !important; }}
+        button[data-testid="stBaseButton-segmented_controlActive"] {{
+            background:{TEAL} !important; color:#fff !important;
+            box-shadow:0 1px 3px rgba(7,42,48,0.18); }}
+        button[data-testid="stBaseButton-segmented_control"]:hover {{
+            color:{TEAL} !important; background:rgba(10,61,69,0.06) !important; }}
+
+        /* ===== Breadcrumb (tertiary button) ===== */
+        button[data-testid="stBaseButton-tertiary"] {{
+            color:{MUTED} !important; font-weight:600; padding-left:0 !important; }}
+        button[data-testid="stBaseButton-tertiary"]:hover {{ color:{TEAL} !important; }}
+
+        /* ===== Popover trigger: chrome senyap ===== */
+        [data-testid="stPopover"] button {{
+            border-radius:10px; border:1px solid {BORDER}; color:{TEAL};
+            font-weight:600; background:{CARD}; }}
+        [data-testid="stPopover"] button:hover {{
+            border-color:{GOLD}; color:{TEAL}; }}
+
+        /* ===== Left nav (kolum biasa, boleh buka/tutup jadi rail ikon) ===== */
+        .st-key-impactnav, .st-key-impactnavmini {{
+            background:{BG_SUNKEN}; border:1px solid {BORDER}; border-radius:14px;
+            position:sticky; top:12px; }}
+        .st-key-impactnav {{ padding:16px 14px; }}
+        .st-key-impactnavmini {{ padding:12px 6px; }}
+        .st-key-impactnav .stButton button, .st-key-impactnavmini .stButton button {{
+            font-weight:600; }}
+        .st-key-impactnav .stButton button {{ justify-content:flex-start; text-align:left; }}
+        .st-key-impactnavmini .stButton button {{ justify-content:center; text-align:center;
+            padding-left:0 !important; padding-right:0 !important; font-size:1.15rem; }}
+        .st-key-impactnav [data-testid="stBaseButton-secondary"],
+        .st-key-impactnavmini [data-testid="stBaseButton-secondary"] {{
+            border-color:transparent; background:transparent; color:{INK}; }}
+        .st-key-impactnav [data-testid="stBaseButton-secondary"]:hover,
+        .st-key-impactnavmini [data-testid="stBaseButton-secondary"]:hover {{
+            background:rgba(10,61,69,0.06); color:{TEAL}; }}
+        .st-key-impactnav [data-testid="stBaseButton-primary"],
+        .st-key-impactnavmini [data-testid="stBaseButton-primary"] {{
+            background:{TEAL}; color:#fff; }}
+        .dicciSideBrand {{ font-family:var(--fd); color:{TEAL}; font-weight:700;
+            letter-spacing:0.10em; font-size:0.72rem; }}
+        .dicciSideCo {{ font-family:var(--fd); color:{INK_STRONG}; font-weight:600;
+            font-size:1.15rem; margin-top:2px; }}
         </style>
         """,
         unsafe_allow_html=True,
@@ -380,9 +435,11 @@ KAT_LABEL_EN = {
     "duit_masuk_order_rejected": "Paid, order rejected",
     "in_bil_tapi_intransit": "In bill, in-transit",
     "takde_awb_jnt": "No J&T AWB",
+    "takde_tracking": "No tracking",
     "match_luar_skop": "Out-of-scope match",
     "hilang_lewat": "Overdue / missing",
     "belum_remit": "Awaiting remit",
+    "belum_bayar": "Awaiting payment",
     "returned": "Returned",
     "rejected": "Rejected",
     "pending": "Pending",

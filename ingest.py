@@ -11,6 +11,7 @@ Guna: python ingest.py
 import warnings
 warnings.filterwarnings("ignore")
 
+import io
 import re
 import shutil
 from datetime import datetime
@@ -40,20 +41,35 @@ J_FEE = "Total Processing Fee"
 J_DELIVERED = "Delivery Signature Date"
 J_PICKUP = "Date | Pick Up"
 
+# Lajur sumber , DHL Payment Advice (.xls sebenarnya UTF-16 tab-text, bukan Excel)
+D_REF = "Customer Reference ID"        # MYHTB... = padan Fighter tracking
+D_COD = "CoD Amount"
+D_DELIVERED = "Delivery Date"          # format dd.mm.yyyy
+D_DEPOSIT = "Deposit Date"
 
-def load(path):
-    if path.suffix.lower() in (".xlsx", ".xls"):
-        df = pd.read_excel(path)
-    else:
-        df = pd.read_csv(path)
-    df.columns = df.columns.str.strip()
-    return df
+# Lajur sumber , Ninja Van COD SOA (.xlsx)
+NV_SHIPPER = "Global Shipper ID"       # tandatangan unik feed NV
+NV_TRACK = "Tracking ID"               # NV... = padan Fighter tracking
+NV_COD = "COD Amount"
+NV_NET = "Amount owing to/(from) shipper (Full Net)"
+NV_COMPLETE = "Order Completion Date"  # format yyyymmdd
+NV_PICKUP = "Order Pickup Date"
+
+# Lajur sumber , CHIP statement (.xlsx, header sebenar terkubur di tengah fail)
+C_TYPE = "Type"           # 'purchase' = bayaran pelanggan; 'custom' = disbursement
+C_REF = "Reference Nr."   # FIGHTER-<orderid> = padan Fighter order_id
+C_AMOUNT = "Amount"
+C_FEE = "Fee"
+C_STATUS = "Status"
+C_PAID = "Paid On"
+C_SETTLED = "Settled On"
 
 
-# Feed registry: tambah feed baru (courier lain, dll) = daftar satu entry di sini.
-# Setiap feed dikenal ikut lajur tandatangan uniknya. Urutan dikekalkan (jnt dulu).
+# Feed registry untuk fail berbentuk jadual (Excel/CSV): dikenal ikut lajur tandatangan
+# unik. Tambah feed jadual baru = daftar satu entry. (DHL UTF-16 dikendali berasingan.)
 FEEDS = [
     {"name": "jnt", "signature": J_AWB},
+    {"name": "ninja", "signature": NV_SHIPPER},
     {"name": "fighter", "signature": F_ORDER},
 ]
 
@@ -66,24 +82,40 @@ def detect(df):
     return None
 
 
-def load_buffer(fileobj, filename):
-    if filename.lower().endswith((".xlsx", ".xls")):
-        df = pd.read_excel(fileobj)
+def _load_df(data, filename):
+    if filename.lower().endswith(".csv"):
+        df = pd.read_csv(io.BytesIO(data))
     else:
-        df = pd.read_csv(fileobj)
+        df = pd.read_excel(io.BytesIO(data))
     df.columns = df.columns.str.strip()
     return df
 
 
-def ingest_buffer(fileobj, filename, conn):
-    """Ingest satu fail upload (untuk UI web). Pulang (kind, bilangan_baris)."""
-    df = load_buffer(fileobj, filename)
+def ingest_bytes(data, filename, conn):
+    """Ingest dari bytes mentah. Pulang (kind, bilangan_baris)."""
+    dhl = parse_dhl(data)
+    if dhl is not None:
+        return "dhl", ingest_dhl(dhl, filename, conn)
+    chip = parse_chip(data, filename)
+    if chip is not None:
+        return "chip", ingest_chip(chip, filename, conn)
+    df = _load_df(data, filename)
     kind = detect(df)
     if kind == "fighter":
         return kind, ingest_fighter(df, filename, conn)
     if kind == "jnt":
         return kind, ingest_jnt(df, filename, conn)
+    if kind == "ninja":
+        return kind, ingest_ninja(df, filename, conn)
     return None, 0
+
+
+def ingest_buffer(fileobj, filename, conn):
+    """Ingest satu fail upload (untuk UI web). Pulang (kind, bilangan_baris)."""
+    data = fileobj.read()
+    if isinstance(data, str):
+        data = data.encode()
+    return ingest_bytes(data, filename, conn)
 
 
 def iso(s):
@@ -93,6 +125,19 @@ def iso(s):
 
 def now_iso():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _yyyymmdd(s):
+    try:
+        return datetime.strptime(str(s).strip(), "%Y%m%d").strftime("%Y-%m-%d")
+    except Exception:
+        return None
+
+
+def _ymd_series(series):
+    # Tarikh yyyymmdd (kadang dibaca float "20260612.0"), pulang Series datetime.
+    s = series.astype(str).str.replace(r"\.0$", "", regex=True).str.strip()
+    return pd.to_datetime(s, format="%Y%m%d", errors="coerce")
 
 
 # ---------- Fighter ----------
@@ -192,6 +237,189 @@ def ingest_jnt(df, source_file, conn):
     return len(rows)
 
 
+# ---------- DHL Payment Advice (UTF-16 tab-text dalam .xls) ----------
+def parse_dhl(data):
+    """Pulang {meta, header, rows} kalau `data` ialah DHL Payment Advice, else None."""
+    try:
+        txt = data.decode("utf-16")
+    except Exception:
+        return None
+    if "DHL Parcel ID" not in txt and "Payment Reference" not in txt:
+        return None
+    meta, rows, header = {}, [], None
+    for line in txt.splitlines():
+        cells = [c.strip() for c in line.split("\t")]
+        cells = [c for c in cells if c != ""]
+        if len(cells) == 2 and cells[0].endswith(":"):
+            meta[cells[0].rstrip(":")] = cells[1]
+        elif cells and cells[0] == "No.":
+            header = cells
+        elif header and cells and cells[0].isdigit():
+            rows.append(cells)
+    return {"meta": meta, "header": header, "rows": rows}
+
+
+def ingest_dhl(parsed, source_file, conn):
+    meta, header, rows = parsed["meta"], parsed["header"], parsed["rows"]
+    bill_id = meta.get("Payment Reference") or source_file.rsplit(".", 1)[0]
+    settlement = _yyyymmdd(meta.get("Payment Date"))
+    idx = {name: i for i, name in enumerate(header or [])}
+
+    def col(r, name):
+        i = idx.get(name)
+        return r[i] if i is not None and i < len(r) else None
+
+    df = pd.DataFrame({
+        "ref": [str(col(r, D_REF) or "").lstrip("'") for r in rows],
+        "cod": [col(r, D_COD) for r in rows],
+        "deliv": [col(r, D_DELIVERED) for r in rows],
+    })
+    conn.execute(BILLS_UPSERT, {
+        "bill_id": bill_id, "courier": "DHL eCommerce", "settlement_date": settlement,
+        "source_file": source_file, "ingested_at": now_iso(),
+    })
+    # DHL advice tiada lajur fee (COD kasar). fee=0 buat masa ni.
+    l = pd.DataFrame({
+        "awb": db.norm_trk(df["ref"]),
+        "bill_id": bill_id,
+        "cod_amount": db.to_num(df["cod"]),
+        "fee": 0.0,
+        "delivered_date": iso(pd.to_datetime(df["deliv"], format="%d.%m.%Y", errors="coerce")),
+        "pickup_date": None,
+        "source_file": source_file,
+        "ingested_at": now_iso(),
+    })
+    recs = db.to_records(l)
+    if recs:
+        conn.execute(LINES_UPSERT, recs)
+    conn.commit()
+    return len(recs)
+
+
+# ---------- Ninja Van COD SOA (.xlsx) ----------
+def parse_nv_meta(filename):
+    dates = re.findall(r"(\d{8})", filename)
+    bill_id = "NVSOA-" + "-".join(dates) if dates else filename.rsplit(".", 1)[0]
+    settlement = _yyyymmdd(dates[-1]) if dates else None
+    return bill_id, settlement
+
+
+def ingest_ninja(df, source_file, conn):
+    df = df[df[NV_TRACK].notna()].copy()
+    df = df[df[NV_TRACK].astype(str).str.upper().str.startswith("NV")]
+    bill_id, settlement = parse_nv_meta(source_file)
+    conn.execute(BILLS_UPSERT, {
+        "bill_id": bill_id, "courier": "Ninja Van", "settlement_date": settlement,
+        "source_file": source_file, "ingested_at": now_iso(),
+    })
+    cod = db.to_num(df[NV_COD])
+    net = db.to_num(df[NV_NET])
+    # NV beri net siap ("Amount owing to shipper"); fee = COD - net.
+    l = pd.DataFrame({
+        "awb": db.norm_trk(df[NV_TRACK]),
+        "bill_id": bill_id,
+        "cod_amount": cod,
+        "fee": (cod - net).round(2),
+        "delivered_date": iso(_ymd_series(df[NV_COMPLETE])),
+        "pickup_date": iso(_ymd_series(df[NV_PICKUP])),
+        "source_file": source_file,
+        "ingested_at": now_iso(),
+    })
+    recs = db.to_records(l)
+    if recs:
+        conn.execute(LINES_UPSERT, recs)
+    conn.commit()
+    return len(recs)
+
+
+# ---------- CHIP statement (.xlsx, prepaid online payments) ----------
+PREPAID_UPSERT = text("""
+    INSERT INTO prepaid_payments (gateway, order_ref, amount, fee, status, paid_on,
+                                  settled_on, statement_id, source_file, ingested_at)
+    VALUES (:gateway, :order_ref, :amount, :fee, :status, :paid_on,
+            :settled_on, :statement_id, :source_file, :ingested_at)
+    ON CONFLICT(gateway, order_ref) DO UPDATE SET
+        amount=excluded.amount, fee=excluded.fee, status=excluded.status,
+        paid_on=excluded.paid_on, settled_on=excluded.settled_on,
+        statement_id=excluded.statement_id, source_file=excluded.source_file,
+        ingested_at=excluded.ingested_at
+""")
+
+
+def _num(v):
+    try:
+        return float(str(v).replace(",", "").strip())
+    except Exception:
+        return 0.0
+
+
+def _txt(v):
+    return None if pd.isna(v) else str(v).strip()
+
+
+def _chip_dt(v):
+    if pd.isna(v):
+        return None
+    try:
+        return pd.to_datetime(str(v)).strftime("%Y-%m-%d %H:%M:%S")
+    except Exception:
+        return None
+
+
+def _chip_stmt_id(filename):
+    m = re.search(r"(\d{4}-\d{2}-\d{2})", filename)
+    return "CHIP-" + (m.group(1) if m else filename.rsplit(".", 1)[0])
+
+
+def parse_chip(data, filename):
+    """Pulang DataFrame (header betul) kalau `data` ialah statement CHIP, else None.
+    Header CHIP terkubur di tengah fail, jadi kita imbas cari baris 'Reference Nr.'."""
+    if filename.lower().endswith(".csv"):
+        return None
+    try:
+        raw = pd.read_excel(io.BytesIO(data), header=None)
+    except Exception:
+        return None
+    hdr = None
+    for i in range(min(40, len(raw))):
+        row = [str(x).strip() for x in raw.iloc[i].tolist()]
+        if C_REF in row:
+            hdr = i
+            break
+    if hdr is None:
+        return None
+    df = pd.read_excel(io.BytesIO(data), header=hdr)
+    df.columns = df.columns.astype(str).str.strip()
+    return df
+
+
+def ingest_chip(df, source_file, conn):
+    # Hanya baris 'purchase' = bayaran pelanggan masuk (disbursement diparkir).
+    df = df[df[C_TYPE].astype(str).str.lower() == "purchase"].copy()
+    df = df[df[C_REF].notna()]
+    df["order_ref"] = df[C_REF].astype(str).str.replace("FIGHTER-", "", regex=False).str.strip()
+    df = df[df["order_ref"].astype(bool) & (df["order_ref"].str.lower() != "nan")]
+    stmt_id = _chip_stmt_id(source_file)
+    recs = []
+    for _, r in df.iterrows():
+        recs.append({
+            "gateway": "chip",
+            "order_ref": r["order_ref"],
+            "amount": _num(r.get(C_AMOUNT)),
+            "fee": _num(r.get(C_FEE)),
+            "status": _txt(r.get(C_STATUS)),
+            "paid_on": _chip_dt(r.get(C_PAID)),
+            "settled_on": _chip_dt(r.get(C_SETTLED)),
+            "statement_id": stmt_id,
+            "source_file": source_file,
+            "ingested_at": now_iso(),
+        })
+    if recs:
+        conn.execute(PREPAID_UPSERT, recs)
+    conn.commit()
+    return len(recs)
+
+
 def run():
     db.ARCHIVE.mkdir(parents=True, exist_ok=True)
     db.INBOX.mkdir(parents=True, exist_ok=True)
@@ -205,17 +433,15 @@ def run():
         return
 
     for p in files:
-        df = load(p)
-        kind = detect(df)
-        if kind == "fighter":
-            n = ingest_fighter(df, p.name, conn)
-            print(f"[Fighter] {p.name}: {n} order di-upsert")
-        elif kind == "jnt":
-            n = ingest_jnt(df, p.name, conn)
-            print(f"[J&T bil] {p.name}: {n} baris di-upsert")
-        else:
-            print(f"[SKIP] {p.name}: tak kenal format (lajur: {list(df.columns)[:5]}...)")
+        try:
+            kind, n = ingest_bytes(p.read_bytes(), p.name, conn)
+        except Exception as e:
+            print(f"[SKIP] {p.name}: {e}")
             continue
+        if not kind:
+            print(f"[SKIP] {p.name}: tak kenal format")
+            continue
+        print(f"[{kind}] {p.name}: {n} baris di-upsert")
         dest = db.ARCHIVE / p.name
         if dest.exists():
             dest.unlink()
