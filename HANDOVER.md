@@ -279,6 +279,10 @@ laluan tertentu yang boleh hilang / rosakkan data.
 - Enjin recon (`db.py`/`reconcile.py`/`ingest.py`) TAK disentuh, output identik baseline (369 / RM63,912).
 
 **PENDING (perlu tindakan owner / data betul):**
+- ⛔ **GATE (keputusan owner 2026-07-01):** rotate ditangguh buat masa ni (DB kosong = risiko
+  rendah). Trial dengan data dummy/throwaway OK tanpa rotate. TAPI **JANGAN jemput finance
+  upload data BETUL sebelum Langkah 4 (rotate) selesai** , saat data betul masuk, kredential
+  perlu dah bersih.
 - [ ] **Langkah 4 (owner, Neon console):** rotate kredential Neon (security hygiene). Buat
   role/password baru -> update secret `DATABASE_URL` Streamlit -> reboot -> sahkan reconnect ->
   baru revoke yang lama (revoke-old-last = zero downtime). Simpan salinan URL di tempat selamat
