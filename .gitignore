@@ -9,6 +9,7 @@ recon.db
 recon.db-journal
 data/
 output/
+backups/
 *.xlsx
 *.xls
 *.csv
