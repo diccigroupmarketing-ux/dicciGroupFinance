@@ -312,8 +312,11 @@ DAH kira komisen ikut level = lajur `Seller Role`: FIGHTER / FIGHTER PRO / MASTE
   SEBELUM fighter sebab Wallet ada `Order ID` juga). Idempotent by txn_id; order_id dinormal
   supaya join `orders.order_id`.
 - Diuji: detect=wallet, 768 baris idempotent, join Sales->orders 427 sepadan, output recon identik.
+- **View Commission SIAP (commit 2223891):** nav "💰 Commission" bawah Impact, papar earned vs
+  paid + level per stokis (record-only, guna angka Fighter terus; finance nak rekod + tally
+  dengan pembayaran). Read-only, additive.
 
-**PENDING (tunggu finance):** logik recon komisen + UI. Tally A = komisen Wallet vs order
+**PENDING (tunggu finance):** Tally penuh vs order (confirmed-paid). Tally A = komisen Wallet vs order
 confirmed-paid (recon sedia ada). Tally B = earned(IN) vs withdraw(OUT) = baki dompet.
 Tunggu 2 jawapan finance (Withdraw dalam Wallet vs transfer bank; percaya vs sahkan angka
 Fighter) + 1 set data period sama (Google Sheet + Wallet + export order Fighter).
