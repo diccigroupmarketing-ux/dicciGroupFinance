@@ -39,7 +39,7 @@ if "nav_open" not in st.session_state:
     st.session_state.nav_open = True
 
 NAV_ICON = {"dashboard": "📊", "jnt": "🚚", "dhl": "📦", "ninja": "🛵",
-            "chip": "💳", "transfer": "🏦", "tiktok": "🎵"}
+            "chip": "💳", "transfer": "🏦", "tiktok": "🎵", "commission": "💰"}
 
 SUBSIDIARIES = [
     {"key": "impact", "name": "Dicci Impact", "tag": "Active · Phase 1", "active": True},
@@ -213,8 +213,9 @@ def render_nav(nav_open):
                 st.rerun()
         st.write("")
 
-        views = [("dashboard", "Dashboard")] + [(s["key"], s["name"])
-                                                for s in STREAMS if s["active"]]
+        views = ([("dashboard", "Dashboard")]
+                 + [(s["key"], s["name"]) for s in STREAMS if s["active"]]
+                 + [("commission", "Commission")])
         for key, label in views:
             selected = st.session_state.get("view", "dashboard") == key
             icon = NAV_ICON.get(key, "•")
@@ -654,6 +655,54 @@ def render_stream_body(m, lines, info, od, pending_days, L):
             st.success("All SKUs in orders are mapped.")
 
 
+# ============ Commission (stockist commission from Fighter Wallet; record-only for now) ============
+def render_commission():
+    conn = db.get_conn()
+    db.init_db(conn)
+    n = conn.execute(text("SELECT COUNT(*) FROM wallet_txns")).scalar()
+    if not n:
+        conn.close()
+        st.info("No commission data yet. Use **⬆ Upload** (top of the nav) to add a "
+                "Fighter Wallet export.")
+        return
+    w = pd.read_sql(text("SELECT seller_name, seller_role, txn_type, source, status, amount "
+                         "FROM wallet_txns"), conn)
+    conn.close()
+
+    appr = w[w["status"] == "Approved"]
+    earned = appr[appr["txn_type"] == "IN"].groupby("seller_name")["amount"].sum()
+    paid = (appr[(appr["txn_type"] == "OUT") & (appr["source"] == "Withdraw")]
+            .groupby("seller_name")["amount"].sum())
+    role = w.groupby("seller_name")["seller_role"].agg(
+        lambda s: s.dropna().iloc[0] if s.dropna().size else "")
+
+    g = pd.DataFrame({"earned": earned, "paid": paid}).fillna(0.0)
+    g["balance"] = (g["earned"] - g["paid"]).round(2)
+    g["level"] = role
+    g = (g.reset_index().sort_values("earned", ascending=False)
+         [["seller_name", "level", "earned", "paid", "balance"]])
+
+    theme.hero_band(
+        label="Commission earned · uploaded period",
+        value=float(g["earned"].sum()),
+        sublines=f"{len(g)} stockists · RM {float(g['paid'].sum()):,.2f} paid out (withdrawals)",
+        flag_text="Record only · full tally vs payment coming",
+        flag_ok=True,
+    )
+    theme.section("Per stockist", "earned (Sales + Recruitment) vs paid out (withdrawals)")
+    st.dataframe(g, width="stretch", hide_index=True, column_config={
+        "seller_name": st.column_config.TextColumn("Stockist"),
+        "level": st.column_config.TextColumn("Level"),
+        "earned": st.column_config.NumberColumn("Earned", format="RM %.2f"),
+        "paid": st.column_config.NumberColumn("Paid out", format="RM %.2f"),
+        "balance": st.column_config.NumberColumn("Balance", format="RM %.2f"),
+    })
+    st.caption("Earned & paid are from the uploaded Wallet period only. Balance is "
+               "period-scoped (withdrawals may include commission earned before this "
+               "period), so it is not the true all-time wallet balance yet. Full tally "
+               "against orders arrives once finance confirms the payment source.")
+
+
 # ============ Subsidiary page (Impact wired; left nav + content) ============
 def render_impact():
     nav_open = st.session_state.get("nav_open", True)
@@ -666,6 +715,8 @@ def render_impact():
         view = st.session_state.get("view", "dashboard")
         if view == "dashboard":
             render_dashboard(pending_days)
+        elif view == "commission":
+            render_commission()
         elif view in db.COURIERS:
             render_courier_stream(view, pending_days)
         elif view in db.PREPAID:
