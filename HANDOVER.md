@@ -299,6 +299,25 @@ laluan tertentu yang boleh hilang / rosakkan data.
   `cod_bill_lines` PK = awb tanpa prefix courier).
 - Ditangguh ke Next.js: staging DB, upsert newer-wins, composite PK, CI schema guard, export nightly.
 
+## Milestone 7: Foundation ingestion komisen stokis (Fighter Wallet) (2026-07-01)
+
+Konteks: finance nak rekonsiliasi komisen stokis (tally dengan Fighter + duit dibayar ke
+stokis). Sumber "duit keluar" = export Fighter Wallet (dompet komisen per stokis; Fighter
+DAH kira komisen ikut level = lajur `Seller Role`: FIGHTER / FIGHTER PRO / MASTER / LEADER).
+
+**SIAP (commit e5db432, live, additive, enjin recon TAK disentuh):**
+- `db.py`: jadual durable `wallet_txns` (txn_id PK, order_id, seller_role, txn_type IN/OUT,
+  source Sales/Recruitment/Withdraw/Transfer, status, amount, dll) + index order_id/seller_name.
+- `ingest.py`: parser `ingest_wallet` + daftar dalam FEEDS. Signature `Transaction ID` (diletak
+  SEBELUM fighter sebab Wallet ada `Order ID` juga). Idempotent by txn_id; order_id dinormal
+  supaya join `orders.order_id`.
+- Diuji: detect=wallet, 768 baris idempotent, join Sales->orders 427 sepadan, output recon identik.
+
+**PENDING (tunggu finance):** logik recon komisen + UI. Tally A = komisen Wallet vs order
+confirmed-paid (recon sedia ada). Tally B = earned(IN) vs withdraw(OUT) = baki dompet.
+Tunggu 2 jawapan finance (Withdraw dalam Wallet vs transfer bank; percaya vs sahkan angka
+Fighter) + 1 set data period sama (Google Sheet + Wallet + export order Fighter).
+
 ## Status sekarang
 
 - [x] Borak, kunci skop + keputusan Fasa 1.
