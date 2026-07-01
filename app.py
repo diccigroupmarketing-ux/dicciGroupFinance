@@ -665,8 +665,8 @@ def render_commission():
         st.info("No commission data yet. Use **⬆ Upload** (top of the nav) to add a "
                 "Fighter Wallet export.")
         return
-    w = pd.read_sql(text("SELECT seller_name, seller_role, txn_type, source, status, amount "
-                         "FROM wallet_txns"), conn)
+    w = pd.read_sql(text("SELECT seller_name, seller_role, txn_date, order_id, "
+                         "txn_type, source, status, amount FROM wallet_txns"), conn)
     conn.close()
 
     appr = w[w["status"] == "Approved"]
@@ -701,6 +701,35 @@ def render_commission():
                "period-scoped (withdrawals may include commission earned before this "
                "period), so it is not the true all-time wallet balance yet. Full tally "
                "against orders arrives once finance confirms the payment source.")
+
+    # ---- Drill-down: pecahan per stockist ----
+    theme.section("Breakdown by stockist", "pick one to see the transactions behind the totals")
+    names = sorted(w["seller_name"].dropna().unique())
+    pick = st.selectbox("Stockist", names, key="comm_pick")
+    d = w[w["seller_name"] == pick].copy()
+
+    by_src = (d[d["status"] == "Approved"].groupby(["source", "txn_type"])["amount"]
+              .agg(count="count", total="sum").reset_index())
+    by_src["total"] = by_src["total"].round(2)
+    st.caption("By source (Approved only)")
+    st.dataframe(by_src, width="stretch", hide_index=True, column_config={
+        "source": st.column_config.TextColumn("Source"),
+        "txn_type": st.column_config.TextColumn("Direction"),
+        "count": st.column_config.NumberColumn("Count"),
+        "total": st.column_config.NumberColumn("Amount", format="RM %.2f"),
+    })
+
+    det = d.sort_values("txn_date")[["txn_date", "order_id", "source", "txn_type",
+                                     "status", "amount"]]
+    st.caption(f"Every transaction for {pick} ({len(det)} rows)")
+    st.dataframe(det, width="stretch", hide_index=True, column_config={
+        "txn_date": st.column_config.TextColumn("Date"),
+        "order_id": st.column_config.TextColumn("Order ID"),
+        "source": st.column_config.TextColumn("Source"),
+        "txn_type": st.column_config.TextColumn("Direction"),
+        "status": st.column_config.TextColumn("Status"),
+        "amount": st.column_config.NumberColumn("Amount", format="RM %.2f"),
+    })
 
 
 # ============ Subsidiary page (Impact wired; left nav + content) ============
