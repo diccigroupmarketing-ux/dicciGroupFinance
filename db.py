@@ -170,6 +170,26 @@ CREATE TABLE IF NOT EXISTS prepaid_payments (
     PRIMARY KEY (gateway, order_ref)
 );
 CREATE INDEX IF NOT EXISTS idx_prepaid_ref ON prepaid_payments(order_ref);
+
+CREATE TABLE IF NOT EXISTS wallet_txns (
+    txn_id       TEXT PRIMARY KEY,
+    txn_date     TEXT,
+    order_id     TEXT,
+    seller_id    TEXT,
+    seller_name  TEXT,
+    seller_role  TEXT,
+    txn_type     TEXT,
+    source       TEXT,
+    status       TEXT,
+    amount       DOUBLE PRECISION,
+    managed_by   TEXT,
+    reference    TEXT,
+    note         TEXT,
+    source_file  TEXT,
+    ingested_at  TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_wallet_order ON wallet_txns(order_id);
+CREATE INDEX IF NOT EXISTS idx_wallet_seller ON wallet_txns(seller_name);
 """
 
 DEFAULT_SKU_BOTTLES = [

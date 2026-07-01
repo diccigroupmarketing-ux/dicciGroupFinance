@@ -64,12 +64,28 @@ C_STATUS = "Status"
 C_PAID = "Paid On"
 C_SETTLED = "Settled On"
 
+# Lajur sumber , Fighter Wallet (dompet komisen stokis: IN=Sales/Recruitment, OUT=Withdraw/Transfer)
+W_TXN = "Transaction ID"   # tandatangan unik feed Wallet (Fighter takde lajur ni)
+W_DATE = "Date"            # format "HH:MM:SS DD/MM/YYYY"
+W_ORDER = "Order ID"       # ada untuk Sales/Recruitment; null untuk Withdraw/Transfer
+W_SELLER_ID = "Seller ID"
+W_SELLER = "Seller Name"
+W_ROLE = "Seller Role"     # LEVEL stokis: FIGHTER / FIGHTER PRO / MASTER / LEADER
+W_TYPE = "Type"            # IN / OUT
+W_SOURCE = "Source"        # Sales / Recruitment / Withdraw / Transfer
+W_STATUS = "Status"        # Approved / Pending / Rejected
+W_AMOUNT = "Amount"
+W_MANAGED = "Managed By"
+W_REF = "Reference"
+W_NOTE = "Note"
+
 
 # Feed registry untuk fail berbentuk jadual (Excel/CSV): dikenal ikut lajur tandatangan
 # unik. Tambah feed jadual baru = daftar satu entry. (DHL UTF-16 dikendali berasingan.)
 FEEDS = [
     {"name": "jnt", "signature": J_AWB},
     {"name": "ninja", "signature": NV_SHIPPER},
+    {"name": "wallet", "signature": W_TXN},  # SEBELUM fighter: Wallet ada "Order ID" juga
     {"name": "fighter", "signature": F_ORDER},
 ]
 
@@ -107,6 +123,8 @@ def ingest_bytes(data, filename, conn):
         return kind, ingest_jnt(df, filename, conn)
     if kind == "ninja":
         return kind, ingest_ninja(df, filename, conn)
+    if kind == "wallet":
+        return kind, ingest_wallet(df, filename, conn)
     return None, 0
 
 
@@ -176,6 +194,54 @@ def ingest_fighter(df, source_file, conn):
     })
     rows = db.to_records(o)
     conn.execute(ORDERS_UPSERT, rows)
+    conn.commit()
+    return len(rows)
+
+
+# ---------- Fighter Wallet (komisen stokis) ----------
+WALLET_UPSERT = text("""
+    INSERT INTO wallet_txns (txn_id, txn_date, order_id, seller_id, seller_name,
+                             seller_role, txn_type, source, status, amount,
+                             managed_by, reference, note, source_file, ingested_at)
+    VALUES (:txn_id, :txn_date, :order_id, :seller_id, :seller_name,
+            :seller_role, :txn_type, :source, :status, :amount,
+            :managed_by, :reference, :note, :source_file, :ingested_at)
+    ON CONFLICT(txn_id) DO UPDATE SET
+        txn_date=excluded.txn_date, order_id=excluded.order_id,
+        seller_id=excluded.seller_id, seller_name=excluded.seller_name,
+        seller_role=excluded.seller_role, txn_type=excluded.txn_type,
+        source=excluded.source, status=excluded.status, amount=excluded.amount,
+        managed_by=excluded.managed_by, reference=excluded.reference, note=excluded.note,
+        source_file=excluded.source_file, ingested_at=excluded.ingested_at
+""")
+
+
+def _strip_dot0(series):
+    # Lajur numerik yang ada null dibaca float ("6479145.0"); buang .0, null/kosong -> None.
+    s = series.astype(str).str.replace(r"\.0$", "", regex=True).str.strip()
+    return s.where(~s.isin(["nan", "None", "NaN", ""]), None)
+
+
+def ingest_wallet(df, source_file, conn):
+    w = pd.DataFrame({
+        "txn_id": df[W_TXN].astype(str).str.replace(r"\.0$", "", regex=True).str.strip(),
+        "txn_date": iso(db.parse_dt(df[W_DATE], dayfirst=True)),
+        "order_id": _strip_dot0(df[W_ORDER]) if W_ORDER in df.columns else None,
+        "seller_id": _strip_dot0(df[W_SELLER_ID]) if W_SELLER_ID in df.columns else None,
+        "seller_name": df[W_SELLER],
+        "seller_role": df[W_ROLE] if W_ROLE in df.columns else None,
+        "txn_type": df[W_TYPE],
+        "source": df[W_SOURCE],
+        "status": df[W_STATUS],
+        "amount": db.to_num(df[W_AMOUNT]),
+        "managed_by": df[W_MANAGED] if W_MANAGED in df.columns else None,
+        "reference": df[W_REF] if W_REF in df.columns else None,
+        "note": df[W_NOTE] if W_NOTE in df.columns else None,
+        "source_file": source_file,
+        "ingested_at": now_iso(),
+    })
+    rows = db.to_records(w)
+    conn.execute(WALLET_UPSERT, rows)
     conn.commit()
     return len(rows)
 
