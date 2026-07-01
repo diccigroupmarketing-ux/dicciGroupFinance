@@ -257,6 +257,44 @@ rujukan untuk semua kerja seterusnya.
 - Nav kiri guna KOLUM biasa (bukan `st.sidebar`), boleh buka/tutup jadi rail ikon , immune
   dari bug `st.sidebar` collapse. Dashboard roll-up = default. UI English penuh.
 
+## Milestone 6: Pas keselamatan pra-handoff + pelan handoff data-safe (2026-07-01)
+
+Tujuan: pass app ke team finance untuk TRIAL (upload data betul, tengok gambaran besar),
+tanpa data hilang bila kita adjust nanti (supaya mereka tak perlu upload banyak kali).
+Cadangan dijana + ditapis 3 pusingan judge-refine multi-agent (agent baca kod sebenar).
+
+Prinsip teras: data hidup dalam Neon Postgres, redeploy kod TAK sentuh data (`init_db`
+guna `CREATE TABLE IF NOT EXISTS` + seed hanya bila kosong). Yang perlu dijaga = beberapa
+laluan tertentu yang boleh hilang / rosakkan data.
+
+**SIAP (commit 9d86267 + 88eba88, live):**
+- `app.py`: butang "Reset store" disorok di belakang secret `ADMIN_MODE` (absent = tersembunyi,
+  fail-safe). Finance tak nampak. Set `ADMIN_MODE` di Streamlit Secrets bila nak wipe sengaja.
+- `app.py`: caption amaran upload ("upload export PENUH terkini je") , elak upsert overwrite
+  senyap status/tracking/harga bila fail lama/ditapis di-upload.
+- `app.py`: rollback per fail dalam loop ingest , satu fail rosak tak cascade-gagalkan yang lain.
+- `app.py`: caption tarikh rujukan aging (18 Jun 2026) , finance tak salah baca bucket lewat.
+- `backup.py` BARU: `python backup.py` snapshot + `--verify` content-hash semua table durable
+  ke `backups/` (gitignored). Kesan wipe / overwrite senyap / re-point awb, bukan setakat wipe.
+- Enjin recon (`db.py`/`reconcile.py`/`ingest.py`) TAK disentuh, output identik baseline (369 / RM63,912).
+
+**PENDING (perlu tindakan owner / data betul):**
+- [ ] **Langkah 4 (owner, Neon console):** rotate kredential Neon (security hygiene). Buat
+  role/password baru -> update secret `DATABASE_URL` Streamlit -> reboot -> sahkan reconnect ->
+  baru revoke yang lama (revoke-old-last = zero downtime). Simpan salinan URL di tempat selamat
+  (password manager) selain Streamlit Secrets. Catat PITR window free tier + ada branching ke
+  tak. BUAT SEBELUM finance upload data betul.
+- [ ] **Verify seed-immune:** JANGAN gate pada "ada row" , `_seed_sku_bottles` auto-insert 9
+  `sku_bottles` pada DB kosong, jadi DB salah/kosong pun nampak "ada row". Green-light betul =
+  `SELECT COUNT(*) FROM orders` == N tepat yang finance upload (rekod di HANDOVER masa upload)
+  DAN `COUNT(*) cod_bill_lines > 0`.
+- [ ] **Langkah 5-6:** handoff ke finance; catat `COUNT(orders)` tepat selepas upload pertama.
+- [ ] **Langkah 7-9:** `python backup.py` lawan Neon SEBELUM tiap deploy kita + rehearse restore
+  sekali. Fail-loud kalau bukan Postgres (app.py request-path, BUKAN import-time raise). Nota OPS
+  (satu uploader satu masa; disiplin nama fail; collision awb antara courier sebab
+  `cod_bill_lines` PK = awb tanpa prefix courier).
+- Ditangguh ke Next.js: staging DB, upsert newer-wins, composite PK, CI schema guard, export nightly.
+
 ## Status sekarang
 
 - [x] Borak, kunci skop + keputusan Fasa 1.
