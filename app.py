@@ -143,6 +143,8 @@ def render_upload_popover(label="⬆  Upload"):
         files = st.file_uploader("Drop files", type=["xlsx", "xls", "csv"],
                                  accept_multiple_files=True, key="up_files",
                                  label_visibility="collapsed")
+        st.caption("⚠ Upload only the LATEST FULL export. Re-uploading an older or "
+                   "filtered file overwrites current order status, tracking and price.")
         if files and st.button("Ingest", type="primary", key="up_ingest"):
             conn = db.get_conn()
             db.init_db(conn)
@@ -154,6 +156,7 @@ def render_upload_popover(label="⬆  Upload"):
                     else:
                         st.warning(f"{f.name}: unrecognized format")
                 except Exception as e:
+                    conn.rollback()
                     st.error(f"{f.name}: failed · {e}")
             conn.close()
             st.rerun()
@@ -165,17 +168,26 @@ def render_settings_popover(label="⚙  Settings"):
         st.markdown("**Settings**")
         pending_days = st.slider("Aging: days before 'overdue'", 3, 45,
                                  db.REMIT_PENDING_DAYS, key="aging")
+        st.caption("Aging reference date: 18 Jun 2026 (fixed).")
         conn = db.get_conn()
         n_ord = conn.execute(text("SELECT COUNT(*) FROM orders")).scalar()
         n_line = conn.execute(text("SELECT COUNT(*) FROM cod_bill_lines")).scalar()
         n_bill = conn.execute(text("SELECT COUNT(*) FROM cod_bills")).scalar()
         conn.close()
         st.caption(f"Store: {n_ord:,} orders · {n_line:,} bill lines · {n_bill} COD bills")
-        st.divider()
-        confirm = st.checkbox("Allow store reset", key="reset_ok")
-        if st.button("Reset store (clear all)", disabled=not confirm, key="reset_btn"):
-            db.reset_db()
-            st.rerun()
+        try:
+            admin = bool(st.secrets.get("ADMIN_MODE"))
+        except Exception:
+            admin = False
+        if admin:
+            st.divider()
+            confirm = st.checkbox("Allow store reset", key="reset_ok")
+            if st.button("Reset store (clear all)", disabled=not confirm, key="reset_btn"):
+                try:
+                    db.reset_db()
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Reset failed · {e}")
     return pending_days
 
 
