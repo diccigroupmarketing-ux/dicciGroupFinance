@@ -33,9 +33,10 @@ theme.inject_css()
 # ============ Boot + lapisan baca bercache (kurangkan round trip app -> Neon) ============
 # Streamlit rerun SELURUH skrip pada setiap klik; tanpa cache setiap klik ulang
 # puluhan query merentas rangkaian (app di US, Neon di Singapore). Data hanya
-# berubah bila ingest/reset/save SKU, jadi cache dikosongkan di situ sahaja;
-# TTL jadi jaring untuk sesi pengguna lain.
-CACHE_TTL = 300
+# berubah bila ingest/reset/save SKU, dan semua sesi kongsi SATU proses, jadi
+# pembatalan cache sebenar = st.cache_data.clear() di titik tulis tu sendiri.
+# TTL panjang hanya jaring keselamatan (elak spike query berkala setiap 5 minit).
+CACHE_TTL = 3600
 
 
 @st.cache_resource(show_spinner=False)
@@ -237,6 +238,13 @@ def period_label(d, grain):
 
 
 # ============ Group landing ============
+def set_state(**kw):
+    """Callback butang navigasi: tukar state SEBELUM rerun semula jadi Streamlit.
+    Elak corak 'if st.button: st.rerun()' yang kos DUA rerun penuh setiap klik."""
+    for k, v in kw.items():
+        st.session_state[k] = v
+
+
 def render_group_landing():
     theme.page_header("Companies", "Finance reconciliation across Dicci Group")
     theme.section("Select a company", "open a company to upload data and view numbers")
@@ -246,10 +254,9 @@ def render_group_landing():
             st.markdown(f"**{s['name']}**")
             st.caption(s["tag"])
             if s["active"]:
-                if st.button("Open", key=f"open_{s['key']}", type="primary",
-                             use_container_width=True):
-                    st.session_state.subsidiary = s["key"]
-                    st.rerun()
+                st.button("Open", key=f"open_{s['key']}", type="primary",
+                          use_container_width=True,
+                          on_click=set_state, kwargs={"subsidiary": s["key"]})
             else:
                 st.button("Coming soon", key=f"open_{s['key']}", disabled=True,
                           use_container_width=True)
@@ -319,19 +326,17 @@ def render_nav(nav_open):
     with st.container(key=ckey):
         # Toggle (collapse / expand)
         if nav_open:
-            if st.button("«  Collapse", key="nav_toggle", use_container_width=True,
-                         type="tertiary"):
-                st.session_state.nav_open = False
-                st.rerun()
+            st.button("«  Collapse", key="nav_toggle", use_container_width=True,
+                      type="tertiary",
+                      on_click=set_state, kwargs={"nav_open": False})
             st.markdown('<div class="dicciSideBrand">DICCI · GROUP FINANCE</div>',
                         unsafe_allow_html=True)
             st.markdown('<div class="dicciSideCo">Dicci Impact</div>',
                         unsafe_allow_html=True)
         else:
-            if st.button("»", key="nav_toggle", use_container_width=True,
-                         type="tertiary", help="Expand menu"):
-                st.session_state.nav_open = True
-                st.rerun()
+            st.button("»", key="nav_toggle", use_container_width=True,
+                      type="tertiary", help="Expand menu",
+                      on_click=set_state, kwargs={"nav_open": True})
         st.write("")
 
         views = ([("dashboard", "Dashboard")]
@@ -341,11 +346,10 @@ def render_nav(nav_open):
             selected = st.session_state.get("view", "dashboard") == key
             icon = NAV_ICON.get(key, "•")
             btn_label = f"{icon}  {label}" if nav_open else icon
-            if st.button(btn_label, key=f"nav_{key}", use_container_width=True,
-                         type="primary" if selected else "secondary",
-                         help=(None if nav_open else label)):
-                st.session_state.view = key
-                st.rerun()
+            st.button(btn_label, key=f"nav_{key}", use_container_width=True,
+                      type="primary" if selected else "secondary",
+                      help=(None if nav_open else label),
+                      on_click=set_state, kwargs={"view": key})
 
         if nav_open:
             soon = [s["name"] for s in STREAMS if not s["active"]]
@@ -361,10 +365,9 @@ def render_nav(nav_open):
             pending_days = render_settings_popover("⚙")
         st.divider()
         back_label = "‹  All companies" if nav_open else "‹"
-        if st.button(back_label, key="side_back", use_container_width=True,
-                     type="tertiary", help=(None if nav_open else "All companies")):
-            st.session_state.subsidiary = None
-            st.rerun()
+        st.button(back_label, key="side_back", use_container_width=True,
+                  type="tertiary", help=(None if nav_open else "All companies"),
+                  on_click=set_state, kwargs={"subsidiary": None})
     return pending_days
 
 
@@ -861,9 +864,7 @@ elif st.session_state.subsidiary == "impact":
     render_impact()
 else:
     # Defensive: a non-active company was somehow selected.
-    if st.button("← All companies"):
-        st.session_state.subsidiary = None
-        st.rerun()
+    st.button("← All companies", on_click=set_state, kwargs={"subsidiary": None})
     name = next((s["name"] for s in SUBSIDIARIES
                  if s["key"] == st.session_state.subsidiary), "This company")
     theme.page_header(name, "coming soon")
