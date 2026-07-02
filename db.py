@@ -236,7 +236,11 @@ def get_engine():
         if url.startswith("sqlite"):
             _ENGINE = create_engine(url, connect_args={"check_same_thread": False})
         else:
-            _ENGINE = create_engine(url, pool_pre_ping=True)
+            # values_plus_batch: hantar upsert beratus row per round trip. Default
+            # psycopg2 executemany = 1 trip per row, perit bila DB jauh dari app
+            # (Streamlit Cloud US -> Neon Singapore ~0.2s setiap trip).
+            _ENGINE = create_engine(url, pool_pre_ping=True,
+                                    executemany_mode="values_plus_batch")
     return _ENGINE
 
 

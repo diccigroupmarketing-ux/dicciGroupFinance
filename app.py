@@ -28,7 +28,80 @@ from reconcile import (reconcile, reconcile_prepaid, bottles_per_order,
 st.set_page_config(page_title="Dicci Group Finance", page_icon=theme.page_icon(),
                    layout="wide", initial_sidebar_state="collapsed")
 theme.inject_css()
-db.init_db()
+
+
+# ============ Boot + lapisan baca bercache (kurangkan round trip app -> Neon) ============
+# Streamlit rerun SELURUH skrip pada setiap klik; tanpa cache setiap klik ulang
+# puluhan query merentas rangkaian (app di US, Neon di Singapore). Data hanya
+# berubah bila ingest/reset/save SKU, jadi cache dikosongkan di situ sahaja;
+# TTL jadi jaring untuk sesi pengguna lain.
+CACHE_TTL = 300
+
+
+@st.cache_resource(show_spinner=False)
+def boot_db():
+    db.init_db()
+    return True
+
+
+boot_db()
+
+
+@st.cache_data(ttl=CACHE_TTL, show_spinner=False)
+def load_counts():
+    conn = db.get_conn()
+    try:
+        return {t: conn.execute(text(f"SELECT COUNT(*) FROM {t}")).scalar()
+                for t in ("orders", "cod_bill_lines", "cod_bills", "wallet_txns")}
+    finally:
+        conn.close()
+
+
+@st.cache_data(ttl=CACHE_TTL, show_spinner=False)
+def load_reconcile(courier_key, pending_days):
+    conn = db.get_conn()
+    try:
+        return reconcile(conn, pending_days=pending_days, courier=courier_key)
+    finally:
+        conn.close()
+
+
+@st.cache_data(ttl=CACHE_TTL, show_spinner=False)
+def load_reconcile_prepaid(gateway, pending_days):
+    conn = db.get_conn()
+    try:
+        return reconcile_prepaid(conn, gateway=gateway, pending_days=pending_days)
+    finally:
+        conn.close()
+
+
+@st.cache_data(ttl=CACHE_TTL, show_spinner=False)
+def load_bottles():
+    conn = db.get_conn()
+    try:
+        return bottles_per_order(conn)
+    finally:
+        conn.close()
+
+
+@st.cache_data(ttl=CACHE_TTL, show_spinner=False)
+def load_wallet():
+    conn = db.get_conn()
+    try:
+        return pd.read_sql(text("SELECT seller_name, seller_role, txn_date, order_id, "
+                                "txn_type, source, status, amount FROM wallet_txns"), conn)
+    finally:
+        conn.close()
+
+
+@st.cache_data(ttl=CACHE_TTL, show_spinner=False)
+def load_sku_df():
+    conn = db.get_conn()
+    try:
+        return pd.read_sql("SELECT sku, product_name, paid, free FROM sku_bottles "
+                           "ORDER BY sku", conn)
+    finally:
+        conn.close()
 
 
 # ============ DB status guard (fail loud, elak tulis ke stor sementara tanpa sedar) ============
@@ -195,7 +268,6 @@ def render_upload_popover(label="⬆  Upload"):
                    "filtered file overwrites current order status, tracking and price.")
         if files and st.button("Ingest", type="primary", key="up_ingest"):
             conn = db.get_conn()
-            db.init_db(conn)
             for f in files:
                 try:
                     kind, n = ingest_buffer(f, f.name, conn)
@@ -207,6 +279,7 @@ def render_upload_popover(label="⬆  Upload"):
                     conn.rollback()
                     st.error(f"{f.name}: failed · {e}")
             conn.close()
+            st.cache_data.clear()
             st.rerun()
 
 
@@ -217,12 +290,9 @@ def render_settings_popover(label="⚙  Settings"):
         pending_days = st.slider("Aging: days before 'overdue'", 3, 45,
                                  db.REMIT_PENDING_DAYS, key="aging")
         st.caption("Aging reference date: 18 Jun 2026 (fixed).")
-        conn = db.get_conn()
-        n_ord = conn.execute(text("SELECT COUNT(*) FROM orders")).scalar()
-        n_line = conn.execute(text("SELECT COUNT(*) FROM cod_bill_lines")).scalar()
-        n_bill = conn.execute(text("SELECT COUNT(*) FROM cod_bills")).scalar()
-        conn.close()
-        st.caption(f"Store: {n_ord:,} orders · {n_line:,} bill lines · {n_bill} COD bills")
+        ns = load_counts()
+        st.caption(f"Store: {ns['orders']:,} orders · {ns['cod_bill_lines']:,} bill "
+                   f"lines · {ns['cod_bills']} COD bills")
         st.caption("DB: " + ("Neon Postgres (persistent)" if db.is_postgres()
                              else "local SQLite (temporary)"))
         try:
@@ -235,6 +305,7 @@ def render_settings_popover(label="⚙  Settings"):
             if st.button("Reset store (clear all)", disabled=not confirm, key="reset_btn"):
                 try:
                     db.reset_db()
+                    st.cache_data.clear()
                     st.rerun()
                 except Exception as e:
                     st.error(f"Reset failed · {e}")
@@ -300,17 +371,14 @@ def render_nav(nav_open):
 # ============ Dashboard (roll-up across all active streams) ============
 def render_dashboard(pending_days):
     active_keys = [s["key"] for s in STREAMS if s["active"] and s["key"] in db.COURIERS]
-    conn = db.get_conn()
-    db.init_db(conn)
-    if conn.execute(text("SELECT COUNT(*) FROM orders")).scalar() == 0:
-        conn.close()
+    if load_counts()["orders"] == 0:
         st.info("No data yet. Use **⬆ Upload** (top right) to add a Fighter export "
                 "and courier bills.")
         return
 
     rows, all_lines, total_integ = [], [], 0
     for k in active_keys:
-        m, lines, info = reconcile(conn, pending_days=pending_days, courier=k)
+        m, lines, info = load_reconcile(k, pending_days)
         coll = float(lines["cod_amount"].sum())
         fee = float(lines["fee"].sum())
         exc = int(m["kategori"].isin(INTEGRITY_EXC).sum())
@@ -319,7 +387,6 @@ def render_dashboard(pending_days):
                      "net": round(coll - fee, 2), "parcel": int(len(lines)), "exc": exc})
         if len(lines):
             all_lines.append(lines[["cod_amount", "fee", "delivered_date"]].copy())
-    conn.close()
 
     led = pd.DataFrame(rows)
     tot_net = float(led["net"].sum())
@@ -377,16 +444,12 @@ def render_dashboard(pending_days):
 # ============ Stream renderers (COD courier + prepaid gateway share one body) ============
 def render_courier_stream(courier_key, pending_days):
     cname = db.COURIERS[courier_key]["name"]
-    conn = db.get_conn()
-    db.init_db(conn)
-    if conn.execute(text("SELECT COUNT(*) FROM orders")).scalar() == 0:
-        conn.close()
+    if load_counts()["orders"] == 0:
         st.info("No data yet. Open the **Operations panel** above and upload a Fighter "
                 "export (and courier bills) first.")
         return
-    m, lines, info = reconcile(conn, pending_days=pending_days, courier=courier_key)
-    od = bottles_per_order(conn)
-    conn.close()
+    m, lines, info = load_reconcile(courier_key, pending_days)
+    od = load_bottles()
     render_stream_body(m, lines, info, od, pending_days,
                        {"name": cname, "money": "COD collected", "bill": "bill",
                         "hero": "Expected to land in bank"})
@@ -394,16 +457,12 @@ def render_courier_stream(courier_key, pending_days):
 
 def render_prepaid_stream(gateway, pending_days):
     gname = db.PREPAID[gateway]["name"]
-    conn = db.get_conn()
-    db.init_db(conn)
-    if conn.execute(text("SELECT COUNT(*) FROM orders")).scalar() == 0:
-        conn.close()
+    if load_counts()["orders"] == 0:
         st.info("No data yet. Open the **Operations panel** above and upload a Fighter "
                 "export (and a CHIP statement) first.")
         return
-    m, lines, info = reconcile_prepaid(conn, gateway=gateway, pending_days=pending_days)
-    od = bottles_per_order(conn)
-    conn.close()
+    m, lines, info = load_reconcile_prepaid(gateway, pending_days)
+    od = load_bottles()
     render_stream_body(m, lines, info, od, pending_days,
                        {"name": gname, "money": "Collected (gross)", "bill": "statement",
                         "hero": f"Collected via {gname}"})
@@ -680,11 +739,7 @@ def render_stream_body(m, lines, info, od, pending_days, L):
         theme.section("SKU to bottle mapping", "Finance can edit or add SKUs here")
         st.caption("paid = paid bottles, free = free bottles (e.g. +1 / +2 KORBAN). "
                    "Total bottles = paid + free.")
-        conn = db.get_conn()
-        db.init_db(conn)
-        sku_df = pd.read_sql("SELECT sku, product_name, paid, free FROM sku_bottles "
-                             "ORDER BY sku", conn)
-        conn.close()
+        sku_df = load_sku_df()
         edited = st.data_editor(
             sku_df, num_rows="dynamic", width="stretch", key="sku_editor",
             column_config={
@@ -696,6 +751,7 @@ def render_stream_body(m, lines, info, od, pending_days, L):
         )
         if st.button("Save SKU mapping", type="primary"):
             db.save_sku_map(edited)
+            st.cache_data.clear()
             st.success("SKU mapping saved. Numbers updated in the overview.")
             st.rerun()
         if info["unmapped_skus"]:
@@ -707,17 +763,11 @@ def render_stream_body(m, lines, info, od, pending_days, L):
 
 # ============ Commission (stockist commission from Fighter Wallet; record-only for now) ============
 def render_commission():
-    conn = db.get_conn()
-    db.init_db(conn)
-    n = conn.execute(text("SELECT COUNT(*) FROM wallet_txns")).scalar()
-    if not n:
-        conn.close()
+    if not load_counts()["wallet_txns"]:
         st.info("No commission data yet. Use **⬆ Upload** (top of the nav) to add a "
                 "Fighter Wallet export.")
         return
-    w = pd.read_sql(text("SELECT seller_name, seller_role, txn_date, order_id, "
-                         "txn_type, source, status, amount FROM wallet_txns"), conn)
-    conn.close()
+    w = load_wallet()
 
     appr = w[w["status"] == "Approved"]
     earned = appr[appr["txn_type"] == "IN"].groupby("seller_name")["amount"].sum()
