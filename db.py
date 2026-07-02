@@ -190,6 +190,11 @@ CREATE TABLE IF NOT EXISTS wallet_txns (
 );
 CREATE INDEX IF NOT EXISTS idx_wallet_order ON wallet_txns(order_id);
 CREATE INDEX IF NOT EXISTS idx_wallet_seller ON wallet_txns(seller_name);
+
+CREATE TABLE IF NOT EXISTS app_meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT
+);
 """
 
 DEFAULT_SKU_BOTTLES = [

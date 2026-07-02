@@ -30,6 +30,54 @@ st.set_page_config(page_title="Dicci Group Finance", page_icon=theme.page_icon()
 theme.inject_css()
 db.init_db()
 
+
+# ============ DB status guard (fail loud, elak tulis ke stor sementara tanpa sedar) ============
+def render_db_guard():
+    """Papar amaran jelas bila app jatuh ke SQLite (ephemeral di cloud, data hilang
+    bila restart). Senyap hanya bila memang Neon Postgres, atau dev lokal biasa."""
+    if db.is_postgres():
+        return
+    try:
+        has_secret = bool(st.secrets.get("DATABASE_URL"))
+        secret_exc = None
+    except Exception as e:
+        has_secret, secret_exc = False, e
+    if has_secret:
+        st.error("**Storage misconfigured**: a DATABASE_URL secret is set but this "
+                 "process is still using temporary SQLite (it started before the "
+                 "secret was saved). **Reboot the app** from Streamlit Cloud. "
+                 "Anything uploaded now will be LOST on restart.")
+    elif secret_exc is not None and not isinstance(secret_exc, FileNotFoundError):
+        st.error("**Storage misconfigured**: the secrets file could not be parsed "
+                 "(invalid TOML?), so the app fell back to temporary SQLite. "
+                 f"Fix the Secrets format, then reboot. Detail: {secret_exc}")
+    elif st.get_option("server.headless"):
+        st.error("**No DATABASE_URL secret**: running on temporary SQLite, data "
+                 "will be LOST when the app restarts. Add the secret in Streamlit "
+                 "Cloud, App settings, Secrets, then reboot.")
+
+
+def write_heartbeat():
+    """Tulis jejak boot ke app_meta, bukti proses app live sedang MENULIS ke store
+    semasa (boleh disahkan dari terminal dengan query Neon). Sekali per sesi."""
+    if st.session_state.get("hb_done"):
+        return
+    try:
+        conn = db.get_conn()
+        conn.execute(text(
+            "INSERT INTO app_meta (key, value) VALUES ('last_app_boot', :v) "
+            "ON CONFLICT (key) DO UPDATE SET value = excluded.value"),
+            {"v": pd.Timestamp.utcnow().isoformat()})
+        conn.commit()
+        conn.close()
+        st.session_state.hb_done = True
+    except Exception:
+        pass
+
+
+render_db_guard()
+write_heartbeat()
+
 # ============ Navigation state (no sidebar) ============
 if "subsidiary" not in st.session_state:
     st.session_state.subsidiary = None
@@ -175,6 +223,8 @@ def render_settings_popover(label="⚙  Settings"):
         n_bill = conn.execute(text("SELECT COUNT(*) FROM cod_bills")).scalar()
         conn.close()
         st.caption(f"Store: {n_ord:,} orders · {n_line:,} bill lines · {n_bill} COD bills")
+        st.caption("DB: " + ("Neon Postgres (persistent)" if db.is_postgres()
+                             else "local SQLite (temporary)"))
         try:
             admin = bool(st.secrets.get("ADMIN_MODE"))
         except Exception:
