@@ -10,10 +10,11 @@ Pilihan engine automatik:
 """
 
 import os
+import re
 from pathlib import Path
 
 import pandas as pd
-from sqlalchemy import create_engine, text
+from sqlalchemy import bindparam, create_engine, text
 
 # ====================================================================
 # Paths
@@ -195,6 +196,18 @@ CREATE TABLE IF NOT EXISTS app_meta (
     key   TEXT PRIMARY KEY,
     value TEXT
 );
+
+CREATE TABLE IF NOT EXISTS order_skus (
+    order_id TEXT,
+    sku      TEXT,
+    sku_raw  TEXT,
+    qty      INTEGER,
+    PRIMARY KEY (order_id, sku)
+);
+CREATE INDEX IF NOT EXISTS idx_order_skus_sku ON order_skus(sku);
+
+CREATE INDEX IF NOT EXISTS idx_orders_scope ON orders(payment_method, shipping_provider);
+CREATE INDEX IF NOT EXISTS idx_orders_seller ON orders(seller_name);
 """
 
 DEFAULT_SKU_BOTTLES = [
@@ -239,8 +252,10 @@ def get_engine():
             # values_plus_batch: hantar upsert beratus row per round trip. Default
             # psycopg2 executemany = 1 trip per row, perit bila DB jauh dari app
             # (Streamlit Cloud US -> Neon Singapore ~0.2s setiap trip).
+            # page_size 1000: fail besar (puluhan ribu row) = puluhan trip sahaja.
             _ENGINE = create_engine(url, pool_pre_ping=True,
-                                    executemany_mode="values_plus_batch")
+                                    executemany_mode="values_plus_batch",
+                                    executemany_batch_page_size=1000)
     return _ENGINE
 
 
@@ -296,6 +311,70 @@ def get_sku_map(conn=None):
     return {str(r.sku).strip().upper(): (int(r.paid or 0), int(r.free or 0)) for r in df.itertuples()}
 
 
+# ====================================================================
+# order_skus: bentuk normalized lajur orders.skus (durable, untuk recon SQL).
+# Parse SAMA seperti reconcile._bottles_for_skus (rujukan kebenaran, tak disentuh);
+# parity harness sahkan output identik.
+# ====================================================================
+_SKU_QTY_RE = re.compile(r"(\d+)x\s*(.+)")
+
+
+def parse_skus(skus_str):
+    """'2x JAG-MY-1, KK-JAQ-1-1' -> [(key_upper, base_asal, qty), ...] (qty digabung
+    kalau SKU sama berulang dalam satu order)."""
+    if not isinstance(skus_str, str) or not skus_str.strip():
+        return []
+    acc = {}
+    for part in skus_str.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        mm = _SKU_QTY_RE.match(part)
+        qty, base = (int(mm.group(1)), mm.group(2).strip()) if mm else (1, part)
+        key = base.upper()
+        if key in acc:
+            acc[key] = (acc[key][0], acc[key][1] + qty)
+        else:
+            acc[key] = (base, qty)
+    return [(k, raw, q) for k, (raw, q) in acc.items()]
+
+
+def rebuild_order_skus(conn, pairs):
+    """Bina semula baris order_skus untuk senarai (order_id, skus_str) diberi.
+    Dipanggil dari ingest (batch yang diupload sahaja) dan backfill."""
+    ids = [str(oid) for oid, _ in pairs]
+    CHUNK = 500
+    for i in range(0, len(ids), CHUNK):
+        conn.execute(
+            text("DELETE FROM order_skus WHERE order_id IN :ids")
+            .bindparams(bindparam("ids", expanding=True)),
+            {"ids": ids[i:i + CHUNK]},
+        )
+    rows = []
+    for oid, skus_str in pairs:
+        for key, raw, qty in parse_skus(skus_str):
+            rows.append({"oid": str(oid), "sku": key, "raw": raw, "qty": qty})
+    if rows:
+        conn.execute(
+            text("INSERT INTO order_skus (order_id, sku, sku_raw, qty) "
+                 "VALUES (:oid, :sku, :raw, :qty)"), rows)
+
+
+def ensure_order_skus(conn):
+    """Backfill sekali: kalau orders dah ada isi tapi order_skus kosong (DB dari
+    sebelum jadual ni wujud), bina dari orders.skus secara berchunk (jimat RAM)."""
+    n_os = conn.execute(text("SELECT COUNT(*) FROM order_skus")).scalar()
+    if n_os:
+        return
+    n_ord = conn.execute(text("SELECT COUNT(*) FROM orders")).scalar()
+    if not n_ord:
+        return
+    for chunk in pd.read_sql(text("SELECT order_id, skus FROM orders"), conn,
+                             chunksize=50_000):
+        rebuild_order_skus(conn, list(zip(chunk["order_id"], chunk["skus"])))
+    conn.commit()
+
+
 def confirmed_paid_order_ids(conn):
     """Set order_id yang duitnya disahkan masuk oleh feed duit sebenar.
 
@@ -342,7 +421,8 @@ def reset_db(conn=None):
     # auto-seed) supaya penetapan SKU finance tak hilang bila reset data.
     own = conn is None
     conn = conn or get_conn()
-    for t in ("orders", "cod_bill_lines", "cod_bills", "wallet_txns", "prepaid_payments"):
+    for t in ("orders", "order_skus", "cod_bill_lines", "cod_bills", "wallet_txns",
+              "prepaid_payments"):
         conn.execute(text(f"DELETE FROM {t}"))
     conn.commit()
     if own:

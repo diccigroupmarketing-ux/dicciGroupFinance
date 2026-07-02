@@ -331,6 +331,8 @@ Fighter) + 1 set data period sama (Google Sheet + Wallet + export order Fighter)
 - [x] Milestone 3: Deploy LIVE ke Streamlit Cloud (private) + Neon Postgres persistent. `db.py` di-port ke SQLAlchemy.
 - [x] Milestone 4: tab Per Stokis + foundation pengesahan duit (feed di-upload berasingan, extension point `db.confirmed_paid_order_ids`). Recon output identik baseline.
 - [x] Milestone 5: shell berbilang anak syarikat (button nav, tiada sidebar) + UI English penuh + feed registry. Enjin tak disentuh, output identik baseline. Blueprint architecture dikunci.
+- [x] Milestone 6 (2026-07-01): handoff selamat, butang Reset disorok belakang secret ADMIN_MODE, amaran upsert overwrite, rollback per fail, `backup.py` snapshot + verify.
+- [x] Milestone 7 (2026-07-03): (a) Neon reconnect DISAHKAN hidup, guard fail-loud bila app jatuh ke SQLite ephemeral + heartbeat `app_meta` (bukti app live menulis ke Neon, boleh semak dari terminal); (b) prestasi: batch upsert Postgres, init sekali per proses, cache bacaan, nav callback 1 rerun; (c) SKALA 1 JUTA: recon dipindah ke SQL dalam DB (`reconSql.py`), jadual normalized `order_skus`, terbukti 1,000,000 order synthetic (RAM 0.23GB vs 1.48GB pandas, ~10s cache-miss, klik biasa cached), parity IDENTIK row-by-row lawan enjin pandas disahkan pada SQLite + Neon Postgres. `reconcile.py` KEKAL rujukan kebenaran (CLI baseline 369/RM63,912 tak berubah).
 - [ ] Wire feed courier seterusnya (DHL, Ninja Van): perlu PDF sampel dari Adi dulu.
 - [ ] Wire feed prepaid (CHIP/transfer) + TikTok: perlu bentuk export dari Adi.
 - [ ] Hardening keselamatan: rotate kredential DB Neon + audit akses team.
@@ -338,6 +340,20 @@ Fighter) + 1 set data period sama (Google Sheet + Wallet + export order Fighter)
 - [ ] Run period penuh: Tier 2 (397 sekarang) patut mengecut bila bil ditambah; tala REMIT_PENDING_DAYS dari lag remit sebenar.
 - [ ] Review dengan Adi (pilih order dia tahu, sahkan kategori betul).
 - [ ] Bila enjin terbukti: port schema ke Supabase + dashboard Next.js + multi-courier (DHL, Ninja Van).
+
+## Skala (Milestone 7): macam mana recon kekal laju pada jutaan order
+
+- App TIDAK lagi tarik semua row ke pandas. `reconSql.py` kira kategori + agregat DALAM
+  database (temp table dalam SATU transaksi, selamat dengan pooler Neon), app terima
+  ringkasan + baris exception sahaja (cap: 5k exception, 20k parcel per bil, 10k drill).
+- `order_skus` = bentuk normalized lajur `orders.skus`, diisi masa ingest (+backfill auto
+  masa boot untuk DB lama). Botol dikira SQL join `sku_bottles` ikut mapping semasa.
+- **PERATURAN bila ubah logik recon:** ubah `reconcile.py` (rujukan kebenaran) dulu,
+  jalankan parity harness (scratchpad `parityCheck.py`, banding row-by-row), BARU sync
+  `reconSql.py`. Kalau parity tak lulus, laluan SQL tak boleh deploy.
+- Nota prestasi dialek ada dalam komen `reconSql.py` (anti-join NOT IN vs NOT EXISTS,
+  jangan join subquery agregat tanpa index, dll). Ukuran: 1M order = jnt 9.6s, dhl 3.5s,
+  ninja 2.7s per cache-miss di SQLite lokal; klik biasa guna cache (tak sentuh DB).
 
 ## Risiko / checkpoint terbuka
 

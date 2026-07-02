@@ -24,8 +24,10 @@ import pandas as pd
 import db
 
 # Table durable yang enjin recon baca. sku_bottles = config (self-healing) tapi disertakan
-# supaya restore penuh + mapping SKU custom finance turut selamat.
-TABLES = ["orders", "cod_bills", "cod_bill_lines", "prepaid_payments", "sku_bottles"]
+# supaya restore penuh + mapping SKU custom finance turut selamat. order_skus = derived
+# (boleh dibina semula dari orders.skus) tapi murah untuk disertakan.
+TABLES = ["orders", "order_skus", "cod_bills", "cod_bill_lines", "prepaid_payments",
+          "wallet_txns", "sku_bottles"]
 
 
 def _table_hash(dff):

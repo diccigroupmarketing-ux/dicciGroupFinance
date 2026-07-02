@@ -194,6 +194,9 @@ def ingest_fighter(df, source_file, conn):
     })
     rows = db.to_records(o)
     conn.execute(ORDERS_UPSERT, rows)
+    # Bentuk normalized SKU (order_skus) untuk recon/botol SQL-side; hanya
+    # order dalam fail ni yang dibina semula (idempotent macam upsert di atas).
+    db.rebuild_order_skus(conn, list(zip(o["order_id"], o["skus"])))
     conn.commit()
     return len(rows)
 

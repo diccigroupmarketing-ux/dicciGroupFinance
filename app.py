@@ -20,10 +20,10 @@ import streamlit as st
 from sqlalchemy import text
 
 import db
+import reconSql
 import theme
 from ingest import ingest_buffer
-from reconcile import (reconcile, reconcile_prepaid, bottles_per_order,
-                       INTEGRITY_EXC, AGED)
+from reconcile import INTEGRITY_EXC, AGED
 
 st.set_page_config(page_title="Dicci Group Finance", page_icon=theme.page_icon(),
                    layout="wide", initial_sidebar_state="collapsed")
@@ -42,10 +42,23 @@ CACHE_TTL = 3600
 @st.cache_resource(show_spinner=False)
 def boot_db():
     db.init_db()
+    conn = db.get_conn()
+    try:
+        db.ensure_order_skus(conn)  # backfill sekali untuk DB dari versi lama
+    finally:
+        conn.close()
     return True
 
 
 boot_db()
+
+
+def _with_conn(fn, *args):
+    conn = db.get_conn()
+    try:
+        return fn(conn, *args)
+    finally:
+        conn.close()
 
 
 @st.cache_data(ttl=CACHE_TTL, show_spinner=False)
@@ -58,41 +71,46 @@ def load_counts():
         conn.close()
 
 
+# Semua bacaan berat = agregat SQL dalam DB (reconSql), bukan tarik semua row.
+# Kekal pantas + muat RAM walau jutaan order; lihat reconSql.py.
 @st.cache_data(ttl=CACHE_TTL, show_spinner=False)
-def load_reconcile(courier_key, pending_days):
-    conn = db.get_conn()
-    try:
-        return reconcile(conn, pending_days=pending_days, courier=courier_key)
-    finally:
-        conn.close()
+def load_summary(kind, key, pending_days):
+    return _with_conn(reconSql.stream_summary, kind, key, pending_days)
 
 
 @st.cache_data(ttl=CACHE_TTL, show_spinner=False)
-def load_reconcile_prepaid(gateway, pending_days):
-    conn = db.get_conn()
-    try:
-        return reconcile_prepaid(conn, gateway=gateway, pending_days=pending_days)
-    finally:
-        conn.close()
+def load_bill_parcels(kind, key, pending_days, bill_id):
+    return _with_conn(reconSql.bill_parcels, kind, key, pending_days, bill_id)
 
 
 @st.cache_data(ttl=CACHE_TTL, show_spinner=False)
-def load_bottles():
-    conn = db.get_conn()
-    try:
-        return bottles_per_order(conn)
-    finally:
-        conn.close()
+def load_stockist_bottles():
+    return _with_conn(reconSql.stockist_bottles)
 
 
 @st.cache_data(ttl=CACHE_TTL, show_spinner=False)
-def load_wallet():
-    conn = db.get_conn()
-    try:
-        return pd.read_sql(text("SELECT seller_name, seller_role, txn_date, order_id, "
-                                "txn_type, source, status, amount FROM wallet_txns"), conn)
-    finally:
-        conn.close()
+def load_stockist_names():
+    return _with_conn(reconSql.stockist_names)
+
+
+@st.cache_data(ttl=CACHE_TTL, show_spinner=False)
+def load_stockist_orders(seller):
+    return _with_conn(reconSql.stockist_orders, seller)
+
+
+@st.cache_data(ttl=CACHE_TTL, show_spinner=False)
+def load_commission_summary():
+    return _with_conn(reconSql.commission_summary)
+
+
+@st.cache_data(ttl=CACHE_TTL, show_spinner=False)
+def load_commission_names():
+    return _with_conn(reconSql.commission_names)
+
+
+@st.cache_data(ttl=CACHE_TTL, show_spinner=False)
+def load_commission_breakdown(seller):
+    return _with_conn(reconSql.commission_breakdown, seller)
 
 
 @st.cache_data(ttl=CACHE_TTL, show_spinner=False)
@@ -379,17 +397,15 @@ def render_dashboard(pending_days):
                 "and courier bills.")
         return
 
-    rows, all_lines, total_integ = [], [], 0
+    rows, all_daily, total_integ = [], [], 0
     for k in active_keys:
-        m, lines, info = load_reconcile(k, pending_days)
-        coll = float(lines["cod_amount"].sum())
-        fee = float(lines["fee"].sum())
-        exc = int(m["kategori"].isin(INTEGRITY_EXC).sum())
+        s = load_summary("courier", k, pending_days)
+        coll, fee, exc = s["lines_cod"], s["lines_fee"], s["integ_n"]
         total_integ += exc
         rows.append({"stream": db.COURIERS[k]["name"], "collected": coll, "fee": fee,
-                     "net": round(coll - fee, 2), "parcel": int(len(lines)), "exc": exc})
-        if len(lines):
-            all_lines.append(lines[["cod_amount", "fee", "delivered_date"]].copy())
+                     "net": round(coll - fee, 2), "parcel": s["lines_n"], "exc": exc})
+        if len(s["daily"]):
+            all_daily.append(s["daily"][["day", "cod_dikutip", "fee"]])
 
     led = pd.DataFrame(rows)
     tot_net = float(led["net"].sum())
@@ -421,16 +437,16 @@ def render_dashboard(pending_days):
     st.caption("Pick a stream in the switcher above to drill into its bills, periods, "
                "and audit.")
 
-    if all_lines:
-        Lall = pd.concat(all_lines, ignore_index=True)
-        Lall["dt"] = pd.to_datetime(Lall["delivered_date"], errors="coerce")
+    if all_daily:
+        Lall = pd.concat(all_daily, ignore_index=True)
+        Lall["dt"] = pd.to_datetime(Lall["day"], errors="coerce")
         Lall = Lall.dropna(subset=["dt"])
         if len(Lall):
             grain = st.segmented_control("Period", GRAINS, default="Daily",
                                          key="dash_grain") or "Daily"
             Lall["pkey"] = period_key(Lall["dt"], grain)
             g = (Lall.groupby("pkey")
-                 .apply(lambda x: round(x["cod_amount"].sum() - x["fee"].sum(), 2))
+                 .apply(lambda x: round(x["cod_dikutip"].sum() - x["fee"].sum(), 2))
                  .reset_index())
             g.columns = ["pkey", "net_remit"]
             g = g.sort_values("pkey")
@@ -451,11 +467,11 @@ def render_courier_stream(courier_key, pending_days):
         st.info("No data yet. Open the **Operations panel** above and upload a Fighter "
                 "export (and courier bills) first.")
         return
-    m, lines, info = load_reconcile(courier_key, pending_days)
-    od = load_bottles()
-    render_stream_body(m, lines, info, od, pending_days,
+    s = load_summary("courier", courier_key, pending_days)
+    render_stream_body(s, pending_days,
                        {"name": cname, "money": "COD collected", "bill": "bill",
-                        "hero": "Expected to land in bank"})
+                        "hero": "Expected to land in bank",
+                        "kind": "courier", "key": courier_key})
 
 
 def render_prepaid_stream(gateway, pending_days):
@@ -464,26 +480,22 @@ def render_prepaid_stream(gateway, pending_days):
         st.info("No data yet. Open the **Operations panel** above and upload a Fighter "
                 "export (and a CHIP statement) first.")
         return
-    m, lines, info = load_reconcile_prepaid(gateway, pending_days)
-    od = load_bottles()
-    render_stream_body(m, lines, info, od, pending_days,
+    s = load_summary("prepaid", gateway, pending_days)
+    render_stream_body(s, pending_days,
                        {"name": gname, "money": "Collected (gross)", "bill": "statement",
-                        "hero": f"Collected via {gname}"})
+                        "hero": f"Collected via {gname}",
+                        "kind": "prepaid", "key": gateway})
 
 
-def render_stream_body(m, lines, info, od, pending_days, L):
+def render_stream_body(s, pending_days, L):
     cname = L["name"]
-    tally = m["kategori"] == "tally"
-    integ = m[m["kategori"].isin(INTEGRITY_EXC)]
-    aged = m[m["kategori"].isin(AGED)]
-    total_cod = float(lines["cod_amount"].sum())
-    total_fee = float(lines["fee"].sum())
-    show_cols = [c for c in SHOW_COLS if c in m.columns]
+    integ, aged = s["integ"], s["aged"]
+    total_cod, total_fee = s["lines_cod"], s["lines_fee"]
+    show_cols = [c for c in SHOW_COLS if c in integ.columns]
 
     # ----- Overview (the money story) -----
-    bill_rows = m[m["bill_id"].notna()].copy()
     g = None
-    if not len(bill_rows):
+    if not s["lines_n"]:
         st.info(f"No {cname} {L['bill']} loaded yet. Upload a {cname} {L['bill']} in the "
                 "Operations panel to see cash flow.")
     else:
@@ -492,53 +504,58 @@ def render_stream_body(m, lines, info, od, pending_days, L):
             grain = st.segmented_control("Period", GRAINS, default="Daily",
                                          key="grain") or "Daily"
 
-        bill_rows["dt"] = pd.to_datetime(bill_rows["delivered_date"], errors="coerce")
-        bill_rows = bill_rows.dropna(subset=["dt"])
-        bill_rows["pkey"] = period_key(bill_rows["dt"], grain)
-        g = bill_rows.groupby("pkey").agg(
-            parcel=("awb", "size"),
-            botol=("botol_total", "sum"),
+        # Rollup dari agregat HARIAN (reconSql), bukan baris mentah: grain lebih
+        # kasar = gabungan hari, jadi angka identik dengan kiraan atas baris penuh.
+        d = s["daily"].copy()
+        d["dt"] = pd.to_datetime(d["day"], errors="coerce")
+        d = d.dropna(subset=["dt"])
+        d["pkey"] = period_key(d["dt"], grain)
+        g = d.groupby("pkey").agg(
+            parcel=("parcel", "sum"),
+            botol=("botol", "sum"),
             botol_free=("botol_free", "sum"),
-            cod_dikutip=("cod_amount", "sum"),
+            cod_dikutip=("cod_dikutip", "sum"),
             fee=("fee", "sum"),
-            tally=("kategori", lambda s: int((s == "tally").sum())),
-            exception=("kategori", lambda s: int(s.isin(INTEGRITY_EXC).sum())),
+            tally=("tally", "sum"),
+            exception=("exception", "sum"),
         ).reset_index().sort_values("pkey")
         g["net_remit"] = (g["cod_dikutip"] - g["fee"]).round(2)
         g["cod_dikutip"] = g["cod_dikutip"].round(2)
         g["fee"] = g["fee"].round(2)
-        g["tempoh"] = g["pkey"].map(lambda d: period_label(d, grain))
+        g["tempoh"] = g["pkey"].map(lambda d_: period_label(d_, grain))
 
         labels = g["tempoh"].tolist()
-        with pcol2:
-            sel = st.selectbox("Select period", labels, index=len(labels) - 1,
-                               key=f"period_{grain}")
-        row = g[g["tempoh"] == sel].iloc[0]
+        if labels:
+            with pcol2:
+                sel = st.selectbox("Select period", labels, index=len(labels) - 1,
+                                   key=f"period_{grain}")
+            row = g[g["tempoh"] == sel].iloc[0]
 
-        exc_n = int(row["exception"])
-        theme.hero_band(
-            label=f"{L['hero']} · {sel}",
-            value=float(row["net_remit"]),
-            sublines=f"net remit after fee · {int(row['parcel'])} parcels · "
-                     f"{int(row['botol'])} bottles",
-            flag_text=("No exceptions this period" if exc_n == 0
-                       else f"{exc_n} exceptions this period"),
-            flag_ok=(exc_n == 0),
-        )
+            exc_n = int(row["exception"])
+            theme.hero_band(
+                label=f"{L['hero']} · {sel}",
+                value=float(row["net_remit"]),
+                sublines=f"net remit after fee · {int(row['parcel'])} parcels · "
+                         f"{int(row['botol'])} bottles",
+                flag_text=("No exceptions this period" if exc_n == 0
+                           else f"{exc_n} exceptions this period"),
+                flag_ok=(exc_n == 0),
+            )
 
-        risk = float(integ["cod_amount"].sum()) if len(integ) else None
-        theme.alert_band(len(integ), risk=risk)
+            risk = s["integ_risk"] if s["integ_n"] else None
+            theme.alert_band(s["integ_n"], risk=risk)
 
-        theme.kpi_row([
-            (L["money"], f"RM {row['cod_dikutip']:,.0f}"),
-            ("Fee", f"RM {row['fee']:,.0f}"),
-            ("Parcels", f"{int(row['parcel'])}"),
-            ("Bottles", f"{int(row['botol'])}"),
-        ])
+            theme.kpi_row([
+                (L["money"], f"RM {row['cod_dikutip']:,.0f}"),
+                ("Fee", f"RM {row['fee']:,.0f}"),
+                ("Parcels", f"{int(row['parcel'])}"),
+                ("Bottles", f"{int(row['botol'])}"),
+            ])
 
-        theme.section("Net remit by period", "all periods, to see the trend")
-        st.altair_chart(theme.bar_chart_brand(g, "tempoh", "net_remit"),
-                        use_container_width=True)
+        if g is not None and len(g):
+            theme.section("Net remit by period", "all periods, to see the trend")
+            st.altair_chart(theme.bar_chart_brand(g, "tempoh", "net_remit"),
+                            use_container_width=True)
 
     # ----- Drill-down tabs -----
     theme.section("Details", "drill down by period, bill, stockist, and audit")
@@ -547,7 +564,7 @@ def render_stream_body(m, lines, info, od, pending_days, L):
 
     # ===== By Period =====
     with tab_period:
-        if g is None:
+        if g is None or not len(g):
             st.info("No COD bill loaded yet.")
         else:
             st.caption(f"Across {len(g)} periods: {int(g['parcel'].sum())} parcels, "
@@ -578,7 +595,7 @@ def render_stream_body(m, lines, info, od, pending_days, L):
 
     # ===== By Bill =====
     with tab_bill:
-        bills = info["bills"]
+        bills = s["bills"]
         if not len(bills):
             st.info(f"No {cname} {L['bill']} loaded yet. Upload a {cname} {L['bill']} "
                     "in the Operations panel first.")
@@ -590,25 +607,26 @@ def render_stream_body(m, lines, info, od, pending_days, L):
                                   list(opts.keys()))
             bid = opts[choice]
 
-            b = m[m["bill_id"] == bid].copy()
-            b_cod = float(b["cod_amount"].sum())
-            b_fee = float(b["fee"].sum())
+            pb = s["per_bill"].set_index("bill_id")
+            b_n = int(pb.loc[bid, "parcel"]) if bid in pb.index else 0
+            b_cod = float(pb.loc[bid, "cod"]) if bid in pb.index else 0.0
+            b_fee = float(pb.loc[bid, "fee"]) if bid in pb.index else 0.0
+            b_tally = int(pb.loc[bid, "tally"]) if bid in pb.index else 0
+            b_exc_n = int(pb.loc[bid, "exc"]) if bid in pb.index else 0
             b_net = b_cod - b_fee
-            b_tally = int((b["kategori"] == "tally").sum())
-            b_exc = b[b["kategori"].isin(INTEGRITY_EXC)]
 
             d1, d2, d3, d4 = st.columns(4)
-            d1.metric(f"Parcels in {L['bill']}", len(b))
+            d1.metric(f"Parcels in {L['bill']}", b_n)
             d2.metric(L["money"], f"RM {b_cod:,.2f}")
             d3.metric("Net remit (expected in bank)", f"RM {b_net:,.2f}",
                       f"after fee RM {b_fee:,.2f}")
-            d4.metric("Tally / Exceptions", f"{b_tally} / {len(b_exc)}")
+            d4.metric("Tally / Exceptions", f"{b_tally} / {b_exc_n}")
 
-            if len(b_exc) == 0:
-                st.success(f"This {L['bill']} is clean: all {len(b)} parcels tally. "
+            if b_exc_n == 0:
+                st.success(f"This {L['bill']} is clean: all {b_n} parcels tally. "
                            f"RM {b_net:,.2f} expected in bank.")
             else:
-                st.warning(f"This {L['bill']} has {len(b_exc)} parcels to investigate "
+                st.warning(f"This {L['bill']} has {b_exc_n} parcels to investigate "
                            "(ghost money or amount mismatch). See the table below.")
 
             theme.section("Check against bank")
@@ -623,6 +641,9 @@ def render_stream_body(m, lines, info, od, pending_days, L):
                              f"Net remit RM {b_net:,.2f}). Needs investigation.")
 
             theme.section(f"Parcels in this {L['bill']}")
+            b = load_bill_parcels(L["kind"], L["key"], pending_days, bid)
+            if len(b) < b_n:
+                st.caption(f"Showing first {len(b):,} of {b_n:,} parcels.")
             bill_cols = [c for c in ["awb", "order_id", "seller_name", "kategori",
                                      "selling_price", "cod_amount", "fee", "remit"]
                          if c in b.columns]
@@ -638,22 +659,19 @@ def render_stream_body(m, lines, info, od, pending_days, L):
                    "feeds). 'Unconfirmed' flips automatically once the remaining money "
                    "feeds (CHIP / online transfer, more courier bills) are uploaded.")
 
-        comp = od[od["status"] == db.COMPLETED].copy()
-        comp["seller_name"] = comp["seller_name"].fillna("(no stockist)")
-        if not len(comp):
+        sb = load_stockist_bottles()
+        if not len(sb):
             st.info("No Completed orders yet. Upload a Fighter export first.")
         else:
-            paid = comp[comp["duit_disahkan"]]
-            belum = comp[~comp["duit_disahkan"]]
-            ringkas = pd.DataFrame(index=sorted(comp["seller_name"].unique()))
-            ringkas["Confirmed orders"] = paid.groupby("seller_name")["order_id"].size()
-            ringkas["Paid bottles"] = paid.groupby("seller_name")["botol_paid"].sum()
-            ringkas["Free bottles"] = paid.groupby("seller_name")["botol_free"].sum()
-            ringkas["Total bottles"] = paid.groupby("seller_name")["botol_total"].sum()
-            ringkas["Unconfirmed bottles"] = belum.groupby("seller_name")["botol_total"].sum()
-            ringkas = ringkas.fillna(0).astype(int).sort_values("Total bottles",
-                                                                ascending=False)
-            ringkas = ringkas.rename_axis("Stockist").reset_index()
+            ringkas = sb.rename(columns={
+                "stockist": "Stockist", "confirmed_orders": "Confirmed orders",
+                "paid_bottles": "Paid bottles", "free_bottles": "Free bottles",
+                "total_bottles": "Total bottles",
+                "unconfirmed_bottles": "Unconfirmed bottles"})
+            num_cols = ["Confirmed orders", "Paid bottles", "Free bottles",
+                        "Total bottles", "Unconfirmed bottles"]
+            ringkas[num_cols] = ringkas[num_cols].fillna(0).astype(int)
+            ringkas = ringkas.sort_values("Total bottles", ascending=False)
 
             t = int(ringkas["Total bottles"].sum())
             tf = int(ringkas["Free bottles"].sum())
@@ -664,12 +682,11 @@ def render_stream_body(m, lines, info, od, pending_days, L):
             st.dataframe(ringkas, width="stretch", hide_index=True)
 
             theme.section("Drill down a stockist", "view orders one by one")
-            names = sorted(od["seller_name"].fillna("(no stockist)").unique())
+            names = load_stockist_names()
             pick = st.selectbox("Select stockist", names)
-            d = od.copy()
-            d["seller_name"] = d["seller_name"].fillna("(no stockist)")
-            d = d[d["seller_name"] == pick].copy()
-            d["duit"] = d["duit_disahkan"].map({True: "confirmed", False: "unconfirmed"})
+            d, d_total = load_stockist_orders(pick)
+            if len(d) < d_total:
+                st.caption(f"Showing latest {len(d):,} of {d_total:,} orders.")
             det_cols = [c for c in ["order_id", "order_date", "status", "payment_method",
                                     "shipping_provider", "tracking", "botol_paid",
                                     "botol_free", "botol_total", "duit"]
@@ -680,31 +697,31 @@ def render_stream_body(m, lines, info, od, pending_days, L):
     # ===== Audit =====
     with tab_audit:
         c1, c2, c3, c4, c5 = st.columns(5)
-        c1.metric("Tally (exact match)", int(tally.sum()),
-                  f"RM {m.loc[tally, 'cod_amount'].sum():,.0f}")
+        c1.metric("Tally (exact match)", s["tally_n"], f"RM {s['tally_cod']:,.0f}")
         c2.metric(L["money"], f"RM {total_cod:,.0f}")
         c3.metric("Net remit", f"RM {total_cod - total_fee:,.0f}")
-        c4.metric("Tier 1 (issues)", int(len(integ)))
-        c5.metric("Tier 2 (aged)", int(len(aged)))
+        c4.metric("Tier 1 (issues)", s["integ_n"])
+        c5.metric("Tier 2 (aged)", s["aged_n"])
 
-        with st.expander(f"COD bills loaded ({info['n_bills']})"):
-            st.dataframe(info["bills"], width="stretch", hide_index=True)
+        with st.expander(f"COD bills loaded ({s['n_bills']})"):
+            st.dataframe(s["bills"], width="stretch", hide_index=True)
 
         col_a, col_b = st.columns(2)
         with col_a:
             theme.section("Category summary")
-            cc = m["kategori"].value_counts().rename_axis("kategori").reset_index(
-                name="count")
+            cc = (pd.DataFrame([{"kategori": k, "count": int(n)}
+                                for k, n in s["kat_n"].items()])
+                  .sort_values("count", ascending=False).reset_index(drop=True))
             st.dataframe(theme.style_kategori(cc), width="stretch", hide_index=True,
                          column_config={"kategori": st.column_config.TextColumn("Status"),
                                         "count": st.column_config.NumberColumn("Count")})
         with col_b:
-            if info["other_courier"]:
+            if s["other_courier"]:
                 theme.section("Out of Phase 1 scope", "other couriers")
                 oc = pd.DataFrame([
                     {"courier": k, "orders": int(v["order"]),
                      "value": round(v["nilai"], 2)}
-                    for k, v in info["other_courier"].items()
+                    for k, v in s["other_courier"].items()
                 ])
                 st.dataframe(oc, width="stretch", hide_index=True, column_config={
                     "courier": st.column_config.TextColumn("Courier"),
@@ -714,6 +731,9 @@ def render_stream_body(m, lines, info, od, pending_days, L):
 
         theme.section("Tier 1 · integrity exceptions", "need investigation")
         if len(integ):
+            if len(integ) < s["integ_n"]:
+                st.caption(f"Showing first {len(integ):,} of {s['integ_n']:,} rows "
+                           "(oldest first). Full list via Download below.")
             st.dataframe(theme.style_kategori(integ[show_cols]), width="stretch",
                          hide_index=True, column_config=colcfg(*show_cols))
         else:
@@ -724,16 +744,21 @@ def render_stream_body(m, lines, info, od, pending_days, L):
                    "bill. While data is incomplete this is usually an artifact of "
                    "missing bills. It should shrink as more COD bills are added.")
         if len(aged):
+            if len(aged) < s["aged_n"]:
+                st.caption(f"Showing first {len(aged):,} of {s['aged_n']:,} rows "
+                           "(oldest first).")
             st.dataframe(theme.style_kategori(aged[show_cols]), width="stretch",
                          hide_index=True, column_config=colcfg(*show_cols))
 
         theme.section("Breakdown by stockist")
-        seller = m["seller_name"].fillna("(no order)")
-        ct = pd.crosstab(seller, m["kategori"])
+        ct = s["stokis_kat"].pivot_table(index="seller", columns="kategori",
+                                         values="n", fill_value=0, aggfunc="sum")
         ct.columns = [theme.kat_label(c) for c in ct.columns]
+        ct.index.name = "seller_name"
         st.dataframe(ct, width="stretch")
 
-        exc = m[m["kategori"].isin(INTEGRITY_EXC + AGED)][show_cols]
+        exc = pd.concat([integ, aged], ignore_index=True)
+        exc = exc[show_cols] if len(exc) else exc
         st.download_button("Download exceptions.csv", exc.to_csv(index=False),
                            "exceptions.csv", "text/csv")
 
@@ -757,9 +782,9 @@ def render_stream_body(m, lines, info, od, pending_days, L):
             st.cache_data.clear()
             st.success("SKU mapping saved. Numbers updated in the overview.")
             st.rerun()
-        if info["unmapped_skus"]:
+        if s["unmapped_skus"]:
             st.warning("SKUs found in orders but NOT mapped (counted as 0 bottles): "
-                       + ", ".join(info["unmapped_skus"]) + ". Add them in the table above.")
+                       + ", ".join(s["unmapped_skus"]) + ". Add them in the table above.")
         else:
             st.success("All SKUs in orders are mapped.")
 
@@ -770,20 +795,7 @@ def render_commission():
         st.info("No commission data yet. Use **⬆ Upload** (top of the nav) to add a "
                 "Fighter Wallet export.")
         return
-    w = load_wallet()
-
-    appr = w[w["status"] == "Approved"]
-    earned = appr[appr["txn_type"] == "IN"].groupby("seller_name")["amount"].sum()
-    paid = (appr[(appr["txn_type"] == "OUT") & (appr["source"] == "Withdraw")]
-            .groupby("seller_name")["amount"].sum())
-    role = w.groupby("seller_name")["seller_role"].agg(
-        lambda s: s.dropna().iloc[0] if s.dropna().size else "")
-
-    g = pd.DataFrame({"earned": earned, "paid": paid}).fillna(0.0)
-    g["balance"] = (g["earned"] - g["paid"]).round(2)
-    g["level"] = role
-    g = (g.reset_index().sort_values("earned", ascending=False)
-         [["seller_name", "level", "earned", "paid", "balance"]])
+    g = load_commission_summary()
 
     theme.hero_band(
         label="Commission earned · uploaded period",
@@ -807,13 +819,10 @@ def render_commission():
 
     # ---- Drill-down: pecahan per stockist ----
     theme.section("Breakdown by stockist", "pick one to see the transactions behind the totals")
-    names = sorted(w["seller_name"].dropna().unique())
+    names = load_commission_names()
     pick = st.selectbox("Stockist", names, key="comm_pick")
-    d = w[w["seller_name"] == pick].copy()
+    by_src, det, det_total = load_commission_breakdown(pick)
 
-    by_src = (d[d["status"] == "Approved"].groupby(["source", "txn_type"])["amount"]
-              .agg(count="count", total="sum").reset_index())
-    by_src["total"] = by_src["total"].round(2)
     st.caption("By source (Approved only)")
     st.dataframe(by_src, width="stretch", hide_index=True, column_config={
         "source": st.column_config.TextColumn("Source"),
@@ -822,9 +831,9 @@ def render_commission():
         "total": st.column_config.NumberColumn("Amount", format="RM %.2f"),
     })
 
-    det = d.sort_values("txn_date")[["txn_date", "order_id", "source", "txn_type",
-                                     "status", "amount"]]
-    st.caption(f"Every transaction for {pick} ({len(det)} rows)")
+    if len(det) < det_total:
+        st.caption(f"Showing first {len(det):,} of {det_total:,} transactions.")
+    st.caption(f"Every transaction for {pick} ({det_total} rows)")
     st.dataframe(det, width="stretch", hide_index=True, column_config={
         "txn_date": st.column_config.TextColumn("Date"),
         "order_id": st.column_config.TextColumn("Order ID"),
