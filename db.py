@@ -329,9 +329,11 @@ def save_sku_map(df, conn=None):
 
 
 def reset_db(conn=None):
+    # Padam SEMUA data transaksi yang di-upload. Kekalkan sku_bottles (config mapping,
+    # auto-seed) supaya penetapan SKU finance tak hilang bila reset data.
     own = conn is None
     conn = conn or get_conn()
-    for t in ("orders", "cod_bill_lines", "cod_bills"):
+    for t in ("orders", "cod_bill_lines", "cod_bills", "wallet_txns", "prepaid_payments"):
         conn.execute(text(f"DELETE FROM {t}"))
     conn.commit()
     if own:
