@@ -411,9 +411,28 @@ CSS tokens dari mockup (tanpa Tailwind), font next/font (Fraunces + Manrope).
   kekal di Streamlit sementara) + grain switcher chart Daily/Weekly/Monthly
   (dashboard & stream, label paksi pintar bila bar banyak). Parity checker turut
   diperketat: stable stringify rekursif (compare lama boleh langkau nested senyap).
+- **Fix modal upload (2026-07-04, commit bf64441):** modal terperangkap belakang kad
+  (sidebar sticky+overflow = stacking context; bug ketara di Safari). Fix: createPortal
+  ke document.body + z-index 1000. Disahkan atas produksi.
+- **STATUS DATA PRODUKSI (2026-07-04):** Adi upload data sampel melalui app baru
+  (upload BERFUNGSI; bug tadi visual sahaja). Neon kini ada ~1,208 orders / RM63k
+  (set sampel Mei-Jun). NOTA: app masih public tanpa auth, data bisnes sebenar
+  (nama stokis, jumlah) boleh dilihat sesiapa yang ada URL. Keputusan Adi PENDING:
+  biar sementara ATAU wipe balik sampai Clerk siap.
 - PENDING fasa seterusnya: wire Clerk (perlu akaun + keys dari Adi) , GATE sebelum
-  data betul; SKU editor + admin reset (lepas Clerk); lepas tu rancang penutupan
-  Streamlit.
+  data betul; SKU editor + admin reset (lepas Clerk); rotate kredential Neon (gate
+  lama, sebelum finance upload data betul); lepas tu rancang penutupan Streamlit.
+
+### Arahan dev webApp (untuk sesi kerja)
+- Dev DB: `cd webApp && node scripts/devDb.mjs` (background; Postgres embedded port
+  5433, data kekal dalam devPgData/) lalu `python3 scripts/loadDevDb.py` (muat snapshot
+  backups/ terkini).
+- App lokal: `npm run dev` (atau `npm run build && npm run start`), buka localhost:3000.
+  `.env.local`: DATABASE_URL=dev PG + INGEST_MODE=local (upload guna enjin root terus).
+- Parity (WAJIB bila logik recon disentuh): `python3 scripts/parityDump.py >
+  scripts/parityPython.json && npx tsx scripts/parityCheck.ts` , mesti LULUS.
+- Enjin berubah? `bash scripts/syncEngine.sh` (sync salinan api/engine/) sebelum deploy.
+- Deploy: `cd webApp && vercel deploy --prod --yes` (deploy TAK auto dari git push).
 
 ## Status sekarang
 
