@@ -405,9 +405,15 @@ CSS tokens dari mockup (tanpa Tailwind), font next/font (Fraunces + Manrope).
   Diuji: E2E lokal fighter 852 baris idempotent (count tak berganda) + fail tak
   dikenali = tiada tulis; produksi: function tanpa token = 401, laluan penuh dengan
   fail tak dikenali = kind null TANPA tulis, Neon disahkan kekal 0 orders.
+- **PARITY FEATURE SIAP (2026-07-04):** page `/impact/stockists` (botol per stokis +
+  drill-down order, port setia stockist_bottles/stockist_orders, MASUK parity harness
+  dan LULUS) + `/impact/skus` (paparan mapping SKU, read-only sampai Clerk, edit
+  kekal di Streamlit sementara) + grain switcher chart Daily/Weekly/Monthly
+  (dashboard & stream, label paksi pintar bila bar banyak). Parity checker turut
+  diperketat: stable stringify rekursif (compare lama boleh langkau nested senyap).
 - PENDING fasa seterusnya: wire Clerk (perlu akaun + keys dari Adi) , GATE sebelum
-  data betul; page Per Stokis + SKU editor; pemilih tempoh (periodPill masih "All
-  uploaded data"); lepas Clerk siap boleh rancang penutupan Streamlit.
+  data betul; SKU editor + admin reset (lepas Clerk); lepas tu rancang penutupan
+  Streamlit.
 
 ## Status sekarang
 

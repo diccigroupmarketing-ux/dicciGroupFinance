@@ -7,12 +7,24 @@ import { fileURLToPath } from "node:url";
 
 process.env.DATABASE_URL = "postgresql://dev:dev@localhost:5433/dicci";
 
-import { streamSummary, StreamKey } from "../lib/recon";
+import { streamSummary, stockistBottles, StreamKey } from "../lib/recon";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const ref = JSON.parse(readFileSync(join(here, "parityPython.json"), "utf8"));
 
 const r2 = (x: number) => Math.round(x * 100) / 100;
+
+// Stringify dengan kunci disusun REKURSIF , perbandingan nested yang sebenar.
+// (JSON.stringify dengan replacer array menapis kunci nested secara senyap.)
+function stable(v: unknown): string {
+  if (Array.isArray(v)) return "[" + v.map(stable).join(",") + "]";
+  if (v && typeof v === "object") {
+    return "{" + Object.keys(v as object).sort().map((k) =>
+      JSON.stringify(k) + ":" + stable((v as Record<string, unknown>)[k]),
+    ).join(",") + "}";
+  }
+  return JSON.stringify(v);
+}
 
 async function main() {
   let fail = 0;
@@ -33,20 +45,38 @@ async function main() {
         .map((b) => ({ bill_id: b.bill_id, parcel: b.parcel, cod: r2(b.cod),
                        fee: r2(b.fee), tally: b.tally, exc: b.exc })),
     };
-    const a = JSON.stringify(mine, Object.keys(mine).sort());
-    const b = JSON.stringify(ref[key], Object.keys(ref[key]).sort());
+    const a = stable(mine);
+    const b = stable(ref[key]);
     if (a === b) {
       console.log(`[${key}] PADAN  (kat=${JSON.stringify(mine.katN)})`);
     } else {
       fail++;
       console.log(`[${key}] TAK PADAN`);
       for (const f of Object.keys(mine) as (keyof typeof mine)[]) {
-        const x = JSON.stringify(mine[f]);
-        const y = JSON.stringify(ref[key][f]);
+        const x = stable(mine[f]);
+        const y = stable(ref[key][f]);
         if (x !== y) console.log(`  medan ${f}:\n    TS : ${x}\n    PY : ${y}`);
       }
     }
   }
+  // Botol per stokis
+  const sb = (await stockistBottles())
+    .map(({ stockist, confirmed_orders, paid_bottles, free_bottles,
+            total_bottles, unconfirmed_bottles }) => ({
+      stockist, confirmed_orders, paid_bottles, free_bottles,
+      total_bottles, unconfirmed_bottles,
+    }))
+    .sort((a, b) => (a.stockist < b.stockist ? -1 : a.stockist > b.stockist ? 1 : 0));
+  const sbRef = ref["stockists"];
+  if (stable(sb) === stable(sbRef)) {
+    console.log(`[stockists] PADAN  (${sb.length} stokis)`);
+  } else {
+    fail++;
+    console.log("[stockists] TAK PADAN");
+    console.log("  TS :", stable(sb));
+    console.log("  PY :", stable(sbRef));
+  }
+
   console.log(fail ? "\nPARITY GAGAL" : "\nPARITY LULUS , laluan TS setia pada enjin Python");
   process.exit(fail ? 1 : 0);
 }

@@ -280,6 +280,18 @@ th.num{text-align:right}
   margin-bottom:6px;
 }
 
+/* ---------- segmented control ---------- */
+.segRow{
+  margin-left:auto;display:inline-flex;background:var(--sunken);
+  border:1px solid var(--border);border-radius:9px;padding:2px;gap:2px;
+}
+.segBtn{
+  font-size:11.5px;font-weight:700;color:var(--muted);
+  padding:4px 12px;border-radius:7px;transition:background .12s,color .12s;
+}
+.segBtn:hover{color:var(--inkStrong)}
+.segBtn.active{background:var(--card);color:var(--inkStrong);box-shadow:var(--shadow)}
+
 /* ---------- upload modal ---------- */
 .modalBack{
   position:fixed;inset:0;background:rgba(7,42,48,.45);z-index:50;

@@ -23,6 +23,13 @@ export default function WeeklyChart({ bars }: { bars: WeekBar[] }) {
   const slot = (right - left) / n;
   const barW = Math.min(72, slot * 0.55);
 
+  // Bila bar banyak: label paksi setiap N bar sahaja, nilai atas bar hanya
+  // untuk puncak + terakhir (elak bertindih).
+  const axisStep = Math.max(1, Math.ceil(n / 8));
+  const maxIdx = bars.reduce((mi, b, i) => (b.net > bars[mi].net ? i : mi), 0);
+  const showValue = (i: number) => n <= 12 || i === maxIdx || i === n - 1;
+  const showAxis = (i: number) => i % axisStep === 0 || i === n - 1;
+
   const grids = [1, 2 / 3, 1 / 3, 0];
 
   return (
@@ -53,10 +60,14 @@ export default function WeeklyChart({ bars }: { bars: WeekBar[] }) {
                   });
                 }}
                 onMouseLeave={() => setTip(null)} />
-              <text className={"barLabel" + (last ? " hot" : "")} x={x + barW / 2} y={y - 8}
-                textAnchor="middle">{fmtShortK(b.net)}</text>
-              <text className="axisLabel" x={x + barW / 2} y={bottom + 22}
-                textAnchor="middle">{b.label}</text>
+              {showValue(i) && (
+                <text className={"barLabel" + (last ? " hot" : "")} x={x + barW / 2} y={y - 8}
+                  textAnchor="middle">{fmtShortK(b.net)}</text>
+              )}
+              {showAxis(i) && (
+                <text className="axisLabel" x={x + barW / 2} y={bottom + 22}
+                  textAnchor="middle">{b.label}</text>
+              )}
             </g>
           );
         })}

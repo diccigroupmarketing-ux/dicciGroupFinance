@@ -1,6 +1,7 @@
 import { COURIERS, StreamKey, streamSummary, storeCounts } from "@/lib/recon";
-import { fmtInt, fmtRM, groupWeekly } from "@/lib/format";
+import { fmtInt, fmtRM, GRAIN_LABEL, groupByGrain, parseGrain } from "@/lib/format";
 import { Chip } from "@/components/Chip";
+import GrainSwitcher from "@/components/GrainSwitcher";
 import WeeklyChart from "@/components/WeeklyChart";
 import Link from "next/link";
 
@@ -8,7 +9,10 @@ export const dynamic = "force-dynamic";
 
 const ACTIVE: StreamKey[] = ["jnt", "dhl", "ninja"];
 
-export default async function Dashboard() {
+export default async function Dashboard(
+  { searchParams }: { searchParams: Promise<{ grain?: string }> },
+) {
+  const grain = parseGrain((await searchParams).grain);
   const counts = await storeCounts();
 
   if (counts.orders === 0) {
@@ -47,7 +51,7 @@ export default async function Dashboard() {
   const totBottles = summaries.reduce(
     (a, s) => a + s.daily.reduce((x, d) => x + d.botol, 0), 0);
 
-  const weekly = groupWeekly(summaries.flatMap((s) => s.daily));
+  const weekly = groupByGrain(summaries.flatMap((s) => s.daily), grain);
 
   const [rm, cents] = fmtRM(totNet).split(".");
 
@@ -97,14 +101,15 @@ export default async function Dashboard() {
       <div className="grid2">
         <div className="card">
           <div className="cardHead">
-            <div className="cardTitle">Net remit by week</div>
+            <div className="cardTitle">Net remit by {GRAIN_LABEL[grain]}</div>
             <div className="cardHint">delivery-signature date · all streams</div>
+            <GrainSwitcher grain={grain} basePath="/impact" />
           </div>
           {weekly.length ? (
             <>
               <WeeklyChart bars={weekly} />
               <div className="cardHint" style={{ marginTop: 10 }}>
-                {weekly.length} settled week{weekly.length === 1 ? "" : "s"} · {fmtRM(totNet)} total net remit · hover a bar for detail
+                {weekly.length} settled {GRAIN_LABEL[grain]}{weekly.length === 1 ? "" : "s"} · {fmtRM(totNet)} total net remit · hover a bar for detail
               </div>
             </>
           ) : (

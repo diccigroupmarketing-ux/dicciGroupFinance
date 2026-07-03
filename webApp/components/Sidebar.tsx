@@ -42,6 +42,18 @@ const ICONS: Record<string, React.ReactNode> = {
       <circle cx="10" cy="6.5" r="3" /><path d="M3.5 16.5c.8-3 3.4-4.5 6.5-4.5s5.7 1.5 6.5 4.5" />
     </svg>
   ),
+  stockists: (
+    <svg className="navIcon" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.7">
+      <path d="M8 3h4v3l1.5 2v8a1.5 1.5 0 0 1-1.5 1.5H8A1.5 1.5 0 0 1 6.5 16V8L8 6z" />
+      <path d="M6.5 11h7" />
+    </svg>
+  ),
+  sku: (
+    <svg className="navIcon" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.7">
+      <path d="m3 10 7-7 7 3v4l-7 7z" transform="rotate(90 10 10)" />
+      <circle cx="7.5" cy="7.5" r="1.3" />
+    </svg>
+  ),
 };
 
 const STREAMS = [
@@ -92,6 +104,16 @@ export default function Sidebar() {
         <div className="navLabel">People</div>
         <Link href="/impact/commission" className={cls(path === "/impact/commission")}>
           {ICONS.commission} Commission
+        </Link>
+        <Link href="/impact/stockists" className={cls(path === "/impact/stockists")}>
+          {ICONS.stockists} Stockists
+        </Link>
+      </nav>
+
+      <nav className="navGroup" aria-label="Setup">
+        <div className="navLabel">Setup</div>
+        <Link href="/impact/skus" className={cls(path === "/impact/skus")}>
+          {ICONS.sku} SKU / Bottles
         </Link>
       </nav>
 

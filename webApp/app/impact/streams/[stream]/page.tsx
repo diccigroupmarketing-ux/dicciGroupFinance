@@ -4,8 +4,11 @@ import {
   AGED, COURIERS, INTEGRITY_EXC, KAT_LABEL, REMIT_PENDING_DAYS,
   StreamKey, streamSummary, storeCounts,
 } from "@/lib/recon";
-import { fmtDate, fmtInt, fmtRM, groupWeekly, trackingOrDash } from "@/lib/format";
+import {
+  fmtDate, fmtInt, fmtRM, GRAIN_LABEL, groupByGrain, parseGrain, trackingOrDash,
+} from "@/lib/format";
 import { Chip, KatChip, katTone } from "@/components/Chip";
+import GrainSwitcher from "@/components/GrainSwitcher";
 import WeeklyChart from "@/components/WeeklyChart";
 
 export const dynamic = "force-dynamic";
@@ -17,9 +20,13 @@ const KAT_ORDER = [
 ];
 
 export default async function StreamPage(
-  { params }: { params: Promise<{ stream: string }> },
+  { params, searchParams }: {
+    params: Promise<{ stream: string }>;
+    searchParams: Promise<{ grain?: string }>;
+  },
 ) {
   const { stream } = await params;
+  const grain = parseGrain((await searchParams).grain);
   if (!(stream in COURIERS)) notFound();
   const key = stream as StreamKey;
   const cfg = COURIERS[key];
@@ -39,7 +46,7 @@ export default async function StreamPage(
 
   const s = await streamSummary(key);
   const net = Math.round((s.linesCod - s.linesFee) * 100) / 100;
-  const weekly = groupWeekly(s.daily);
+  const weekly = groupByGrain(s.daily, grain);
 
   const katRows = KAT_ORDER.filter((k) => (s.katN[k] ?? 0) > 0)
     .map((k) => ({ kat: k, n: s.katN[k] }));
@@ -210,8 +217,9 @@ export default async function StreamPage(
           <div className="sectionGap" />
           <div className="card">
             <div className="cardHead">
-              <div className="cardTitle">Net remit by week</div>
+              <div className="cardTitle">Net remit by {GRAIN_LABEL[grain]}</div>
               <div className="cardHint">delivery-signature date</div>
+              <GrainSwitcher grain={grain} basePath={`/impact/streams/${key}`} />
             </div>
             <WeeklyChart bars={weekly} />
           </div>

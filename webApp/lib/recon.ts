@@ -330,6 +330,109 @@ export async function storeCounts(): Promise<{ orders: number; billLines: number
   };
 }
 
+// ====================================================================
+// Botol per stokis (semua courier + payment; confirmed via feed duit).
+// Salinan setia stockist_bottles / stockist_orders dari reconSql.py.
+// ====================================================================
+const CONF_SQL = `
+  CASE WHEN EXISTS (SELECT 1 FROM cod_bill_lines cl WHERE cl.awb = o.tracking)
+         OR EXISTS (SELECT 1 FROM prepaid_payments pp WHERE pp.order_ref = o.order_id)
+       THEN 1 ELSE 0 END
+`;
+
+const DRILL_CAP = 10_000;
+
+export interface StockistRow {
+  stockist: string; confirmed_orders: number; paid_bottles: number;
+  free_bottles: number; total_bottles: number; unconfirmed_bottles: number;
+}
+
+export async function stockistBottles(): Promise<StockistRow[]> {
+  const res = await getPool().query(`
+    SELECT stockist,
+           COUNT(DISTINCT CASE WHEN conf = 1 THEN order_id END) AS confirmed_orders,
+           SUM(CASE WHEN conf = 1 THEN bp ELSE 0 END) AS paid_bottles,
+           SUM(CASE WHEN conf = 1 THEN bf ELSE 0 END) AS free_bottles,
+           SUM(CASE WHEN conf = 1 THEN bp + bf ELSE 0 END) AS total_bottles,
+           SUM(CASE WHEN conf = 0 THEN bp + bf ELSE 0 END) AS unconfirmed_bottles
+    FROM (SELECT o.order_id,
+                 COALESCE(o.seller_name, '(no stockist)') AS stockist,
+                 COALESCE(os.qty * COALESCE(sb.paid, 0), 0) AS bp,
+                 COALESCE(os.qty * COALESCE(sb.free, 0), 0) AS bf,
+                 ${CONF_SQL} AS conf
+          FROM orders o
+          LEFT JOIN order_skus os ON os.order_id = o.order_id
+          LEFT JOIN sku_bottles sb ON UPPER(TRIM(sb.sku)) = os.sku
+          WHERE o.status = 'Completed') x
+    GROUP BY stockist
+    ORDER BY total_bottles DESC, stockist`);
+  return res.rows.map((r) => ({
+    stockist: r.stockist,
+    confirmed_orders: toNum(r.confirmed_orders),
+    paid_bottles: toNum(r.paid_bottles),
+    free_bottles: toNum(r.free_bottles),
+    total_bottles: toNum(r.total_bottles),
+    unconfirmed_bottles: toNum(r.unconfirmed_bottles),
+  }));
+}
+
+export interface StockistOrder {
+  order_id: string; order_date: string | null; status: string | null;
+  payment_method: string | null; shipping_provider: string | null;
+  tracking: string | null; botol_paid: number; botol_free: number;
+  botol_total: number; duit: "confirmed" | "unconfirmed";
+}
+
+export async function stockistOrders(
+  seller: string, cap: number = DRILL_CAP,
+): Promise<{ rows: StockistOrder[]; total: number }> {
+  const p = getPool();
+  const res = await p.query(`
+    SELECT o.order_id, o.order_date, o.status, o.payment_method,
+           o.shipping_provider, o.tracking,
+           COALESCE((SELECT SUM(os.qty * COALESCE(sb.paid, 0))
+                     FROM order_skus os
+                     LEFT JOIN sku_bottles sb ON UPPER(TRIM(sb.sku)) = os.sku
+                     WHERE os.order_id = o.order_id), 0) AS botol_paid,
+           COALESCE((SELECT SUM(os.qty * COALESCE(sb.free, 0))
+                     FROM order_skus os
+                     LEFT JOIN sku_bottles sb ON UPPER(TRIM(sb.sku)) = os.sku
+                     WHERE os.order_id = o.order_id), 0) AS botol_free,
+           CASE WHEN ${CONF_SQL.trim()} = 1 THEN 'confirmed'
+                ELSE 'unconfirmed' END AS duit
+    FROM (SELECT * FROM orders
+          WHERE COALESCE(seller_name, '(no stockist)') = $1
+          ORDER BY order_date DESC LIMIT $2) o
+    ORDER BY o.order_date DESC`, [seller, cap]);
+  const tot = await p.query(
+    `SELECT COUNT(*) AS n FROM orders
+     WHERE COALESCE(seller_name, '(no stockist)') = $1`, [seller]);
+  return {
+    rows: res.rows.map((r) => ({
+      order_id: r.order_id, order_date: r.order_date, status: r.status,
+      payment_method: r.payment_method, shipping_provider: r.shipping_provider,
+      tracking: r.tracking,
+      botol_paid: toNum(r.botol_paid), botol_free: toNum(r.botol_free),
+      botol_total: toNum(r.botol_paid) + toNum(r.botol_free),
+      duit: r.duit,
+    })),
+    total: Number(tot.rows[0].n),
+  };
+}
+
+export interface SkuRow {
+  sku: string; product_name: string | null; paid: number; free: number;
+}
+
+export async function skuMap(): Promise<SkuRow[]> {
+  const res = await getPool().query(
+    `SELECT sku, product_name, paid, free FROM sku_bottles ORDER BY sku`);
+  return res.rows.map((r) => ({
+    sku: r.sku, product_name: r.product_name,
+    paid: toNum(r.paid), free: toNum(r.free),
+  }));
+}
+
 export interface CommissionRow {
   seller_name: string; level: string; earned: number; paid: number; balance: number;
 }

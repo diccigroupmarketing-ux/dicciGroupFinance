@@ -47,6 +47,17 @@ def main():
             "tallyN": int(s["tally_n"]), "tallyCod": r2(s["tally_cod"]),
             "daily": daily, "perBill": per_bill,
         }
+    sb = reconSql.stockist_bottles(conn)
+    out["stockists"] = sorted(
+        [{"stockist": r["stockist"],
+          "confirmed_orders": int(r["confirmed_orders"] or 0),
+          "paid_bottles": int(r["paid_bottles"] or 0),
+          "free_bottles": int(r["free_bottles"] or 0),
+          "total_bottles": int(r["total_bottles"] or 0),
+          "unconfirmed_bottles": int(r["unconfirmed_bottles"] or 0)}
+         for _, r in sb.iterrows()],
+        key=lambda x: x["stockist"],
+    )
     conn.close()
     json.dump(out, sys.stdout, indent=1, sort_keys=True)
 
