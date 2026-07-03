@@ -1,6 +1,7 @@
 "use client";
 
 import { useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
 
 type FileResult = {
@@ -72,7 +73,9 @@ export default function UploadModal() {
         Upload data
       </button>
 
-      {open && (
+      {/* Portal ke body: sidebar ada sticky + overflow (stacking context sendiri),
+          modal fixed di dalamnya akan terperangkap belakang kandungan (bug Safari). */}
+      {open && createPortal(
         <div className="modalBack" onClick={() => !busy && setOpen(false)}>
           <div className="modal" onClick={(e) => e.stopPropagation()} role="dialog" aria-label="Upload data">
             <div className="cardHead">
@@ -143,7 +146,8 @@ export default function UploadModal() {
               </button>
             </div>
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
     </>
   );
