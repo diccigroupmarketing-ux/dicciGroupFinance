@@ -321,6 +321,36 @@ confirmed-paid (recon sedia ada). Tally B = earned(IN) vs withdraw(OUT) = baki d
 Tunggu 2 jawapan finance (Withdraw dalam Wallet vs transfer bank; percaya vs sahkan angka
 Fighter) + 1 set data period sama (Google Sheet + Wallet + export order Fighter).
 
+## Insiden ops: crash selepas deploy reconSql (2026-07-03, SELESAI)
+
+- Gejala: app live crash masa boot, `AttributeError` pada `db.ensure_order_skus`. Punca:
+  Streamlit Cloud sync kod baru TANPA restart proses Python, jadi app.py baru jalan dengan
+  modul db.py lama dalam memori. Kod repo + data Neon tak terjejas langsung.
+- SOP bila jadi lagi: **Reboot app** dari share.streamlit.io (akaun diccigroupmarketing).
+  Push tambahan TAK menyelesaikan (punca memang sync-tanpa-restart). PENTING: reboot TAK
+  memadam data, data duduk dalam Neon, bukan dalam container app.
+- Disahkan lepas reboot: Neon connected (heartbeat `app_meta.last_app_boot` hidup, boleh
+  semak dari terminal), dashboard kira betul (J&T 369 parcel, net remit RM 63,036.17,
+  0 exception, padan baseline).
+- Keadaan data live Neon masa insiden ditutup: masih data SAMPEL ujian (1,208 orders,
+  1 bil J&T dengan 369 baris, 768 wallet txns, 0 prepaid), BUKAN kosong. Kalau nak mula
+  bersih untuk finance, kena Reset store (secret ADMIN_MODE) atau padam via SQL,
+  reboot sahaja tak mengosongkan apa apa.
+- **Hardening SIAP (2026-07-03, commit 503fe70):** guard self-heal dalam app.py. Setiap
+  run kesan 2 isyarat: handshake `db.MODULE_REV` (proses zaman pra-guard) + mtime fail
+  modul berubah sejak dimuatkan (deploy seterusnya). Bila basi: reload semua modul projek
+  ikut urutan dependency (db → reconcile → ingest → reconSql → theme) + clear cache data.
+  Gagal reload = fallback tingkah laku lama (Reboot manual). Diuji AppTest: boot normal,
+  simulasi basi handshake, simulasi basi mtime, run selepas heal, semua lulus; baseline
+  recon identik. Import app.py ditukar ke bentuk modul (`ingest.ingest_buffer`) supaya
+  resolve masa panggil, dan import INTEGRITY_EXC/AGED yang tak diguna dibuang.
+- **Store live DIKOSONGKAN SENGAJA (2026-07-03, arahan Adi):** backup penuh dulu ke
+  `backups/20260703-091755` (semua table + content hash), kemudian `db.reset_db()` lawan
+  Neon dari terminal. Selepas padam: semua table transaksi = 0, `sku_bottles` kekal (9).
+  Nota cache: padam dari luar app TAK invalidate `st.cache_data` (TTL 1 jam), jadi app
+  perlu 1 reboot lagi untuk papar kosong serta merta. Restore kalau perlu: CSV dalam
+  folder backup tu.
+
 ## Status sekarang
 
 - [x] Borak, kunci skop + keputusan Fasa 1.
