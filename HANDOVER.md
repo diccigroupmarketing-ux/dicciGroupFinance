@@ -387,9 +387,17 @@ CSS tokens dari mockup (tanpa Tailwind), font next/font (Fraunces + Manrope).
   sekali gus latihan restore). `.env.local` tunjuk ke dev DB.
 - Jalan lokal: `node scripts/devDb.mjs` (background) -> `npm run dev` atau
   `npm run build && npm run start` -> localhost:3000.
-- PENDING fasa deploy: link projek Vercel + env DATABASE_URL, wire Clerk (perlu akaun
-  + keys dari Adi), Python functions ingest (upload masih guna Streamlit buat masa ni),
-  page Per Stokis + SKU editor, pemilih tempoh (periodPill masih "All uploaded data").
+- **DEPLOYED KE PRODUCTION (2026-07-03): `https://diccigroupfinance.vercel.app`**
+  (projek Vercel `diccigroupfinance`, team DICCI IMPACT SDN BHD, env DATABASE_URL
+  production = Neon). Smoke check lulus: / redirect, /impact render empty state
+  (Neon memang kosong), stream + commission 200.
+- ⛔ **GATE BARU: app Vercel BELUM ada auth (Clerk belum wire).** Hari ni selamat sebab
+  Neon kosong. TAPI sebelum finance upload data BETUL, WAJIB siapkan dua dua:
+  (1) rotate kredential Neon (gate lama), (2) wire Clerk pada app Vercel. URL public
+  tanpa auth + data betul = terdedah.
+- PENDING fasa seterusnya: wire Clerk (perlu akaun + keys dari Adi), Python functions
+  ingest (upload masih guna Streamlit buat masa ni), page Per Stokis + SKU editor,
+  pemilih tempoh (periodPill masih "All uploaded data").
 
 ## Status sekarang
 
