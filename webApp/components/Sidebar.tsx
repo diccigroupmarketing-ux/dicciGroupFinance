@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import UploadModal from "./UploadModal";
 
 const ICONS: Record<string, React.ReactNode> = {
   dashboard: (
@@ -95,13 +96,7 @@ export default function Sidebar() {
       </nav>
 
       <div className="sideFoot">
-        <button className="uploadBtn" disabled
-          title="Upload lands in the next phase; for now upload via the current Streamlit app">
-          <svg width="15" height="15" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="2">
-            <path d="M10 14V4m0 0L6 8m4-4 4 4M4 16.5h12" />
-          </svg>
-          Upload data
-        </button>
+        <UploadModal />
         <div className="userChip">
           <div className="userAva">DF</div>
           <div className="userMail">Dicci Finance</div>

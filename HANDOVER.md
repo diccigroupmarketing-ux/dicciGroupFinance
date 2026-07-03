@@ -395,9 +395,19 @@ CSS tokens dari mockup (tanpa Tailwind), font next/font (Fraunces + Manrope).
   Neon kosong. TAPI sebelum finance upload data BETUL, WAJIB siapkan dua dua:
   (1) rotate kredential Neon (gate lama), (2) wire Clerk pada app Vercel. URL public
   tanpa auth + data betul = terdedah.
-- PENDING fasa seterusnya: wire Clerk (perlu akaun + keys dari Adi), Python functions
-  ingest (upload masih guna Streamlit buat masa ni), page Per Stokis + SKU editor,
-  pemilih tempoh (periodPill masih "All uploaded data").
+- **INGEST SIAP (2026-07-03): upload berfungsi penuh dalam app Vercel.** Seni bina:
+  browser -> route Next `/api/upload` (tanpa token di browser) -> function Python
+  `/api/pyIngest` (guard `UPLOAD_TOKEN`, env production) -> parser `ingest.py` SEBENAR
+  (salinan setia dalam `webApp/api/engine/`, sync via `scripts/syncEngine.sh`, JANGAN
+  edit salinan terus) -> upsert idempotent ke Neon. Dev lokal: `INGEST_MODE=local`
+  dalam .env.local -> route spawn `scripts/devIngest.py` (enjin rujukan root, tulis ke
+  dev PG embedded). Had fail 4MB/fail (had body function Vercel).
+  Diuji: E2E lokal fighter 852 baris idempotent (count tak berganda) + fail tak
+  dikenali = tiada tulis; produksi: function tanpa token = 401, laluan penuh dengan
+  fail tak dikenali = kind null TANPA tulis, Neon disahkan kekal 0 orders.
+- PENDING fasa seterusnya: wire Clerk (perlu akaun + keys dari Adi) , GATE sebelum
+  data betul; page Per Stokis + SKU editor; pemilih tempoh (periodPill masih "All
+  uploaded data"); lepas Clerk siap boleh rancang penutupan Streamlit.
 
 ## Status sekarang
 
