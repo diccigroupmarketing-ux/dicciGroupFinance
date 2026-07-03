@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { SignOutButton, useUser } from "@clerk/nextjs";
 import UploadModal from "./UploadModal";
 
 const ICONS: Record<string, React.ReactNode> = {
@@ -64,6 +65,9 @@ const STREAMS = [
 
 export default function Sidebar() {
   const path = usePathname();
+  const { user } = useUser();
+  const email = user?.primaryEmailAddress?.emailAddress ?? "";
+  const initial = (email[0] ?? "D").toUpperCase();
   const cls = (active: boolean) => "navItem" + (active ? " active" : "");
 
   return (
@@ -120,8 +124,15 @@ export default function Sidebar() {
       <div className="sideFoot">
         <UploadModal />
         <div className="userChip">
-          <div className="userAva">DF</div>
-          <div className="userMail">Dicci Finance</div>
+          <div className="userAva">{initial}</div>
+          <div className="userMail" title={email}>{email || "Signed in"}</div>
+          <SignOutButton>
+            <button className="signOutBtn" title="Sign out" aria-label="Sign out">
+              <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.7" width="15" height="15">
+                <path d="M12.5 6.5v-2A1.5 1.5 0 0 0 11 3H5.5A1.5 1.5 0 0 0 4 4.5v11A1.5 1.5 0 0 0 5.5 17H11a1.5 1.5 0 0 0 1.5-1.5v-2M8 10h9m0 0-2.5-2.5M17 10l-2.5 2.5" />
+              </svg>
+            </button>
+          </SignOutButton>
         </div>
       </div>
     </aside>

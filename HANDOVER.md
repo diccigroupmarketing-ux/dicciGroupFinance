@@ -391,10 +391,8 @@ CSS tokens dari mockup (tanpa Tailwind), font next/font (Fraunces + Manrope).
   (projek Vercel `diccigroupfinance`, team DICCI IMPACT SDN BHD, env DATABASE_URL
   production = Neon). Smoke check lulus: / redirect, /impact render empty state
   (Neon memang kosong), stream + commission 200.
-- ⛔ **GATE BARU: app Vercel BELUM ada auth (Clerk belum wire).** Hari ni selamat sebab
-  Neon kosong. TAPI sebelum finance upload data BETUL, WAJIB siapkan dua dua:
-  (1) rotate kredential Neon (gate lama), (2) wire Clerk pada app Vercel. URL public
-  tanpa auth + data betul = terdedah.
+- ~~⛔ GATE: app Vercel belum ada auth~~ **SELESAI 2026-07-04, lihat entri CLERK LIVE
+  bawah.** Gate tinggal SATU sebelum finance upload data betul: rotate kredential Neon.
 - **INGEST SIAP (2026-07-03): upload berfungsi penuh dalam app Vercel.** Seni bina:
   browser -> route Next `/api/upload` (tanpa token di browser) -> function Python
   `/api/pyIngest` (guard `UPLOAD_TOKEN`, env production) -> parser `ingest.py` SEBENAR
@@ -416,12 +414,31 @@ CSS tokens dari mockup (tanpa Tailwind), font next/font (Fraunces + Manrope).
   ke document.body + z-index 1000. Disahkan atas produksi.
 - **STATUS DATA PRODUKSI (2026-07-04):** Adi upload data sampel melalui app baru
   (upload BERFUNGSI; bug tadi visual sahaja). Neon kini ada ~1,208 orders / RM63k
-  (set sampel Mei-Jun). NOTA: app masih public tanpa auth, data bisnes sebenar
-  (nama stokis, jumlah) boleh dilihat sesiapa yang ada URL. Keputusan Adi PENDING:
-  biar sementara ATAU wipe balik sampai Clerk siap.
-- PENDING fasa seterusnya: wire Clerk (perlu akaun + keys dari Adi) , GATE sebelum
-  data betul; SKU editor + admin reset (lepas Clerk); rotate kredential Neon (gate
-  lama, sebelum finance upload data betul); lepas tu rancang penutupan Streamlit.
+  (set sampel Mei-Jun). ~~NOTA: app public tanpa auth~~ SELESAI: sejak Clerk LIVE
+  (2026-07-04) data dah terlindung belakang sign-in, keputusan wipe tak perlu lagi.
+- **CLERK LIVE (2026-07-04): app Vercel TERKUNCI penuh belakang sign-in.** Cara pasang:
+  Vercel Marketplace (`vercel integration add clerk`, resource `clerk-cinereous-sail`
+  bawah team DICCI IMPACT, billing bersatu, TIADA akaun Clerk berasingan), keys auto
+  masuk semua env Vercel. Kod: `proxy.ts` (Next 16 guna proxy.ts, BUKAN middleware.ts;
+  clerkMiddleware lindung SEMUA laluan kecuali `/sign-in` dan `/api/pyIngest` yang
+  kekal guard UPLOAD_TOKEN sendiri sebab dipanggil server-to-server tanpa cookie),
+  ClerkProvider dalam layout root, page `/sign-in` berjenama Dicci (SignIn appearance:
+  colorPrimary teal; nota v7: variable `colorForeground`, BUKAN colorText), guard
+  `await auth()` dalam `/api/upload` (defense in depth), user chip sebenar + sign out
+  dalam Sidebar. Sign-up DIKUNCI allowlist sahaja (PATCH /v1/instance/restrictions via
+  Backend API), allowlist semasa: impactdicci@gmail.com + diccigroupmarketing@gmail.com.
+  Tambah team finance: dashboard Clerk ATAU POST /v1/allowlist_identifiers guna
+  CLERK_SECRET_KEY. Disahkan produksi: /impact redirect sign-in (browser sebenar;
+  curl nampak 404 `dev-browser-missing`, itu normal instance dev), Adi berjaya masuk
+  guna email. NOTA: instance Clerk = DEVELOPMENT (banner "Development mode" pada kad
+  sign-in), instance production Clerk perlukan custom domain, tak boleh atas
+  .vercel.app; okay untuk internal sementara. Kosmetik pending: rename app dalam
+  dashboard Clerk (sekarang "clerk-cinereous-sail"), enable MFA. AWAS dev lokal:
+  `vercel env pull` / `vercel integration add` OVERWRITE .env.local, kena restore
+  DATABASE_URL dev + INGEST_MODE=local selepasnya.
+- PENDING fasa seterusnya: rotate kredential Neon (GATE terakhir sebelum finance
+  upload data betul); SKU editor + admin reset (Clerk dah siap, boleh mula);
+  lepas tu rancang penutupan Streamlit.
 
 ### Arahan dev webApp (untuk sesi kerja)
 - Dev DB: `cd webApp && node scripts/devDb.mjs` (background; Postgres embedded port

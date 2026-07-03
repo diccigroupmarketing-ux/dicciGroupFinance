@@ -4,6 +4,7 @@
 //   Dev      : INGEST_MODE=local -> panggil python3 scripts/devIngest.py
 //              (enjin rujukan root repo, tulis ke dev Postgres embedded).
 import { NextResponse } from "next/server";
+import { auth } from "@clerk/nextjs/server";
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -15,6 +16,12 @@ export const maxDuration = 60;
 const MAX_BYTES = 4 * 1024 * 1024; // had body function Vercel ~4.5MB
 
 export async function POST(req: Request) {
+  // Defense in depth: proxy.ts dah lindung laluan ni, tapi guard sekali lagi
+  // di sini supaya upload tak bergantung pada matcher proxy semata mata.
+  const { userId } = await auth();
+  if (!userId) {
+    return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  }
   const filename = decodeURIComponent(req.headers.get("x-filename") ?? "");
   if (!filename) {
     return NextResponse.json({ error: "x-filename header diperlukan" }, { status: 400 });

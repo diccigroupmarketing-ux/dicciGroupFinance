@@ -44,3 +44,4 @@ next-env.d.ts
 devPgData/
 # hasil jana parity
 scripts/parityPython.json
+.env*.local

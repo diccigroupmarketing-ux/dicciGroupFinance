@@ -89,7 +89,33 @@ button{font-family:var(--body)}
   border:1px solid rgba(255,255,255,.18);color:#EDE4CB;
   font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center;
 }
-.userMail{font-size:11.5px;color:#9DB8BA}
+.userMail{
+  font-size:11.5px;color:#9DB8BA;min-width:0;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+}
+.signOutBtn{
+  margin-left:auto;flex:none;background:none;border:0;cursor:pointer;
+  color:#9DB8BA;padding:5px;border-radius:7px;display:flex;
+  transition:color .15s,background .15s;
+}
+.signOutBtn:hover{color:#EDE4CB;background:rgba(255,255,255,.08)}
+
+/* ---------- auth (sign-in) ---------- */
+.authShell{
+  min-height:100dvh;display:flex;flex-direction:column;align-items:center;
+  justify-content:center;gap:26px;padding:32px 16px;
+  background:linear-gradient(160deg,var(--tealDeep) 0%,var(--teal) 62%,var(--tealMid) 100%);
+}
+.authBrand{text-align:center}
+.authWordmark{
+  font-family:var(--display);font-weight:600;font-size:34px;
+  color:var(--gold);letter-spacing:.14em;
+}
+.authSub{
+  font-size:12px;font-weight:700;letter-spacing:.24em;text-transform:uppercase;
+  color:#9DB8BA;margin-top:4px;
+}
+.authFoot{font-size:11.5px;color:#9DB8BA;letter-spacing:.06em}
 
 /* ---------- main ---------- */
 .main{min-width:0;padding:34px 40px 56px}
