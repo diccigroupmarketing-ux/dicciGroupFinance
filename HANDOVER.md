@@ -371,8 +371,25 @@ SQL (reconSql) dibawa terus.
 , 2 skrin interaktif (Dashboard + stream J&T COD, nav kiri boleh klik). Design language:
 brand terkunci (teal #0A3D45 + emas #D6B467, Fraunces/Manrope), sidebar gelap teal,
 hero band net remit, KPI tiles, chart emas gelap #A8853B (lulus validator kontras),
-chip status (Clean/Awaiting bill/Aged), jadual audit tabular-nums. Status: MENUNGGU
-approval / komen Adi sebelum pembinaan app sebenar.
+chip status (Clean/Awaiting bill/Aged), jadual audit tabular-nums. **DILULUSKAN Adi.**
+
+**App v1 DIBINA (2026-07-03, folder `webApp/`):** Next.js 16 + TypeScript, App Router,
+CSS tokens dari mockup (tanpa Tailwind), font next/font (Fraunces + Manrope).
+- Laluan: `/impact` (dashboard roll-up), `/impact/streams/[jnt|dhl|ninja]`,
+  `/impact/commission`. Server components baca terus Neon (pg Pool).
+- `lib/recon.ts` = port SETIA reconSql.py (Postgres sahaja, tiada fork SQLite; corak
+  tmp table SATU transaksi + rollback dikekalkan, selamat pooler Neon).
+  **PARITY LULUS**: `scripts/parityDump.py` + `scripts/parityCheck.ts` banding agregat
+  TS lawan Python atas data sampel, ketiga tiga stream PADAN (kat_n, daily, per_bill,
+  lines, tally). PERATURAN kekal: ubah reconcile.py dulu > reconSql.py > lib/recon.ts.
+- Dev tanpa sentuh Neon produksi: `scripts/devDb.mjs` (Postgres EMBEDDED dalam
+  node_modules, port 5433) + `scripts/loadDevDb.py` (muat snapshot backups/ ke dev DB,
+  sekali gus latihan restore). `.env.local` tunjuk ke dev DB.
+- Jalan lokal: `node scripts/devDb.mjs` (background) -> `npm run dev` atau
+  `npm run build && npm run start` -> localhost:3000.
+- PENDING fasa deploy: link projek Vercel + env DATABASE_URL, wire Clerk (perlu akaun
+  + keys dari Adi), Python functions ingest (upload masih guna Streamlit buat masa ni),
+  page Per Stokis + SKU editor, pemilih tempoh (periodPill masih "All uploaded data").
 
 ## Status sekarang
 
