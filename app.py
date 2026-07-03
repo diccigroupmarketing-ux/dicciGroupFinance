@@ -15,19 +15,58 @@ Run: streamlit run app.py
 import warnings
 warnings.filterwarnings("ignore")
 
+import importlib
+import os
+
 import pandas as pd
 import streamlit as st
 from sqlalchemy import text
 
 import db
+import ingest
+import reconcile
 import reconSql
 import theme
-from ingest import ingest_buffer
-from reconcile import INTEGRITY_EXC, AGED
 
 st.set_page_config(page_title="Dicci Group Finance", page_icon=theme.page_icon(),
                    layout="wide", initial_sidebar_state="collapsed")
 theme.inject_css()
+
+
+# ============ Self-heal modul (deploy Streamlit Cloud tanpa restart proses) ============
+# Streamlit Cloud kadang sync kod baru TANPA restart proses Python: app.py baru
+# jalan dengan modul projek lama dalam memori (insiden 2026-07-03, AttributeError
+# db.ensure_order_skus, ubat manual = Reboot). Guard ni kesan dua isyarat murah:
+#   1. handshake db.MODULE_REV (tangkap proses dari zaman sebelum guard wujud),
+#   2. mtime fail modul berubah sejak dimuatkan (tangkap deploy seterusnya).
+# Bila basi: reload SEMUA modul projek ikut urutan dependency (db dulu) supaya
+# from-import antara modul turut segar, dan kosongkan cache data (hasil cache
+# mungkin dari logik lama). Gagal reload = biar app teruskan, paling teruk =
+# tingkah laku lama (perlu Reboot manual), bukan lebih buruk.
+REQUIRED_DB_REV = 2  # mesti padan db.MODULE_REV
+
+_PROJECT_MODULES = (db, reconcile, ingest, reconSql, theme)
+
+
+def _self_heal_modules():
+    try:
+        stale = getattr(db, "MODULE_REV", 0) != REQUIRED_DB_REV
+        for mod in _PROJECT_MODULES:
+            cur = os.path.getmtime(mod.__file__)
+            if getattr(mod, "_loadedMtime", None) not in (None, cur):
+                stale = True
+        if stale:
+            for mod in _PROJECT_MODULES:
+                importlib.reload(mod)
+        for mod in _PROJECT_MODULES:
+            mod._loadedMtime = os.path.getmtime(mod.__file__)
+        if stale:
+            st.cache_data.clear()
+    except Exception:
+        pass
+
+
+_self_heal_modules()
 
 
 # ============ Boot + lapisan baca bercache (kurangkan round trip app -> Neon) ============
@@ -295,7 +334,7 @@ def render_upload_popover(label="⬆  Upload"):
             conn = db.get_conn()
             for f in files:
                 try:
-                    kind, n = ingest_buffer(f, f.name, conn)
+                    kind, n = ingest.ingest_buffer(f, f.name, conn)
                     if kind:
                         st.success(f"{f.name}: **{kind}** · {n} rows")
                     else:

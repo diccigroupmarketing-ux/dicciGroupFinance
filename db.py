@@ -36,6 +36,11 @@ COMPLETED, RETURNED, REJECTED, IN_TRANSIT = "Completed", "Returned", "Rejected",
 REMIT_PENDING_DAYS = 14
 TODAY = pd.Timestamp("2026-06-18")
 
+# Handshake untuk guard self-heal app.py (kesan proses lama selepas deploy tanpa
+# restart). TAK perlu bump untuk deploy biasa, mtime fail yang jaga tu; nilai ni
+# cuma tangkap proses dari zaman sebelum guard wujud (modul tanpa MODULE_REV).
+MODULE_REV = 2
+
 # ====================================================================
 # Helpers (vektor, untuk pandas Series)
 # ====================================================================
