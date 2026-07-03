@@ -351,6 +351,29 @@ Fighter) + 1 set data period sama (Google Sheet + Wallet + export order Fighter)
   perlu 1 reboot lagi untuk papar kosong serta merta. Restore kalau perlu: CSV dalam
   folder backup tu.
 
+## FASA NEXT.JS DIMULAKAN (keputusan owner 2026-07-03)
+
+Owner mahu tinggalkan Streamlit SEKARANG, sebab utama = kualiti UI/UX. Ini selari dengan
+blueprint terkunci (Streamlit memang lapisan sementara), cuma timing diawalkan, tak
+tunggu semua stream terbukti. Lapisan DURABLE tak terjejas: Neon + schema + logik recon
+SQL (reconSql) dibawa terus.
+
+**4 keputusan dikunci (dipersetujui Adi):**
+1. **Strategi:** bina SELARI. Streamlit kekal live (dah stabil + ada guard self-heal)
+   sepanjang pembinaan; tutup hanya bila Next.js capai parity dan Adi puas hati.
+2. **Ingest:** UI upload dalam Next.js, fail dihantar ke **Python serverless functions
+   di Vercel** yang guna semula parser `ingest.py` sedia ada (DHL UTF-16, CHIP header
+   terkubur, upsert idempotent), sifar penulisan semula parser = sifar regression risk.
+3. **Auth:** **Clerk** (managed, Vercel Marketplace, allowlist email team finance, MFA).
+4. **Proses design:** mockup diluluskan DULU baru tulis kod app.
+
+**Mockup v1 (2026-07-03):** artifact `https://claude.ai/code/artifact/c5ee1e1d-0c20-4b22-992a-fafcc21117cf`
+, 2 skrin interaktif (Dashboard + stream J&T COD, nav kiri boleh klik). Design language:
+brand terkunci (teal #0A3D45 + emas #D6B467, Fraunces/Manrope), sidebar gelap teal,
+hero band net remit, KPI tiles, chart emas gelap #A8853B (lulus validator kontras),
+chip status (Clean/Awaiting bill/Aged), jadual audit tabular-nums. Status: MENUNGGU
+approval / komen Adi sebelum pembinaan app sebenar.
+
 ## Status sekarang
 
 - [x] Borak, kunci skop + keputusan Fasa 1.
