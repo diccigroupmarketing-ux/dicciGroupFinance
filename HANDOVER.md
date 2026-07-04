@@ -436,8 +436,29 @@ CSS tokens dari mockup (tanpa Tailwind), font next/font (Fraunces + Manrope).
   dashboard Clerk (sekarang "clerk-cinereous-sail"), enable MFA. AWAS dev lokal:
   `vercel env pull` / `vercel integration add` OVERWRITE .env.local, kena restore
   DATABASE_URL dev + INGEST_MODE=local selepasnya.
+- **SKU EDITOR + ADMIN RESET DIBINA (2026-07-04, belum deploy):** page
+  `/impact/skus` kini BOLEH EDIT (dulu read-only). Seni bina: `lib/mutations.ts`
+  (port setia db.py: `saveSkuMap` = ganti PENUH sku_bottles macam save_sku_map tapi
+  dibungkus transaksi rollback-safe; `resetStore` = padam 6 jadual transaksi, KEKAL
+  sku_bottles macam reset_db; `isAdmin` = allowlist env ADMIN_EMAILS). Route:
+  `PUT /api/skus` (semua ahli sign-in boleh edit mapping) + `POST /api/admin/reset`
+  (admin sahaja, perlu confirm:true). Dua dua guard `await auth()` + admin guna
+  `currentUser()` email lawan ADMIN_EMAILS. UI: `SkuEditor.tsx` (edit inline, add/
+  delete row, validasi SKU kosong/pendua case-insensitive, Save/Revert) +
+  `StoreDanger.tsx` (danger zone admin, checkbox confirm, papar kiraan store).
+  NOTA penting: ubah sku_bottles TAK perlu rebuild order_skus , botol dikira SQL
+  join `UPPER(TRIM(sb.sku))=os.sku` masa recon, jadi nilai baru auto diambil.
+  Ini BUKAN ubah logik recon (cuma data config), parity harness tak terjejas.
+  Diuji: `scripts/testMutations.ts` (16 assertion LULUS atas dev PG , saveSkuMap
+  self-restoring, resetStore betul + restore via loadDevDb, isAdmin; skrip ada
+  guard tolak DATABASE_URL bukan localhost). Auth gating disahkan: PUT/POST tanpa
+  sesi = 307 sign-in, DB tak berubah.
+  ⚠ SEBELUM DEPLOY: (1) green light Adi + semak visual editor dalam browser
+  (localhost, perlu sign-in); (2) set env `ADMIN_EMAILS` di Vercel production
+  (sekarang cuma .env.local dev = impactdicci@gmail.com), kalau tak set = tiada
+  admin, danger zone tak muncul (selamat by default).
 - PENDING fasa seterusnya: rotate kredential Neon (GATE terakhir sebelum finance
-  upload data betul); SKU editor + admin reset (Clerk dah siap, boleh mula);
+  upload data betul); deploy SKU editor + set ADMIN_EMAILS prod (bila Adi lulus);
   lepas tu rancang penutupan Streamlit.
 
 ### Arahan dev webApp (untuk sesi kerja)
