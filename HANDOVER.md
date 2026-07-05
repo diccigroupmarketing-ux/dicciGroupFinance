@@ -482,10 +482,21 @@ CSS tokens dari mockup (tanpa Tailwind), font next/font (Fraunces + Manrope).
   (5) `--faint` digelapkan (#8A9698 -> #61706F) lulus kontras AA;
   (6) `mutations.ts`/`skus route` , guard elemen null + had 2000 baris;
   (7) SKU input `aria-invalid`.
-- **AUDIT BACKLOG (dari 3 subagent, belum buat, ikut nilai-usaha):**
-  BESAR: (a) bank confirmation table + UI , TUTUP gelung Fasa 1 (sekarang app cuma
-  "jangkaan", tiada rekod duit betul masuk bank; `confirmed_paid_order_ids` cuma
-  untuk kira botol, bukan recon bank); (b) cache recon `revalidateTag` invalidate
+- **BANK CONFIRMATION DIBINA (2026-07-05, belum deploy):** TUTUP gelung Fasa 1.
+  Granulariti PER BIL (satu bil courier = satu payout = satu deposit bank).
+  Jadual baru `bank_deposits` (bill_id PK, actual_amount, deposited_on, note,
+  entered_by, updated_at) , additive, ditambah ke `db.py` schema (sumber kebenaran)
+  + `lib/bank.ts` ensureTable cipta lazily dari webApp (tak bergantung boot
+  Streamlit). Route `PUT/DELETE /api/bank` (auth + entered_by dari currentUser).
+  UI: `components/BillsTable.tsx` (client) ganti jadual Settlement bills statik ,
+  kolum "In bank" boleh edit inline + "Variance" (net dijangka tolak bank sebenar;
+  chip Matched/Awaiting/beza berwarna) + ringkasan (X dari Y bil disahkan, jumlah
+  bank vs jangka, variance keseluruhan). Variance bukan sifar = tanda bocor.
+  BUKAN ubah logik recon (lapisan atas). Diuji: `scripts/testBank.ts` 8 assertion
+  LULUS (ensureTable, upsert, guard negatif, padam, tiada baris berganda), auth
+  gating 307 tanpa tulis, PARITY harness LULUS (recon identik selepas tambah jadual).
+- **AUDIT BACKLOG (dari 3 subagent, ikut nilai-usaha):**
+  BESAR: ~~(a) bank confirmation~~ SIAP (lihat atas); (b) cache recon `revalidateTag` invalidate
   masa upload/reset/sku-save , lever perf yang HANDOVER dah namakan.
   PARITY (blok tutup Streamlit): by-bill parcel drill (`bill_parcels`), audit tab
   penuh (`stokis_kat`/`other_courier`/`unmapped_skus`), commission drill

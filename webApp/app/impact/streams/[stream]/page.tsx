@@ -5,11 +5,13 @@ import {
   StreamKey, streamSummary, storeCounts,
 } from "@/lib/recon";
 import {
-  fmtDate, fmtInt, fmtRM, GRAIN_LABEL, groupByGrain, parseGrain, trackingOrDash,
+  fmtInt, fmtRM, GRAIN_LABEL, groupByGrain, parseGrain, trackingOrDash,
 } from "@/lib/format";
-import { Chip, KatChip, katTone } from "@/components/Chip";
+import { KatChip, katTone } from "@/components/Chip";
 import GrainSwitcher from "@/components/GrainSwitcher";
 import WeeklyChart from "@/components/WeeklyChart";
+import BillsTable, { type BillRow } from "@/components/BillsTable";
+import { getBankDeposits } from "@/lib/bank";
 
 export const dynamic = "force-dynamic";
 
@@ -44,9 +46,23 @@ export default async function StreamPage(
     );
   }
 
-  const s = await streamSummary(key);
+  const [s, deposits] = await Promise.all([streamSummary(key), getBankDeposits()]);
   const net = Math.round((s.linesCod - s.linesFee) * 100) / 100;
   const weekly = groupByGrain(s.daily, grain);
+
+  // Gabung bil + pecahan recon + deposit bank untuk jadual pengesahan.
+  const billRows: BillRow[] = s.bills.map((b) => {
+    const pb = s.perBill.find((x) => x.bill_id === b.bill_id);
+    const d = deposits[b.bill_id];
+    const cod = pb?.cod ?? 0, fee = pb?.fee ?? 0;
+    return {
+      bill_id: b.bill_id, settlement_date: b.settlement_date,
+      parcel: pb?.parcel ?? 0, cod, fee,
+      net: Math.round((cod - fee) * 100) / 100, exc: pb?.exc ?? 0,
+      actual: d ? d.actual_amount : null, note: d?.note ?? null,
+      entered_by: d?.entered_by ?? null,
+    };
+  });
 
   const katRows = KAT_ORDER.filter((k) => (s.katN[k] ?? 0) > 0)
     .map((k) => ({ kat: k, n: s.katN[k] }));
@@ -84,41 +100,7 @@ export default async function StreamPage(
       </div>
 
       {s.bills.length > 0 ? (
-        <div className="card">
-          <div className="cardHead">
-            <div className="cardTitle">Settlement bills</div>
-            <div className="cardHint">one bill = one payout from {cfg.name}</div>
-          </div>
-          <div className="tableWrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>Bill</th><th>Settled</th><th className="num">Parcels</th>
-                  <th className="num">Collected</th><th className="num">Fee</th>
-                  <th className="num">Net remit</th><th>Books</th>
-                </tr>
-              </thead>
-              <tbody>
-                {s.bills.map((b) => {
-                  const pb = s.perBill.find((x) => x.bill_id === b.bill_id);
-                  return (
-                    <tr key={b.bill_id}>
-                      <td className="cellMain">{b.bill_id}</td>
-                      <td>{fmtDate(b.settlement_date)}</td>
-                      <td className="num">{fmtInt(pb?.parcel ?? 0)}</td>
-                      <td className="num">{fmtRM(pb?.cod ?? 0)}</td>
-                      <td className="num">{fmtRM(pb?.fee ?? 0)}</td>
-                      <td className="num"><b>{fmtRM((pb?.cod ?? 0) - (pb?.fee ?? 0))}</b></td>
-                      <td>{(pb?.exc ?? 0) === 0
-                        ? <Chip tone="pos">Clean</Chip>
-                        : <Chip tone="dan">{pb!.exc} exceptions</Chip>}</td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        </div>
+        <BillsTable rows={billRows} courierName={cfg.name} />
       ) : (
         <div className="emptyCard">
           <div className="big">No {cfg.name} bill loaded yet</div>

@@ -414,6 +414,18 @@ th.num{text-align:right}
 .skelKpi{height:96px}
 .skelCard{height:320px}
 
+/* ---------- bank confirmation (settlement bills) ---------- */
+.bankEdit{display:flex;flex-direction:column;gap:7px;align-items:stretch;min-width:220px}
+.bankEditBtns{display:flex;gap:8px;align-items:center;justify-content:flex-end}
+.bankErr{font-size:11.5px;color:var(--danText);text-align:right}
+.linkDanger{
+  background:none;border:0;color:var(--dan);font-size:12px;font-weight:700;
+  cursor:pointer;padding:2px 4px;
+}
+.linkDanger:hover{text-decoration:underline}
+.linkDanger:disabled{opacity:.5;cursor:default}
+.faintCell{color:var(--faint);font-weight:400}
+
 @media (max-width:940px){
   .shell{grid-template-columns:1fr}
   .side{position:static;height:auto;flex-direction:row;flex-wrap:wrap;align-items:center;gap:6px;padding:14px 16px}
