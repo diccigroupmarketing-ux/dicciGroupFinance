@@ -4,6 +4,7 @@
 import { NextResponse } from "next/server";
 import { auth, currentUser } from "@clerk/nextjs/server";
 import { resetStore, isAdmin } from "@/lib/mutations";
+import { logEvent } from "@/lib/audit";
 
 export const runtime = "nodejs";
 
@@ -30,6 +31,7 @@ export async function POST(req: Request) {
 
   try {
     await resetStore();
+    await logEvent(email ?? "unknown", "store_reset", "all transaction data cleared");
     return NextResponse.json({ ok: true });
   } catch (e) {
     return NextResponse.json(

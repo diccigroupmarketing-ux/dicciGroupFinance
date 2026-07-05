@@ -4,7 +4,8 @@
 //   Dev      : INGEST_MODE=local -> panggil python3 scripts/devIngest.py
 //              (enjin rujukan root repo, tulis ke dev Postgres embedded).
 import { NextResponse } from "next/server";
-import { auth } from "@clerk/nextjs/server";
+import { auth, currentUser } from "@clerk/nextjs/server";
+import { logEvent } from "@/lib/audit";
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -22,6 +23,8 @@ export async function POST(req: Request) {
   if (!userId) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }
+  const user = await currentUser();
+  const actor = user?.primaryEmailAddress?.emailAddress ?? "unknown";
   const filename = decodeURIComponent(req.headers.get("x-filename") ?? "");
   if (!filename) {
     return NextResponse.json({ error: "x-filename header diperlukan" }, { status: 400 });
@@ -49,6 +52,7 @@ export async function POST(req: Request) {
       const line = (res.stdout ?? "").trim().split("\n").pop() ?? "";
       try {
         const parsed = JSON.parse(line);
+        if (parsed.kind) await logEvent(actor, "upload", `${filename}: ${parsed.kind} · ${parsed.rows} rows`);
         return NextResponse.json(parsed, { status: parsed.error ? 500 : 200 });
       } catch {
         return NextResponse.json(
@@ -75,5 +79,8 @@ export async function POST(req: Request) {
     body: buf,
   });
   const payload = await res.json().catch(() => ({ error: "respons tidak sah dari enjin ingest" }));
+  if (res.ok && payload.kind) {
+    await logEvent(actor, "upload", `${filename}: ${payload.kind} · ${payload.rows} rows`);
+  }
   return NextResponse.json(payload, { status: res.status });
 }

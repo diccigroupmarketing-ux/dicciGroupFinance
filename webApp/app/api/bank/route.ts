@@ -3,6 +3,7 @@
 import { NextResponse } from "next/server";
 import { auth, currentUser } from "@clerk/nextjs/server";
 import { saveBankDeposit, deleteBankDeposit } from "@/lib/bank";
+import { logEvent } from "@/lib/audit";
 
 export const runtime = "nodejs";
 
@@ -40,6 +41,7 @@ export async function PUT(req: Request) {
       entered_by: email,
       now: new Date().toISOString(),
     });
+    await logEvent(email, "bank_confirm", `${body.bill_id}: RM ${body.actual_amount}`);
     return NextResponse.json({ ok: true });
   } catch (e) {
     return NextResponse.json(
@@ -58,6 +60,9 @@ export async function DELETE(req: Request) {
   }
   try {
     await deleteBankDeposit(billId);
+    const user = await currentUser();
+    await logEvent(user?.primaryEmailAddress?.emailAddress ?? "unknown",
+      "bank_clear", `${billId}: cleared`);
     return NextResponse.json({ ok: true });
   } catch (e) {
     return NextResponse.json(

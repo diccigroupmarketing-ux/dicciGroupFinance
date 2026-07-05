@@ -174,6 +174,17 @@ CREATE TABLE IF NOT EXISTS bank_deposits (
     updated_at    TEXT
 );
 
+-- Jejak audit tindakan pengguna (upload, edit SKU, reset, sahkan bank). webApp
+-- yang tulis (multi-user Clerk). event_id TEXT (uuid webApp) supaya agnostik
+-- dialek. Additive, tiada kesan recon.
+CREATE TABLE IF NOT EXISTS app_events (
+    event_id TEXT PRIMARY KEY,
+    ts       TEXT,
+    actor    TEXT,
+    action   TEXT,
+    detail   TEXT
+);
+
 CREATE TABLE IF NOT EXISTS prepaid_payments (
     gateway      TEXT,
     order_ref    TEXT,
