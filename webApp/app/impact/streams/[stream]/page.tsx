@@ -2,16 +2,33 @@ import { notFound } from "next/navigation";
 import Link from "next/link";
 import {
   AGED, COURIERS, INTEGRITY_EXC, KAT_LABEL, REMIT_PENDING_DAYS,
-  StreamKey, streamSummary, storeCounts,
+  StreamKey, streamSummary, storeCounts, lastIngest, type ExcRow,
 } from "@/lib/recon";
 import {
-  fmtInt, fmtRM, GRAIN_LABEL, groupByGrain, parseGrain, trackingOrDash,
+  fmtDate, fmtInt, fmtRM, GRAIN_LABEL, groupByGrain, parseGrain, trackingOrDash,
 } from "@/lib/format";
 import { KatChip, katTone } from "@/components/Chip";
 import GrainSwitcher from "@/components/GrainSwitcher";
 import WeeklyChart from "@/components/WeeklyChart";
 import BillsTable, { type BillRow } from "@/components/BillsTable";
+import ExportCsv from "@/components/ExportCsv";
 import { getBankDeposits } from "@/lib/bank";
+
+// Baris exception -> baris rata untuk CSV (finance kerja dalam Excel).
+function excToCsv(rows: ExcRow[]) {
+  return rows.map((r) => ({
+    order_id: r.order_id, stockist: r.seller_name,
+    tracking: r.tracking ?? r.awb, status: r.kategori,
+    selling_price: r.selling_price, cod_amount: r.cod_amount,
+    age_days: r.umur_hari,
+  }));
+}
+const EXC_COLS = [
+  { key: "order_id", header: "Order" }, { key: "stockist", header: "Stockist" },
+  { key: "tracking", header: "Tracking" }, { key: "status", header: "Status" },
+  { key: "selling_price", header: "Selling price" }, { key: "cod_amount", header: "COD amount" },
+  { key: "age_days", header: "Age (days)" },
+];
 
 export const dynamic = "force-dynamic";
 
@@ -46,7 +63,9 @@ export default async function StreamPage(
     );
   }
 
-  const [s, deposits] = await Promise.all([streamSummary(key), getBankDeposits()]);
+  const [s, deposits, asOf] = await Promise.all([
+    streamSummary(key), getBankDeposits(), lastIngest(),
+  ]);
   const net = Math.round((s.linesCod - s.linesFee) * 100) / 100;
   const weekly = groupByGrain(s.daily, grain);
 
@@ -70,7 +89,7 @@ export default async function StreamPage(
 
   return (
     <>
-      <Header name={cfg.name} />
+      <Header name={cfg.name} asOf={asOf} />
 
       <div className="kpis">
         <div className="kpi">
@@ -177,6 +196,8 @@ export default async function StreamPage(
             <div className="cardHead">
               <div className="cardTitle">Integrity exceptions</div>
               <div className="cardHint">Tier 1 · oldest first</div>
+              <ExportCsv rows={excToCsv(s.integ)} columns={EXC_COLS}
+                filename={`${key}-integrity-exceptions.csv`} label="Download CSV" />
             </div>
             <AuditTable rows={s.integ.slice(0, 15)} />
           </div>
@@ -250,7 +271,7 @@ function AuditTable({ rows }: {
   );
 }
 
-function Header({ name }: { name: string }) {
+function Header({ name, asOf }: { name: string; asOf?: string | null }) {
   return (
     <div className="pageHead">
       <div>
@@ -259,7 +280,10 @@ function Header({ name }: { name: string }) {
         <div className="pageSub">Settlement bills matched against Fighter orders by tracking number.</div>
       </div>
       <div className="headActions">
-        <div className="periodPill"><span className="cal">◷</span> All uploaded data</div>
+        <div className="periodPill" title={asOf ? `Last upload ${asOf}` : undefined}>
+          <span className="cal">◷</span>
+          {asOf ? `Data as of ${fmtDate(asOf)}` : "All uploaded data"}
+        </div>
       </div>
     </div>
   );

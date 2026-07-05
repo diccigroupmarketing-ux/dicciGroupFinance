@@ -501,8 +501,12 @@ CSS tokens dari mockup (tanpa Tailwind), font next/font (Fraunces + Manrope).
   PARITY (blok tutup Streamlit): by-bill parcel drill (`bill_parcels`), audit tab
   penuh (`stokis_kat`/`other_courier`/`unmapped_skus`), commission drill
   (`commission_breakdown`/`commission_names`), aging control (REMIT_PENDING_DAYS).
-  CEPAT: CSV export exceptions, order/tracking search, freshness pill (app_meta),
-  audit log user actions (multi-user Clerk). FLAG (perlu keputusan, ubah output):
+  CEPAT: ~~CSV export exceptions~~ SIAP + ~~freshness pill~~ SIAP (2026-07-05,
+  belum deploy: `lib/recon.ts` lastIngest MAX(ingested_at) merentas feed ->
+  header pill "Data as of ..."; `components/ExportCsv.tsx` muat turun CSV
+  client-side dari s.integ, butang pada kad Integrity exceptions; parity LULUS).
+  Lagi belum: order/tracking search, audit log user actions (multi-user Clerk).
+  FLAG (perlu keputusan, ubah output):
   TLS verify-full masa rotate Neon; cutoff `TODAY` tz-dependent (fix ikut parity);
   frozen aging date 18 Jun 2026 bila baseline dibuka semula dengan Adi.
 - PENDING fasa seterusnya: rotate kredential Neon (GATE terakhir sebelum finance

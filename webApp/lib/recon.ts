@@ -330,6 +330,20 @@ export async function storeCounts(): Promise<{ orders: number; billLines: number
   };
 }
 
+// ingested_at disimpan "YYYY-MM-DD HH:MM:SS" (perbandingan string = kronologi),
+// jadi MAX merentas feed = masa upload terkini. Untuk penunjuk kesegaran data.
+export async function lastIngest(): Promise<string | null> {
+  const res = await getPool().query(`
+    SELECT MAX(m) AS m FROM (
+      SELECT MAX(ingested_at) m FROM orders
+      UNION ALL SELECT MAX(ingested_at) FROM cod_bills
+      UNION ALL SELECT MAX(ingested_at) FROM cod_bill_lines
+      UNION ALL SELECT MAX(ingested_at) FROM wallet_txns
+      UNION ALL SELECT MAX(ingested_at) FROM prepaid_payments
+    ) t`);
+  return res.rows[0]?.m ?? null;
+}
+
 // ====================================================================
 // Botol per stokis (semua courier + payment; confirmed via feed duit).
 // Salinan setia stockist_bottles / stockist_orders dari reconSql.py.

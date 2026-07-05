@@ -1,5 +1,5 @@
-import { COURIERS, StreamKey, streamSummary, storeCounts } from "@/lib/recon";
-import { fmtInt, fmtRM, GRAIN_LABEL, groupByGrain, parseGrain } from "@/lib/format";
+import { COURIERS, StreamKey, streamSummary, storeCounts, lastIngest } from "@/lib/recon";
+import { fmtDate, fmtInt, fmtRM, GRAIN_LABEL, groupByGrain, parseGrain } from "@/lib/format";
 import { Chip } from "@/components/Chip";
 import GrainSwitcher from "@/components/GrainSwitcher";
 import WeeklyChart from "@/components/WeeklyChart";
@@ -13,7 +13,7 @@ export default async function Dashboard(
   { searchParams }: { searchParams: Promise<{ grain?: string }> },
 ) {
   const grain = parseGrain((await searchParams).grain);
-  const counts = await storeCounts();
+  const [counts, asOf] = await Promise.all([storeCounts(), lastIngest()]);
 
   if (counts.orders === 0) {
     return (
@@ -56,7 +56,7 @@ export default async function Dashboard(
 
   return (
     <>
-      <Header />
+      <Header asOf={asOf} />
       <div className="hero">
         <div className="heroTop">
           <div className="heroLabel">Net remit · All streams</div>
@@ -186,7 +186,7 @@ export default async function Dashboard(
   );
 }
 
-function Header() {
+function Header({ asOf }: { asOf?: string | null }) {
   return (
     <div className="pageHead">
       <div>
@@ -195,7 +195,10 @@ function Header() {
         <div className="pageSub">Every ringgit in, matched against Fighter orders.</div>
       </div>
       <div className="headActions">
-        <div className="periodPill"><span className="cal">◷</span> All uploaded data</div>
+        <div className="periodPill" title={asOf ? `Last upload ${asOf}` : undefined}>
+          <span className="cal">◷</span>
+          {asOf ? `Data as of ${fmtDate(asOf)}` : "All uploaded data"}
+        </div>
       </div>
     </div>
   );
