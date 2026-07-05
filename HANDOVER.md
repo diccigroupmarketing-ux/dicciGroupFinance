@@ -482,7 +482,7 @@ CSS tokens dari mockup (tanpa Tailwind), font next/font (Fraunces + Manrope).
   (5) `--faint` digelapkan (#8A9698 -> #61706F) lulus kontras AA;
   (6) `mutations.ts`/`skus route` , guard elemen null + had 2000 baris;
   (7) SKU input `aria-invalid`.
-- **BANK CONFIRMATION DIBINA (2026-07-05, belum deploy):** TUTUP gelung Fasa 1.
+- **BANK CONFIRMATION LIVE (2026-07-05, deploy disahkan):** TUTUP gelung Fasa 1.
   Granulariti PER BIL (satu bil courier = satu payout = satu deposit bank).
   Jadual baru `bank_deposits` (bill_id PK, actual_amount, deposited_on, note,
   entered_by, updated_at) , additive, ditambah ke `db.py` schema (sumber kebenaran)
