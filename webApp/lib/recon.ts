@@ -8,6 +8,7 @@
 // Corak: tmp table dalam SATU transaksi atas SATU client, rollback di akhir.
 // Selamat dengan Neon pooler (pgbouncer transaction mode).
 import { PoolClient } from "pg";
+import { unstable_cache } from "next/cache";
 import { getPool } from "./db";
 
 export const REMIT_PENDING_DAYS = 14;
@@ -246,7 +247,7 @@ export async function billParcels(
   }
 }
 
-export async function streamSummary(
+export async function streamSummaryImpl(
   key: StreamKey, pendingDays: number = REMIT_PENDING_DAYS,
 ): Promise<StreamSummary> {
   const cfg = COURIERS[key];
@@ -365,7 +366,7 @@ export async function streamSummary(
   }
 }
 
-export async function storeCounts(): Promise<{ orders: number; billLines: number; wallet: number }> {
+export async function storeCountsImpl(): Promise<{ orders: number; billLines: number; wallet: number }> {
   const p = getPool();
   const [o, l, w] = await Promise.all([
     p.query("SELECT COUNT(*) AS n FROM orders"),
@@ -381,7 +382,7 @@ export async function storeCounts(): Promise<{ orders: number; billLines: number
 
 // ingested_at disimpan "YYYY-MM-DD HH:MM:SS" (perbandingan string = kronologi),
 // jadi MAX merentas feed = masa upload terkini. Untuk penunjuk kesegaran data.
-export async function lastIngest(): Promise<string | null> {
+export async function lastIngestImpl(): Promise<string | null> {
   const res = await getPool().query(`
     SELECT MAX(m) AS m FROM (
       SELECT MAX(ingested_at) m FROM orders
@@ -455,7 +456,7 @@ export interface StockistRow {
   free_bottles: number; total_bottles: number; unconfirmed_bottles: number;
 }
 
-export async function stockistBottles(): Promise<StockistRow[]> {
+export async function stockistBottlesImpl(): Promise<StockistRow[]> {
   const res = await getPool().query(`
     SELECT stockist,
            COUNT(DISTINCT CASE WHEN conf = 1 THEN order_id END) AS confirmed_orders,
@@ -532,7 +533,7 @@ export interface SkuRow {
   sku: string; product_name: string | null; paid: number; free: number;
 }
 
-export async function skuMap(): Promise<SkuRow[]> {
+export async function skuMapImpl(): Promise<SkuRow[]> {
   const res = await getPool().query(
     `SELECT sku, product_name, paid, free FROM sku_bottles ORDER BY sku`);
   return res.rows.map((r) => ({
@@ -543,7 +544,7 @@ export async function skuMap(): Promise<SkuRow[]> {
 
 // SKU dalam order tapi tiada dalam sku_bottles = dikira 0 botol. Amaran finance
 // (port ringan unmapped_skus dari reconSql.py, versi global merentas semua feed).
-export async function unmappedSkus(): Promise<string[]> {
+export async function unmappedSkusImpl(): Promise<string[]> {
   const res = await getPool().query(`
     SELECT DISTINCT os.sku_raw FROM order_skus os
     WHERE os.sku NOT IN (SELECT UPPER(TRIM(sku)) FROM sku_bottles WHERE sku IS NOT NULL)
@@ -557,7 +558,7 @@ export interface CommissionRow {
 }
 
 // Salinan setia commission_summary dari reconSql.py.
-export async function commissionSummary(): Promise<CommissionRow[]> {
+export async function commissionSummaryImpl(): Promise<CommissionRow[]> {
   const res = await getPool().query(`
     SELECT seller_name, MIN(seller_role) AS level,
            SUM(CASE WHEN status = 'Approved' AND txn_type = 'IN'
@@ -622,3 +623,20 @@ export async function commissionBreakdown(seller: string): Promise<CommissionDet
     total: Number(tot.rows[0].n),
   };
 }
+
+// ====================================================================
+// Cache lapisan data: agregat berat di-cache dgn tag "recon", dibatalkan
+// (revalidateTag "recon") masa upload / simpan SKU / reset. revalidate 3600s =
+// jaring keselamatan kalau ada tulisan terlepas invalidate. Drill/search/bank
+// SENGAJA tak di-cache (perlu segar / per-arg). Halaman kekal force-dynamic;
+// unstable_cache ni cache DATA (merentas request), bukan cache route.
+// ====================================================================
+const RECON_CACHE = { tags: ["recon"], revalidate: 3600 };
+
+export const streamSummary = unstable_cache(streamSummaryImpl, ["streamSummary"], RECON_CACHE);
+export const storeCounts = unstable_cache(storeCountsImpl, ["storeCounts"], RECON_CACHE);
+export const lastIngest = unstable_cache(lastIngestImpl, ["lastIngest"], RECON_CACHE);
+export const stockistBottles = unstable_cache(stockistBottlesImpl, ["stockistBottles"], RECON_CACHE);
+export const skuMap = unstable_cache(skuMapImpl, ["skuMap"], RECON_CACHE);
+export const unmappedSkus = unstable_cache(unmappedSkusImpl, ["unmappedSkus"], RECON_CACHE);
+export const commissionSummary = unstable_cache(commissionSummaryImpl, ["commissionSummary"], RECON_CACHE);

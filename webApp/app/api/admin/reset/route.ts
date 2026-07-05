@@ -2,6 +2,7 @@
 // admin sahaja (email dalam ADMIN_EMAILS). Perlu body {confirm:true} supaya
 // tak ter-trigger sengaja.
 import { NextResponse } from "next/server";
+import { revalidateTag } from "next/cache";
 import { auth, currentUser } from "@clerk/nextjs/server";
 import { resetStore, isAdmin } from "@/lib/mutations";
 import { logEvent } from "@/lib/audit";
@@ -31,6 +32,7 @@ export async function POST(req: Request) {
 
   try {
     await resetStore();
+    revalidateTag("recon", { expire: 0 });
     await logEvent(email ?? "unknown", "store_reset", "all transaction data cleared");
     return NextResponse.json({ ok: true });
   } catch (e) {

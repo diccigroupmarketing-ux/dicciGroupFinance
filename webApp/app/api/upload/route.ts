@@ -4,6 +4,7 @@
 //   Dev      : INGEST_MODE=local -> panggil python3 scripts/devIngest.py
 //              (enjin rujukan root repo, tulis ke dev Postgres embedded).
 import { NextResponse } from "next/server";
+import { revalidateTag } from "next/cache";
 import { auth, currentUser } from "@clerk/nextjs/server";
 import { logEvent } from "@/lib/audit";
 import { spawnSync } from "node:child_process";
@@ -52,7 +53,10 @@ export async function POST(req: Request) {
       const line = (res.stdout ?? "").trim().split("\n").pop() ?? "";
       try {
         const parsed = JSON.parse(line);
-        if (parsed.kind) await logEvent(actor, "upload", `${filename}: ${parsed.kind} · ${parsed.rows} rows`);
+        if (parsed.kind) {
+          await logEvent(actor, "upload", `${filename}: ${parsed.kind} · ${parsed.rows} rows`);
+          revalidateTag("recon", { expire: 0 });
+        }
         return NextResponse.json(parsed, { status: parsed.error ? 500 : 200 });
       } catch {
         return NextResponse.json(
@@ -81,6 +85,7 @@ export async function POST(req: Request) {
   const payload = await res.json().catch(() => ({ error: "respons tidak sah dari enjin ingest" }));
   if (res.ok && payload.kind) {
     await logEvent(actor, "upload", `${filename}: ${payload.kind} · ${payload.rows} rows`);
+    revalidateTag("recon", { expire: 0 });
   }
   return NextResponse.json(payload, { status: res.status });
 }

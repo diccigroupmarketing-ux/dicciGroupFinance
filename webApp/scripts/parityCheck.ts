@@ -7,7 +7,11 @@ import { fileURLToPath } from "node:url";
 
 process.env.DATABASE_URL = "postgresql://dev:dev@localhost:5433/dicci";
 
-import { streamSummary, stockistBottles, StreamKey } from "../lib/recon";
+// Guna versi *Impl (tanpa cache) , unstable_cache perlukan konteks request Next.
+import {
+  streamSummaryImpl as streamSummary,
+  stockistBottlesImpl as stockistBottles, StreamKey,
+} from "../lib/recon";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const ref = JSON.parse(readFileSync(join(here, "parityPython.json"), "utf8"));

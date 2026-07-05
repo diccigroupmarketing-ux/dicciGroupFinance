@@ -2,7 +2,8 @@
 // resetStore diuji betul, restore selepas via loadDevDb.py (backup = data sama).
 //   npx tsx scripts/testMutations.ts
 import { saveSkuMap, resetStore, isAdmin } from "../lib/mutations";
-import { skuMap, storeCounts, type SkuRow } from "../lib/recon";
+// Versi *Impl (tanpa cache) , unstable_cache perlukan konteks request Next.
+import { skuMapImpl as skuMap, storeCountsImpl as storeCounts, type SkuRow } from "../lib/recon";
 import { getPool } from "../lib/db";
 
 // GUARD: resetStore padam semua data. Refuse selain dev PG lokal supaya skrip

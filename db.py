@@ -163,7 +163,7 @@ CREATE TABLE IF NOT EXISTS cod_bill_lines (
 CREATE INDEX IF NOT EXISTS idx_lines_bill ON cod_bill_lines(bill_id);
 
 -- Pengesahan bank: jumlah SEBENAR masuk akaun bank per bil settlement (satu bil
--- courier = satu payout). Additive, tak sentuh logik recon; dibanding dengan net
+-- courier = satu payout). Additive, tak sentuh logik recon, dibanding dengan net
 -- remit dijangka untuk tangkap variance (bocor duit). Diisi dari webApp.
 CREATE TABLE IF NOT EXISTS bank_deposits (
     bill_id       TEXT PRIMARY KEY,

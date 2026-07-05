@@ -2,6 +2,7 @@
 // await auth() di sini (defense in depth). Semua ahli team yang sign-in boleh
 // edit mapping (fasa sign-in dah buka edit, selari niat Streamlit).
 import { NextResponse } from "next/server";
+import { revalidateTag } from "next/cache";
 import { auth, currentUser } from "@clerk/nextjs/server";
 import { saveSkuMap, type SkuInput } from "@/lib/mutations";
 import { logEvent } from "@/lib/audit";
@@ -46,6 +47,7 @@ export async function PUT(req: Request) {
 
   try {
     const n = await saveSkuMap(body.rows);
+    revalidateTag("recon", { expire: 0 }); // botol bergantung sku_bottles
     const user = await currentUser();
     await logEvent(user?.primaryEmailAddress?.emailAddress ?? "unknown",
       "sku_save", `${n} SKUs saved`);
