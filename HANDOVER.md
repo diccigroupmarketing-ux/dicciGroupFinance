@@ -505,7 +505,12 @@ CSS tokens dari mockup (tanpa Tailwind), font next/font (Fraunces + Manrope).
   belum deploy: `lib/recon.ts` lastIngest MAX(ingested_at) merentas feed ->
   header pill "Data as of ..."; `components/ExportCsv.tsx` muat turun CSV
   client-side dari s.integ, butang pada kad Integrity exceptions; parity LULUS).
-  Lagi belum: order/tracking search, audit log user actions (multi-user Clerk).
+  ~~order/tracking search~~ SIAP (2026-07-05, belum deploy: `lib/recon.ts`
+  searchOrders , cari order_id/tracking, LEFT JOIN cod_bill_lines + prepaid untuk
+  tunjuk settle di bil mana + jumlah; BUKAN kira kategori recon, elak duplikat;
+  escape wildcard LIKE; page `/impact/search` + SearchBox + nav "Find order";
+  diuji order sebenar + edge case, parity LULUS).
+  Lagi belum: audit log user actions (multi-user Clerk).
   FLAG (perlu keputusan, ubah output):
   TLS verify-full masa rotate Neon; cutoff `TODAY` tz-dependent (fix ikut parity);
   frozen aging date 18 Jun 2026 bila baseline dibuka semula dengan Adi.

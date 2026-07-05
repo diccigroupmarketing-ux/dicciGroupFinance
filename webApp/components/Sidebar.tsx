@@ -55,6 +55,11 @@ const ICONS: Record<string, React.ReactNode> = {
       <circle cx="7.5" cy="7.5" r="1.3" />
     </svg>
   ),
+  search: (
+    <svg className="navIcon" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.7">
+      <circle cx="9" cy="9" r="6" /><path d="m14 14 3.5 3.5" />
+    </svg>
+  ),
 };
 
 const STREAMS = [
@@ -89,6 +94,9 @@ export default function Sidebar() {
         <div className="navLabel">Overview</div>
         <Link href="/impact" className={cls(path === "/impact")}>
           {ICONS.dashboard} Dashboard
+        </Link>
+        <Link href="/impact/search" className={cls(path === "/impact/search")}>
+          {ICONS.search} Find order
         </Link>
       </nav>
 

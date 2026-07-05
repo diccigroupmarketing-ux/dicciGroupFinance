@@ -344,6 +344,51 @@ export async function lastIngest(): Promise<string | null> {
   return res.rows[0]?.m ?? null;
 }
 
+// Cari order ikut order_id atau tracking, tunjuk status settlement (bil COD /
+// prepaid). Bukan mengira kategori recon (elak duplikat logik) , ia jawab soalan
+// penyiasat: "order ni wujud? dah settle? bil mana? jumlah berapa?".
+export interface SearchResult {
+  order_id: string | null; order_date: string | null; seller_name: string | null;
+  tracking: string | null; shipping_provider: string | null; status: string | null;
+  payment_method: string | null; selling_price: number | null;
+  bill_id: string | null; cod_amount: number | null; fee: number | null;
+  delivered_date: string | null; courier: string | null; settlement_date: string | null;
+  prepaid_gateway: string | null; prepaid_amount: number | null; prepaid_status: string | null;
+}
+
+export async function searchOrders(q: string): Promise<SearchResult[]> {
+  const term = (q ?? "").trim();
+  if (term.length < 2) return [];
+  // Escape wildcard LIKE supaya %/_ dalam query dilayan literal.
+  const like = "%" + term.replace(/[%_\\]/g, "\\$&") + "%";
+  const res = await getPool().query(
+    `SELECT o.order_id, o.order_date, o.seller_name, o.tracking, o.shipping_provider,
+            o.status, o.payment_method, o.selling_price,
+            l.bill_id, l.cod_amount, l.fee, l.delivered_date,
+            b.courier, b.settlement_date,
+            p.gateway AS prepaid_gateway, p.amount AS prepaid_amount, p.status AS prepaid_status
+     FROM orders o
+     LEFT JOIN cod_bill_lines l ON l.awb = o.tracking
+     LEFT JOIN cod_bills b ON b.bill_id = l.bill_id
+     LEFT JOIN prepaid_payments p ON p.order_ref = o.order_id
+     WHERE o.order_id ILIKE $1 ESCAPE '\\' OR o.tracking ILIKE $1 ESCAPE '\\'
+     ORDER BY o.ingested_at DESC
+     LIMIT 50`, [like]);
+  return res.rows.map((r) => ({
+    order_id: r.order_id, order_date: r.order_date, seller_name: r.seller_name,
+    tracking: r.tracking, shipping_provider: r.shipping_provider, status: r.status,
+    payment_method: r.payment_method,
+    selling_price: r.selling_price == null ? null : toNum(r.selling_price),
+    bill_id: r.bill_id,
+    cod_amount: r.cod_amount == null ? null : toNum(r.cod_amount),
+    fee: r.fee == null ? null : toNum(r.fee),
+    delivered_date: r.delivered_date, courier: r.courier, settlement_date: r.settlement_date,
+    prepaid_gateway: r.prepaid_gateway,
+    prepaid_amount: r.prepaid_amount == null ? null : toNum(r.prepaid_amount),
+    prepaid_status: r.prepaid_status,
+  }));
+}
+
 // ====================================================================
 // Botol per stokis (semua courier + payment; confirmed via feed duit).
 // Salinan setia stockist_bottles / stockist_orders dari reconSql.py.
