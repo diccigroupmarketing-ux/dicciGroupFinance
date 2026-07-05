@@ -505,12 +505,22 @@ CSS tokens dari mockup (tanpa Tailwind), font next/font (Fraunces + Manrope).
   belum deploy: `lib/recon.ts` lastIngest MAX(ingested_at) merentas feed ->
   header pill "Data as of ..."; `components/ExportCsv.tsx` muat turun CSV
   client-side dari s.integ, butang pada kad Integrity exceptions; parity LULUS).
-  ~~order/tracking search~~ SIAP (2026-07-05, belum deploy: `lib/recon.ts`
-  searchOrders , cari order_id/tracking, LEFT JOIN cod_bill_lines + prepaid untuk
-  tunjuk settle di bil mana + jumlah; BUKAN kira kategori recon, elak duplikat;
-  escape wildcard LIKE; page `/impact/search` + SearchBox + nav "Find order";
-  diuji order sebenar + edge case, parity LULUS).
-  Lagi belum: audit log user actions (multi-user Clerk).
+  ~~order/tracking search~~ SIAP (deploy 5 Jul, /impact/search + searchOrders).
+  ~~audit log~~ SIAP (belum deploy): jadual additive `app_events` (db.py +
+  `lib/audit.ts` logEvent best-effort, tak pernah lempar) diwayar 4 route mutasi;
+  page `/impact/activity` + nav "Activity".
+  ~~port Streamlit~~ SIAP (belum deploy): billParcels drill (BillsTable expand),
+  commissionBreakdown drill (CommissionTable), AgingControl ?pending=, unmappedSkus
+  amaran di SKU page. Route on-demand /api/billParcels + /api/commission. LAGI belum
+  diport (nilai rendah): stokis_kat cross-tab + other_courier table.
+  ~~cache recon~~ SIAP (belum deploy): unstable_cache tag "recon" bungkus 7 agregat
+  (versi *Impl dieksport untuk skrip parity/test sebab unstable_cache perlu konteks
+  request Next), revalidateTag("recon",{expire:0}) pada upload/sku-save/reset =
+  read-your-writes; drill/search/bank tak di-cache. revalidate 3600s backstop.
+  FIX bonus: buang ';' dalam komen SQL db.py (pecahkan pemisah statement init_db,
+  akan pecah boot Streamlit juga).
+  ⚠ Cache: render authed BELUM disahkan mata (auth block), perlu Adi buka dashboard/
+  stream/commission sahkan render selepas deploy. Semua parity LULUS setiap langkah.
   FLAG (perlu keputusan, ubah output):
   TLS verify-full masa rotate Neon; cutoff `TODAY` tz-dependent (fix ikut parity);
   frozen aging date 18 Jun 2026 bila baseline dibuka semula dengan Adi.
