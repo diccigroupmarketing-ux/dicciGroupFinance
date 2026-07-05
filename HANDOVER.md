@@ -470,6 +470,30 @@ CSS tokens dari mockup (tanpa Tailwind), font next/font (Fraunces + Manrope).
   logik recon. Nota masa depan kalau data membesar/masih terasa lag: recon masih
   ~18 round-trip sequential/stream, lever seterusnya = cache hasil recon antara
   upload (revalidateTag) SEBELUM SQL-ify (rujuk CLAUDE.md "jangan over-invest perf").
+- **POLISH BATCH (2026-07-05, belum deploy):** hasil audit 3 subagent. Dibetulkan
+  (semua lokal, tak sentuh logik recon, build + 16 assertion lulus):
+  (1) BUG copy empty-state , dulu suruh guna Streamlit untuk upload, kini tunjuk
+      butang Upload sidebar (upload webApp memang dah live);
+  (2) `lib/db.ts` , tambah `pool.on('error')` (elak crash bila Neon tutup client
+      idle) + max 8 + connectionTimeout 10s;
+  (3) `app/impact/loading.tsx` skeleton (klik nav/grain tak lagi nampak beku) +
+      `app/impact/error.tsx` sempadan error berjenama + butang cuba semula;
+  (4) modal upload a11y , Escape tutup + fokus masuk/pulang + aria-modal;
+  (5) `--faint` digelapkan (#8A9698 -> #61706F) lulus kontras AA;
+  (6) `mutations.ts`/`skus route` , guard elemen null + had 2000 baris;
+  (7) SKU input `aria-invalid`.
+- **AUDIT BACKLOG (dari 3 subagent, belum buat, ikut nilai-usaha):**
+  BESAR: (a) bank confirmation table + UI , TUTUP gelung Fasa 1 (sekarang app cuma
+  "jangkaan", tiada rekod duit betul masuk bank; `confirmed_paid_order_ids` cuma
+  untuk kira botol, bukan recon bank); (b) cache recon `revalidateTag` invalidate
+  masa upload/reset/sku-save , lever perf yang HANDOVER dah namakan.
+  PARITY (blok tutup Streamlit): by-bill parcel drill (`bill_parcels`), audit tab
+  penuh (`stokis_kat`/`other_courier`/`unmapped_skus`), commission drill
+  (`commission_breakdown`/`commission_names`), aging control (REMIT_PENDING_DAYS).
+  CEPAT: CSV export exceptions, order/tracking search, freshness pill (app_meta),
+  audit log user actions (multi-user Clerk). FLAG (perlu keputusan, ubah output):
+  TLS verify-full masa rotate Neon; cutoff `TODAY` tz-dependent (fix ikut parity);
+  frozen aging date 18 Jun 2026 bila baseline dibuka semula dengan Adi.
 - PENDING fasa seterusnya: rotate kredential Neon (GATE terakhir sebelum finance
   upload data betul); lepas tu rancang penutupan Streamlit.
 

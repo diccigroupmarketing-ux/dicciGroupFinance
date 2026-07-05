@@ -6,7 +6,7 @@
   --gold:#D6B467; --goldLight:#E8C885; --goldDark:#B8944A; --chartGold:#A8853B;
   --paper:#FBFAF7; --sunken:#F4F1EA; --card:#FFFFFF;
   --border:#E7E1D3; --borderStrong:#D8CFBC;
-  --inkStrong:#0E2E33; --ink:#1E3B40; --muted:#5C6B6E; --faint:#8A9698;
+  --inkStrong:#0E2E33; --ink:#1E3B40; --muted:#5C6B6E; --faint:#61706F;
   --pos:#1E7A5E; --posText:#155C46; --posBg:#E4F0EA;
   --cau:#8A6D2A; --cauBg:#F7EFD9;
   --dan:#A8312A; --danText:#8A2722; --danBg:#F7E7E4;
@@ -400,6 +400,19 @@ th.num{text-align:right}
 }
 .dangerBtn:hover:not(:disabled){background:var(--danText)}
 .dangerBtn:disabled{opacity:.45;cursor:default}
+
+/* ---------- skeleton (loading) ---------- */
+.skelWrap{display:flex;flex-direction:column;gap:16px}
+.skel{
+  background:linear-gradient(100deg,var(--sunken) 30%,#EFEBE0 50%,var(--sunken) 70%);
+  background-size:200% 100%;animation:shimmer 1.3s linear infinite;border-radius:14px;
+}
+@keyframes shimmer{from{background-position:200% 0}to{background-position:-200% 0}}
+@media (prefers-reduced-motion:reduce){.skel{animation:none}}
+.skelHead{height:60px;width:56%;border-radius:10px;margin-bottom:6px}
+.skelHero{height:150px}
+.skelKpi{height:96px}
+.skelCard{height:320px}
 
 @media (max-width:940px){
   .shell{grid-template-columns:1fr}

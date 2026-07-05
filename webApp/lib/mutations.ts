@@ -24,11 +24,12 @@ function nonNegInt(v: unknown): number {
 // dari versi Python tanpa mengubah kelakuan bila berjaya.
 export async function saveSkuMap(rows: SkuInput[]): Promise<number> {
   const clean = rows
+    .filter((r) => r && typeof r === "object")
     .map((r) => ({
-      sku: String(r.sku ?? "").trim(),
-      pn: r.product_name == null ? "" : String(r.product_name),
-      paid: nonNegInt(r.paid),
-      free: nonNegInt(r.free),
+      sku: String(r?.sku ?? "").trim(),
+      pn: r?.product_name == null ? "" : String(r.product_name),
+      paid: nonNegInt(r?.paid),
+      free: nonNegInt(r?.free),
     }))
     .filter((r) => r.sku && r.sku.toLowerCase() !== "nan");
 

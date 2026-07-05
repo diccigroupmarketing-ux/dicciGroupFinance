@@ -110,6 +110,7 @@ export default function SkuEditor({ initial }: { initial: SkuRow[] }) {
                       placeholder="SKU code"
                       onChange={(e) => edit(i, { sku: e.target.value })}
                       aria-label={`SKU ${i + 1}`}
+                      aria-invalid={isDup || isEmpty}
                     />
                   </td>
                   <td>

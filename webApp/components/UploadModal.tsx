@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
 
@@ -25,7 +25,24 @@ export default function UploadModal() {
   const [results, setResults] = useState<FileResult[]>([]);
   const [busy, setBusy] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
   const router = useRouter();
+
+  // Escape untuk tutup (bila tak busy) + pindah fokus ke dialog bila buka,
+  // pulang ke butang pencetus bila tutup. Keyboard/screen-reader boleh guna.
+  useEffect(() => {
+    if (!open) return;
+    dialogRef.current?.focus();
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && !busy) setOpen(false);
+    };
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      triggerRef.current?.focus();
+    };
+  }, [open, busy]);
 
   const reset = () => { setFiles([]); setResults([]); };
 
@@ -66,7 +83,7 @@ export default function UploadModal() {
 
   return (
     <>
-      <button className="uploadBtn" onClick={() => setOpen(true)}>
+      <button ref={triggerRef} className="uploadBtn" onClick={() => setOpen(true)}>
         <svg width="15" height="15" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="2">
           <path d="M10 14V4m0 0L6 8m4-4 4 4M4 16.5h12" />
         </svg>
@@ -77,7 +94,8 @@ export default function UploadModal() {
           modal fixed di dalamnya akan terperangkap belakang kandungan (bug Safari). */}
       {open && createPortal(
         <div className="modalBack" onClick={() => !busy && setOpen(false)}>
-          <div className="modal" onClick={(e) => e.stopPropagation()} role="dialog" aria-label="Upload data">
+          <div ref={dialogRef} tabIndex={-1} className="modal" onClick={(e) => e.stopPropagation()}
+               role="dialog" aria-modal="true" aria-label="Upload data">
             <div className="cardHead">
               <div className="cardTitle">Upload data</div>
               <button className="cardLink" onClick={() => !busy && setOpen(false)}>Close</button>

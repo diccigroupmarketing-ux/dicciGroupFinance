@@ -22,6 +22,14 @@ export async function PUT(req: Request) {
   if (!Array.isArray(body.rows)) {
     return NextResponse.json({ error: "medan 'rows' (array) diperlukan" }, { status: 400 });
   }
+  // Had waras: config SKU tak sepatutnya ribuan. Elak payload besar pegang
+  // satu sambungan pool lama lama dalam transaksi tunggal.
+  if (body.rows.length > 2000) {
+    return NextResponse.json({ error: "terlalu banyak baris SKU (had 2000)" }, { status: 400 });
+  }
+  if (body.rows.some((r) => r == null || typeof r !== "object")) {
+    return NextResponse.json({ error: "setiap baris mesti objek SKU" }, { status: 400 });
+  }
 
   // Tolak SKU pendua (huruf besar/kecil dikira sama sebab join guna UPPER(TRIM)).
   const seen = new Set<string>();

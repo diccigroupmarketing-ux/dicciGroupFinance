@@ -22,8 +22,7 @@ export default async function Dashboard(
         <div className="emptyCard">
           <div className="big">No data yet</div>
           Upload a Fighter export and courier bills to see the money story.
-          For now uploads happen in the current Streamlit app; the upload button
-          here activates in the next phase.
+          Use the <b>Upload data</b> button in the sidebar to bring in your first files.
         </div>
       </>
     );

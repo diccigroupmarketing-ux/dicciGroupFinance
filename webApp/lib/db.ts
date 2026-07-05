@@ -14,8 +14,15 @@ export function getPool(): Pool {
     if (!url) throw new Error("DATABASE_URL tidak diset");
     global._dicciPool = new Pool({
       connectionString: url,
-      max: 5,
+      max: 8,
+      connectionTimeoutMillis: 10_000,
       ssl: url.includes("localhost") ? undefined : { rejectUnauthorized: false },
+    });
+    // Neon (terutama pooler) tutup sambungan idle. Tanpa listener, error pada
+    // client idle jadi uncaught exception yang boleh runtuhkan proses. Tangkap,
+    // log, biar pool ganti client.
+    global._dicciPool.on("error", (err) => {
+      console.error("pg idle client error", err);
     });
   }
   return global._dicciPool;
