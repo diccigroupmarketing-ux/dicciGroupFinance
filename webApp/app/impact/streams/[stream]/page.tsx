@@ -12,7 +12,15 @@ import GrainSwitcher from "@/components/GrainSwitcher";
 import WeeklyChart from "@/components/WeeklyChart";
 import BillsTable, { type BillRow } from "@/components/BillsTable";
 import ExportCsv from "@/components/ExportCsv";
+import AgingControl from "@/components/AgingControl";
 import { getBankDeposits } from "@/lib/bank";
+
+// Ambang aging: 3..45 (padan slider Streamlit), default REMIT_PENDING_DAYS (14).
+function parsePending(v: string | undefined): number {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return REMIT_PENDING_DAYS;
+  return Math.min(45, Math.max(3, Math.trunc(n)));
+}
 
 // Baris exception -> baris rata untuk CSV (finance kerja dalam Excel).
 function excToCsv(rows: ExcRow[]) {
@@ -41,11 +49,13 @@ const KAT_ORDER = [
 export default async function StreamPage(
   { params, searchParams }: {
     params: Promise<{ stream: string }>;
-    searchParams: Promise<{ grain?: string }>;
+    searchParams: Promise<{ grain?: string; pending?: string }>;
   },
 ) {
   const { stream } = await params;
-  const grain = parseGrain((await searchParams).grain);
+  const sp = await searchParams;
+  const grain = parseGrain(sp.grain);
+  const pending = parsePending(sp.pending);
   if (!(stream in COURIERS)) notFound();
   const key = stream as StreamKey;
   const cfg = COURIERS[key];
@@ -64,7 +74,7 @@ export default async function StreamPage(
   }
 
   const [s, deposits, asOf] = await Promise.all([
-    streamSummary(key), getBankDeposits(), lastIngest(),
+    streamSummary(key, pending), getBankDeposits(), lastIngest(),
   ]);
   const net = Math.round((s.linesCod - s.linesFee) * 100) / 100;
   const weekly = groupByGrain(s.daily, grain);
@@ -119,7 +129,7 @@ export default async function StreamPage(
       </div>
 
       {s.bills.length > 0 ? (
-        <BillsTable rows={billRows} courierName={cfg.name} />
+        <BillsTable rows={billRows} courierName={cfg.name} streamKey={key} />
       ) : (
         <div className="emptyCard">
           <div className="big">No {cfg.name} bill loaded yet</div>
@@ -162,7 +172,8 @@ export default async function StreamPage(
         <div className="card">
           <div className="cardHead">
             <div className="cardTitle">Exceptions</div>
-            <div className="cardHint">what needs a human</div>
+            <div className="cardHint">what needs a human · aging</div>
+            <AgingControl pending={pending} grain={grain} streamKey={key} />
           </div>
           {s.integN === 0 ? (
             <div className="posPanel">
@@ -181,7 +192,7 @@ export default async function StreamPage(
             <div className="cauPanel">
               <WarnIcon />
               <div><b>Tier 2 · {fmtInt(s.agedN)} aged unmatched.</b>
-                <p>Completed over {REMIT_PENDING_DAYS} days with no bill yet. Usually an artifact of
+                <p>Completed over {pending} days with no bill yet. Usually an artifact of
                   missing bills; it should shrink as more settlement bills are uploaded.</p></div>
             </div>
           )}

@@ -197,6 +197,55 @@ function excRows(rows: Record<string, unknown>[]): ExcRow[] {
   }));
 }
 
+// Port setia bill_parcels dari reconSql.py: baris parcel SATU bil (dikategorikan).
+// Guna tmp_m yang sama (kategori sudah lulus parity), cuma ditapis ke satu bil.
+export interface BillParcel {
+  awb: string | null; order_id: string | null; seller_name: string | null;
+  kategori: string; katLabel: string; katTone: "pos" | "cau" | "dan" | "mut";
+  selling_price: number | null; cod_amount: number | null;
+  fee: number | null; remit: number | null;
+}
+
+const BILL_CAP = 20_000;
+
+// Nada + label kategori dikira di server (KAT_LABEL/INTEGRITY_EXC/AGED ada di
+// recon.ts) supaya komponen client tak perlu import recon.ts (yang tarik `pg`).
+function katToneOf(kat: string): "pos" | "cau" | "dan" | "mut" {
+  if (kat === "tally") return "pos";
+  if (INTEGRITY_EXC.includes(kat)) return "dan";
+  if (AGED.includes(kat)) return "cau";
+  return "mut";
+}
+
+export async function billParcels(
+  key: StreamKey, billId: string, pendingDays: number = REMIT_PENDING_DAYS,
+): Promise<BillParcel[]> {
+  const client = await getPool().connect();
+  try {
+    await client.query("BEGIN");
+    await buildTmpM(client, key, pendingDays);
+    const res = await client.query(
+      `SELECT awb, order_id, seller_name, kategori, selling_price, cod_amount,
+              fee, remit
+       FROM tmp_m WHERE bill_id = $1 ORDER BY awb LIMIT $2`, [billId, BILL_CAP]);
+    await client.query("ROLLBACK");
+    return res.rows.map((r) => ({
+      awb: r.awb, order_id: r.order_id, seller_name: r.seller_name,
+      kategori: r.kategori, katLabel: KAT_LABEL[r.kategori] ?? r.kategori,
+      katTone: katToneOf(r.kategori),
+      selling_price: r.selling_price == null ? null : toNum(r.selling_price),
+      cod_amount: r.cod_amount == null ? null : toNum(r.cod_amount),
+      fee: r.fee == null ? null : toNum(r.fee),
+      remit: r.remit == null ? null : toNum(r.remit),
+    }));
+  } catch (e) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
 export async function streamSummary(
   key: StreamKey, pendingDays: number = REMIT_PENDING_DAYS,
 ): Promise<StreamSummary> {
@@ -492,6 +541,17 @@ export async function skuMap(): Promise<SkuRow[]> {
   }));
 }
 
+// SKU dalam order tapi tiada dalam sku_bottles = dikira 0 botol. Amaran finance
+// (port ringan unmapped_skus dari reconSql.py, versi global merentas semua feed).
+export async function unmappedSkus(): Promise<string[]> {
+  const res = await getPool().query(`
+    SELECT DISTINCT os.sku_raw FROM order_skus os
+    WHERE os.sku NOT IN (SELECT UPPER(TRIM(sku)) FROM sku_bottles WHERE sku IS NOT NULL)
+      AND os.sku_raw IS NOT NULL
+    ORDER BY os.sku_raw`);
+  return res.rows.map((r) => r.sku_raw as string);
+}
+
 export interface CommissionRow {
   seller_name: string; level: string; earned: number; paid: number; balance: number;
 }
@@ -523,4 +583,42 @@ export async function commissionSummary(): Promise<CommissionRow[]> {
       balance: Math.round((earned - paid) * 100) / 100,
     };
   });
+}
+
+// Port setia commission_breakdown dari reconSql.py: pecahan ikut sumber +
+// transaksi penuh untuk satu stokis (drill).
+export interface CommissionBySource { source: string; txn_type: string; count: number; total: number; }
+export interface CommissionTxn {
+  txn_date: string | null; order_id: string | null; source: string | null;
+  txn_type: string | null; status: string | null; amount: number;
+}
+export interface CommissionDetail {
+  bySrc: CommissionBySource[]; detail: CommissionTxn[]; total: number;
+}
+
+export async function commissionBreakdown(seller: string): Promise<CommissionDetail> {
+  const p = getPool();
+  const [bySrc, det, tot] = await Promise.all([
+    p.query(`
+      SELECT source, txn_type, COUNT(*) AS count, SUM(amount) AS total
+      FROM wallet_txns
+      WHERE seller_name = $1 AND status = 'Approved'
+      GROUP BY source, txn_type ORDER BY source, txn_type`, [seller]),
+    p.query(`
+      SELECT txn_date, order_id, source, txn_type, status, amount
+      FROM wallet_txns WHERE seller_name = $1
+      ORDER BY txn_date LIMIT $2`, [seller, DRILL_CAP]),
+    p.query(`SELECT COUNT(*) AS n FROM wallet_txns WHERE seller_name = $1`, [seller]),
+  ]);
+  return {
+    bySrc: bySrc.rows.map((r) => ({
+      source: r.source ?? "—", txn_type: r.txn_type ?? "—",
+      count: Number(r.count), total: Math.round(toNum(r.total) * 100) / 100,
+    })),
+    detail: det.rows.map((r) => ({
+      txn_date: r.txn_date, order_id: r.order_id, source: r.source,
+      txn_type: r.txn_type, status: r.status, amount: toNum(r.amount),
+    })),
+    total: Number(tot.rows[0].n),
+  };
 }

@@ -437,6 +437,19 @@ th.num{text-align:right}
 .searchInput:hover{background:var(--card)}
 .searchInput:focus{background:var(--card);border-color:var(--goldDark)}
 
+/* ---------- bill drill (parcels) ---------- */
+.billToggle{
+  display:inline-flex;align-items:center;gap:7px;background:none;border:0;
+  cursor:pointer;font-weight:700;color:var(--inkStrong);font-size:13px;padding:0;
+}
+.billToggle:hover{color:var(--goldDark)}
+.billChev{display:inline-block;transition:transform .15s;color:var(--faint);font-size:11px}
+.billChev.open{transform:rotate(90deg);color:var(--goldDark)}
+.drillRow>td{background:var(--sunken);padding:6px 10px 12px}
+.drillTable{background:var(--card);border:1px solid var(--border);border-radius:10px;overflow:hidden}
+.drillTable th{background:var(--sunken)}
+.drillNote{font-size:11.5px;color:var(--muted);margin-top:8px;padding:0 2px}
+
 @media (max-width:940px){
   .shell{grid-template-columns:1fr}
   .side{position:static;height:auto;flex-direction:row;flex-wrap:wrap;align-items:center;gap:6px;padding:14px 16px}

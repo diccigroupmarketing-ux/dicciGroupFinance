@@ -1,6 +1,6 @@
 import { commissionSummary } from "@/lib/recon";
 import { fmtInt, fmtRM } from "@/lib/format";
-import { Chip } from "@/components/Chip";
+import CommissionTable from "@/components/CommissionTable";
 
 export const dynamic = "force-dynamic";
 
@@ -41,34 +41,7 @@ export default async function CommissionPage() {
 
       <div className="sectionGap" />
 
-      <div className="card">
-        <div className="cardHead">
-          <div className="cardTitle">Per stockist</div>
-          <div className="cardHint">earned (Sales + Recruitment) vs paid out (withdrawals)</div>
-        </div>
-        <div className="tableWrap">
-          <table>
-            <thead>
-              <tr>
-                <th>Stockist</th><th>Level</th>
-                <th className="num">Earned</th><th className="num">Paid out</th>
-                <th className="num">Balance</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((r) => (
-                <tr key={r.seller_name}>
-                  <td className="cellMain">{r.seller_name}</td>
-                  <td>{r.level ? <Chip tone="mut">{r.level}</Chip> : "—"}</td>
-                  <td className="num">{fmtRM(r.earned)}</td>
-                  <td className="num">{fmtRM(r.paid)}</td>
-                  <td className="num"><b>{fmtRM(r.balance)}</b></td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </div>
+      <CommissionTable rows={rows} />
 
       <div className="footNote">
         Earned &amp; paid reflect the uploaded Wallet period only; balance is
