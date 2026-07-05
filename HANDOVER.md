@@ -462,6 +462,14 @@ CSS tokens dari mockup (tanpa Tailwind), font next/font (Fraunces + Manrope).
       pelik atas kad sign-in), Dashboard > Application settings;
   (c) enable MFA (User & Authentication > Multi-factor). API Backend Clerk tak
       dedah nama app / MFA, jadi kedua dua kerja Dashboard.
+- **PERF FIX region (2026-07-05, commit 5cb1726):** dashboard dulu delay ~4s.
+  Punca: function Vercel jalan iad1 (US East) tapi Neon di Singapura, ~18 round-trip
+  SQL berturut per stream × 3 stream merentas US<->SG (~220ms/round-trip). Fix:
+  `regions:["sin1"]` dalam vercel.json (Hobby benarkan 1 region pilihan), function
+  serumah Neon. Disahkan `x-vercel-id` compute = sin1 (dulu iad1). Zero perubahan
+  logik recon. Nota masa depan kalau data membesar/masih terasa lag: recon masih
+  ~18 round-trip sequential/stream, lever seterusnya = cache hasil recon antara
+  upload (revalidateTag) SEBELUM SQL-ify (rujuk CLAUDE.md "jangan over-invest perf").
 - PENDING fasa seterusnya: rotate kredential Neon (GATE terakhir sebelum finance
   upload data betul); lepas tu rancang penutupan Streamlit.
 
