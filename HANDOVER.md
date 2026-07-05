@@ -519,8 +519,11 @@ CSS tokens dari mockup (tanpa Tailwind), font next/font (Fraunces + Manrope).
   read-your-writes; drill/search/bank tak di-cache. revalidate 3600s backstop.
   FIX bonus: buang ';' dalam komen SQL db.py (pecahkan pemisah statement init_db,
   akan pecah boot Streamlit juga).
-  ⚠ Cache: render authed BELUM disahkan mata (auth block), perlu Adi buka dashboard/
-  stream/commission sahkan render selepas deploy. Semua parity LULUS setiap langkah.
+  DEPLOYED 5 Jul (batch): gate + region sin1 utuh, semua route baru terlindung
+  (404 tanpa sesi), sign-in 200. ⚠ Cache: render authed BELUM disahkan mata (auth
+  block) , Adi WAJIB buka dashboard/stream/commission/activity sahkan render OK.
+  Kalau pecah, cache boleh dibuka balik (recon.ts: tukar export cached jadi
+  fungsi biasa). Semua parity LULUS setiap langkah.
   FLAG (perlu keputusan, ubah output):
   TLS verify-full masa rotate Neon; cutoff `TODAY` tz-dependent (fix ikut parity);
   frozen aging date 18 Jun 2026 bila baseline dibuka semula dengan Adi.
