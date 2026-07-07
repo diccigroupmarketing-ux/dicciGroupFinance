@@ -2,6 +2,23 @@ import Link from "next/link";
 import { stockistBottles, stockistOrders, storeCounts } from "@/lib/recon";
 import { fmtDate, fmtInt, trackingOrDash } from "@/lib/format";
 import { Chip } from "@/components/Chip";
+import ExportCsv from "@/components/ExportCsv";
+
+const BOTTLE_COLS = [
+  { key: "stockist", header: "Stockist" },
+  { key: "confirmed_orders", header: "Confirmed orders" },
+  { key: "paid_bottles", header: "Paid bottles" },
+  { key: "free_bottles", header: "Free bottles" },
+  { key: "total_bottles", header: "Total bottles" },
+  { key: "unconfirmed_bottles", header: "Unconfirmed bottles" },
+];
+const DRILL_COLS = [
+  { key: "order_id", header: "Order" }, { key: "order_date", header: "Date" },
+  { key: "status", header: "Status" }, { key: "payment_method", header: "Payment" },
+  { key: "shipping_provider", header: "Courier" }, { key: "tracking", header: "Tracking" },
+  { key: "botol_paid", header: "Paid" }, { key: "botol_free", header: "Free" },
+  { key: "botol_total", header: "Total bottles" }, { key: "duit", header: "Money" },
+];
 
 export const dynamic = "force-dynamic";
 
@@ -41,6 +58,8 @@ export default async function StockistsPage(
           <div className="cardHint">
             paid (sales) + free (cost), counted once payment is confirmed
           </div>
+          <ExportCsv rows={rows} columns={BOTTLE_COLS}
+            filename="impact-stockist-bottles.csv" />
         </div>
         <p className="pageSub" style={{ marginTop: 2 }}>
           Confirmed: <b>{fmtInt(totBottles)}</b> bottles ({fmtInt(totFree)} free) across{" "}
@@ -89,6 +108,8 @@ export default async function StockistsPage(
             <div className="cardHead">
               <div className="cardTitle">{picked}</div>
               <div className="cardHint">orders one by one, latest first</div>
+              <ExportCsv rows={drill.rows} columns={DRILL_COLS} total={drill.total}
+                filename={`stockist-${picked}-orders.csv`} />
               <Link href="/impact/stockists" className="cardLink">Close ×</Link>
             </div>
             {drill.rows.length < drill.total && (

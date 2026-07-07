@@ -3,6 +3,21 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { fmtDate, fmtInt, fmtRM, trackingOrDash } from "@/lib/format";
+import ExportCsv from "@/components/ExportCsv";
+
+const BILL_COLS = [
+  { key: "bill_id", header: "Bill" }, { key: "settlement_date", header: "Settled" },
+  { key: "parcel", header: "Parcels" }, { key: "cod", header: "COD collected" },
+  { key: "fee", header: "Fee" }, { key: "net", header: "Net remit" },
+  { key: "actual", header: "In bank" }, { key: "exc", header: "Exceptions" },
+  { key: "note", header: "Note" }, { key: "entered_by", header: "Confirmed by" },
+];
+const PARCEL_COLS = [
+  { key: "awb", header: "AWB" }, { key: "order_id", header: "Order" },
+  { key: "seller_name", header: "Stockist" }, { key: "katLabel", header: "Status" },
+  { key: "selling_price", header: "Selling" }, { key: "cod_amount", header: "COD" },
+  { key: "fee", header: "Fee" }, { key: "remit", header: "Remit" },
+];
 
 export type BillRow = {
   bill_id: string;
@@ -100,6 +115,7 @@ export default function BillsTable({
       <div className="cardHead">
         <div className="cardTitle">Settlement bills</div>
         <div className="cardHint">click a bill to see its parcels · confirm the bank amount to close the loop</div>
+        <ExportCsv rows={rows} columns={BILL_COLS} filename={`${streamKey}-bills.csv`} />
       </div>
 
       <div className="tableWrap">
@@ -229,7 +245,12 @@ export default function BillsTable({
                                 ))}
                               </tbody>
                             </table>
-                            <div className="drillNote">{fmtInt(list.length)} parcels in {r.bill_id}</div>
+                            <div className="drillNote">
+                              {fmtInt(list.length)} parcels in {r.bill_id}
+                              {" · "}
+                              <ExportCsv rows={list} columns={PARCEL_COLS}
+                                filename={`${r.bill_id}-parcels.csv`} label="Download CSV" />
+                            </div>
                           </div>
                         )}
                       </td>

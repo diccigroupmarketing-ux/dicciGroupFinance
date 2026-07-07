@@ -246,6 +246,16 @@ export default async function StreamPage(
             <div className="cardHead">
               <div className="cardTitle">Breakdown by stockist</div>
               <div className="cardHint">order count by status</div>
+              <ExportCsv
+                rows={s.stokisKat.map((r) => ({
+                  stockist: r.seller, status: KAT_LABEL[r.kategori] ?? r.kategori, orders: r.n,
+                }))}
+                columns={[
+                  { key: "stockist", header: "Stockist" },
+                  { key: "status", header: "Status" },
+                  { key: "orders", header: "Orders" },
+                ]}
+                filename={`${key}-stockist-breakdown.csv`} />
             </div>
             <StockistCrossTab rows={s.stokisKat} />
           </div>

@@ -1,6 +1,18 @@
 import { searchOrders } from "@/lib/recon";
 import { fmtDate, fmtInt, fmtRM, trackingOrDash } from "@/lib/format";
 import SearchBox from "@/components/SearchBox";
+import ExportCsv from "@/components/ExportCsv";
+
+const SEARCH_COLS = [
+  { key: "order_id", header: "Order" }, { key: "order_date", header: "Date" },
+  { key: "seller_name", header: "Stockist" }, { key: "tracking", header: "Tracking" },
+  { key: "shipping_provider", header: "Courier" }, { key: "status", header: "Status" },
+  { key: "payment_method", header: "Payment" }, { key: "selling_price", header: "Selling price" },
+  { key: "courier", header: "Bill courier" }, { key: "bill_id", header: "Bill" },
+  { key: "settlement_date", header: "Settlement" }, { key: "cod_amount", header: "COD amount" },
+  { key: "fee", header: "Fee" }, { key: "prepaid_gateway", header: "Prepaid gateway" },
+  { key: "prepaid_amount", header: "Prepaid amount" }, { key: "prepaid_status", header: "Prepaid status" },
+];
 
 export const dynamic = "force-dynamic";
 
@@ -37,6 +49,11 @@ export default async function SearchPage(
                 {rows.length === 0 ? "no match" : `${fmtInt(rows.length)} match${rows.length === 1 ? "" : "es"}`}
                 {rows.length === 50 ? " (showing first 50)" : ""}
               </div>
+              {rows.length > 0 && (
+                <ExportCsv rows={rows} columns={SEARCH_COLS}
+                  label={rows.length === 50 ? "Download CSV (first 50)" : "Download CSV"}
+                  filename={`search-${q.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 40)}.csv`} />
+              )}
             </div>
             {rows.length === 0 ? (
               <div className="cardHint" style={{ padding: "22px 0" }}>
