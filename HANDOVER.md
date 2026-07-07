@@ -535,6 +535,39 @@ CSS tokens dari mockup (tanpa Tailwind), font next/font (Fraunces + Manrope).
   zero-downtime + Cara B reset + flag TLS verify-full); lepas tu rancang penutupan
   Streamlit. Next.js kini cover 100% view Streamlit (jurang parity terakhir ditutup 6/7 Jul).
 
+## Sesi 6/7 Jul (lanjutan): Export finance (Fasa A + C LIVE)
+
+Owner pilih bentuk **Hybrid + Close Pack** (via panel timbang 3 lensa). Turutan A -> C -> B.
+
+- **Fasa A LIVE (commit e23c34f, deploy dpl_5bDZL):** butang Download CSV pada jadual
+  yang page DAH pegang lengkap , settlement bills, parcels drill, stokis x kategori,
+  stockist bottles + drill, search results. `ExportCsv` dijadikan generik (elak isu index
+  signature interface) + isyarat **N-of-M** untuk view bercap (search 50, drill 10k) supaya
+  tak menipu "lengkap". **Surface komisen SENGAJA dilangkau** (on hold, lihat bawah).
+- **Fasa C LIVE (sama commit):** page `/impact/export` (Export Center) + **Close Pack CSV**
+  , per stream per period (bulan settlement): parcels, COD, fee, **net remit (dijangka)** vs
+  **banked (bank_deposits)** + **variance** (tanda bocor) + exceptions + grand total.
+  `lib/closePack.ts` = komposisi `streamSummary` (cached) + `getBankDeposits`, SIFAR logik
+  recon baru. Nav "Export" ditambah (Sidebar). Subsidiary + period first-class. Cop as-of
+  dalam nama fail + header. "X of Y" (bukan "X/Y") elak Excel baca jadi tarikh.
+- **Verify:** build hijau, PARITY LULUS (recon tak disentuh), closePack invariant
+  (`sum(perBill.cod) == linesCod`) disahkan, net remit J&T RM63,036.17 padan baseline.
+  Smoke prod: sign-in 200, /impact/export 404 (curl, normal Clerk dev), region sin1.
+- **BELUM buat , Fasa B** (nilai sederhana): lapisan server `/api/export/[dataset]` +
+  helper `toCsv()` + provenance IN-FILE + dataset penuh yang lebih besar dari cap page
+  (exceptions penuh merentas stream, stockist orders penuh) + log `app_events`.
+- **HOLD (tunggu borak owner, rekod dalam auto-memory):**
+  - **Komisen** , enrich. G1 (murah, tak sentuh commissionSummaryImpl, tak parity): propagate
+    chip "record-only/unverified" semua permukaan, status verification eksplisit, coverage
+    period, diagnostik (source roll-up, level, Pending/Rejected asing, flag balance negatif).
+    G2 (permata, perlu keputusan finance): leak detector komisen atas order BUKAN
+    confirmed-paid. Dev: join `wallet_txns.order_id`->`orders` ~88% (381/431 Sales-IN-Approved),
+    ~21% komisen atas order bukan-Completed/takde = calon leak. Gate G2: (a) percaya Fighter
+    as-is vs sahkan; (b) "Withdraw" wallet = transfer bank keluar?
+  - **Free gift** (giveaway/botol `free` + kos) , borak berasingan.
+  - **Sidebar collapse toggle** , owner suka sidebar sekarang, cuma nak butang collapse untuk
+    big picture. Buat selepas Export.
+
 ### Arahan dev webApp (untuk sesi kerja)
 - Dev DB: `cd webApp && node scripts/devDb.mjs` (background; Postgres embedded port
   5433, data kekal dalam devPgData/) lalu `python3 scripts/loadDevDb.py` (muat snapshot
