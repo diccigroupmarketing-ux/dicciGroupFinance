@@ -591,6 +591,12 @@ Owner pilih bentuk **Hybrid + Close Pack** (via panel timbang 3 lensa). Turutan 
 - [x] Milestone 5: shell berbilang anak syarikat (button nav, tiada sidebar) + UI English penuh + feed registry. Enjin tak disentuh, output identik baseline. Blueprint architecture dikunci.
 - [x] Milestone 6 (2026-07-01): handoff selamat, butang Reset disorok belakang secret ADMIN_MODE, amaran upsert overwrite, rollback per fail, `backup.py` snapshot + verify.
 - [x] Milestone 7 (2026-07-03): (a) Neon reconnect DISAHKAN hidup, guard fail-loud bila app jatuh ke SQLite ephemeral + heartbeat `app_meta` (bukti app live menulis ke Neon, boleh semak dari terminal); (b) prestasi: batch upsert Postgres, init sekali per proses, cache bacaan, nav callback 1 rerun; (c) SKALA 1 JUTA: recon dipindah ke SQL dalam DB (`reconSql.py`), jadual normalized `order_skus`, terbukti 1,000,000 order synthetic (RAM 0.23GB vs 1.48GB pandas, ~10s cache-miss, klik biasa cached), parity IDENTIK row-by-row lawan enjin pandas disahkan pada SQLite + Neon Postgres. `reconcile.py` KEKAL rujukan kebenaran (CLI baseline 369/RM63,912 tak berubah).
+- [x] Fasa Next.js LIVE (`webApp/`, Vercel `diccigroupfinance`): Clerk auth allowlist,
+  ingest (parser Python sebenar), 100% cover view Streamlit, bank confirmation, audit log,
+  cache recon, search, SKU editor, stokis_kat/other_courier. **Export finance LIVE
+  (6/7 Jul): CSV per-page (N-of-M) + Close Pack rekonsiliasi** (seksyen "Sesi 6/7 Jul").
+- [ ] Export Fasa B (lapisan server dataset penuh) + komisen enrich + free gift + sidebar
+  collapse: HOLD/tangguh (lihat seksyen "Sesi 6/7 Jul" + auto-memory).
 - [ ] Wire feed courier seterusnya (DHL, Ninja Van): perlu PDF sampel dari Adi dulu.
 - [ ] Wire feed prepaid (CHIP/transfer) + TikTok: perlu bentuk export dari Adi.
 - [ ] Hardening keselamatan: rotate kredential DB Neon + audit akses team.
