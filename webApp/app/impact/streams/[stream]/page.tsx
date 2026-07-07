@@ -201,6 +201,19 @@ export default async function StreamPage(
 
       <div className="sectionGap" />
 
+      {s.otherCouriers.length > 0 && (
+        <>
+          <div className="card">
+            <div className="cardHead">
+              <div className="cardTitle">Out of Phase 1 scope</div>
+              <div className="cardHint">COD orders on other couriers</div>
+            </div>
+            <OtherCouriers rows={s.otherCouriers} />
+          </div>
+          <div className="sectionGap" />
+        </>
+      )}
+
       {s.integ.length > 0 && (
         <>
           <div className="card">
@@ -224,6 +237,19 @@ export default async function StreamPage(
           </div>
           <AuditTable rows={s.auditPreview} />
         </div>
+      )}
+
+      {s.stokisKat.length > 0 && (
+        <>
+          <div className="sectionGap" />
+          <div className="card">
+            <div className="cardHead">
+              <div className="cardTitle">Breakdown by stockist</div>
+              <div className="cardHint">order count by status</div>
+            </div>
+            <StockistCrossTab rows={s.stokisKat} />
+          </div>
+        </>
       )}
 
       {weekly.length > 0 && (
@@ -274,6 +300,67 @@ function AuditTable({ rows }: {
               <td><KatChip kat={r.kategori} /></td>
               <td className="num">{r.selling_price != null ? fmtRM(r.selling_price) : "—"}</td>
               <td className="num">{r.cod_amount != null ? fmtRM(r.cod_amount) : "—"}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function OtherCouriers({ rows }: {
+  rows: { courier: string; orders: number; value: number }[];
+}) {
+  return (
+    <div className="tableWrap">
+      <table>
+        <thead>
+          <tr><th>Courier</th><th className="num">Orders</th><th className="num">Value</th></tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => (
+            <tr key={r.courier}>
+              <td className="cellMain">{r.courier}</td>
+              <td className="num">{fmtInt(r.orders)}</td>
+              <td className="num">{fmtRM(r.value)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// Cross-tab stokis (baris) x kategori (lajur). Lajur disusun ikut KAT_ORDER
+// (bermakna dulu), extra kategori di hujung. Sel kosong = "—".
+function StockistCrossTab({ rows }: {
+  rows: { seller: string; kategori: string; n: number }[];
+}) {
+  const sellers = [...new Set(rows.map((r) => r.seller))].sort();
+  const present = new Set(rows.map((r) => r.kategori));
+  const kats = [
+    ...KAT_ORDER.filter((k) => present.has(k)),
+    ...[...present].filter((k) => !KAT_ORDER.includes(k)).sort(),
+  ];
+  const cell = new Map<string, number>();
+  for (const r of rows) cell.set(`${r.seller} ${r.kategori}`, r.n);
+  return (
+    <div className="tableWrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Stockist</th>
+            {kats.map((k) => <th key={k} className="num">{KAT_LABEL[k] ?? k}</th>)}
+          </tr>
+        </thead>
+        <tbody>
+          {sellers.map((sr) => (
+            <tr key={sr}>
+              <td className="cellMain">{sr}</td>
+              {kats.map((k) => {
+                const v = cell.get(`${sr} ${k}`) ?? 0;
+                return <td key={k} className="num">{v ? fmtInt(v) : "—"}</td>;
+              })}
             </tr>
           ))}
         </tbody>

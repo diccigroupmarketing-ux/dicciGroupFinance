@@ -17,6 +17,8 @@ const here = dirname(fileURLToPath(import.meta.url));
 const ref = JSON.parse(readFileSync(join(here, "parityPython.json"), "utf8"));
 
 const r2 = (x: number) => Math.round(x * 100) / 100;
+// Perbandingan code-point (padan sort default Python), bukan locale-aware.
+const cp = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
 
 // Stringify dengan kunci disusun REKURSIF , perbandingan nested yang sebenar.
 // (JSON.stringify dengan replacer array menapis kunci nested secara senyap.)
@@ -48,6 +50,13 @@ async function main() {
         .sort((a, b) => a.bill_id.localeCompare(b.bill_id))
         .map((b) => ({ bill_id: b.bill_id, parcel: b.parcel, cod: r2(b.cod),
                        fee: r2(b.fee), tally: b.tally, exc: b.exc })),
+      // Susun ikut code-point (bukan localeCompare) supaya padan urutan sort Python.
+      stokisKat: [...s.stokisKat]
+        .sort((a, b) => cp(a.seller, b.seller) || cp(a.kategori, b.kategori))
+        .map((x) => ({ seller: x.seller, kategori: x.kategori, n: x.n })),
+      otherCourier: [...s.otherCouriers]
+        .sort((a, b) => cp(a.courier, b.courier))
+        .map((x) => ({ courier: x.courier, orders: x.orders, value: r2(x.value) })),
     };
     const a = stable(mine);
     const b = stable(ref[key]);

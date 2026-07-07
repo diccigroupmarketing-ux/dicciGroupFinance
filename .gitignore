@@ -20,6 +20,9 @@ backups/
 # Konteks projek tempatan untuk Claude (jangan masuk repo public)
 CLAUDE.md
 
+# Runbook ops (langkah rotate, dll) , simpan tempatan, jangan masuk repo public
+rotateNeonRunbook.md
+
 # OS
 .DS_Store
 .vercel

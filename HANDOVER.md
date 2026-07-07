@@ -511,8 +511,11 @@ CSS tokens dari mockup (tanpa Tailwind), font next/font (Fraunces + Manrope).
   page `/impact/activity` + nav "Activity".
   ~~port Streamlit~~ SIAP (belum deploy): billParcels drill (BillsTable expand),
   commissionBreakdown drill (CommissionTable), AgingControl ?pending=, unmappedSkus
-  amaran di SKU page. Route on-demand /api/billParcels + /api/commission. LAGI belum
-  diport (nilai rendah): stokis_kat cross-tab + other_courier table.
+  amaran di SKU page. Route on-demand /api/billParcels + /api/commission. ~~LAGI belum
+  diport~~ SIAP + DEPLOYED 6/7 Jul (dpl_5GFMo3): stokis_kat cross-tab + other_courier table
+  ditambah ke stream page (lib/recon.ts streamSummary + [stream]/page.tsx) = jurang
+  parity TERAKHIR lawan Streamlit ditutup, Next.js cover 100% view Streamlit. Parity
+  harness diperluas cover kedua dua (banding code-point), LULUS + build hijau.
   ~~cache recon~~ SIAP (belum deploy): unstable_cache tag "recon" bungkus 7 agregat
   (versi *Impl dieksport untuk skrip parity/test sebab unstable_cache perlu konteks
   request Next), revalidateTag("recon",{expire:0}) pada upload/sku-save/reset =
@@ -520,15 +523,17 @@ CSS tokens dari mockup (tanpa Tailwind), font next/font (Fraunces + Manrope).
   FIX bonus: buang ';' dalam komen SQL db.py (pecahkan pemisah statement init_db,
   akan pecah boot Streamlit juga).
   DEPLOYED 5 Jul (batch): gate + region sin1 utuh, semua route baru terlindung
-  (404 tanpa sesi), sign-in 200. ⚠ Cache: render authed BELUM disahkan mata (auth
-  block) , Adi WAJIB buka dashboard/stream/commission/activity sahkan render OK.
-  Kalau pecah, cache boleh dibuka balik (recon.ts: tukar export cached jadi
-  fungsi biasa). Semua parity LULUS setiap langkah.
+  (404 tanpa sesi), sign-in 200. ✅ Cache: render authed DISAHKAN 6/7 Jul (Adi buka empat page di produksi,
+  render elok, cache batch 3 tak pecah). Substantif turut disahkan lokal: build +
+  parity + smoke 9 fungsi cached tak lempar. Kalau nanti pecah, cache boleh dibuka
+  balik (recon.ts: tukar export cached jadi fungsi biasa). Parity LULUS setiap langkah.
   FLAG (perlu keputusan, ubah output):
   TLS verify-full masa rotate Neon; cutoff `TODAY` tz-dependent (fix ikut parity);
   frozen aging date 18 Jun 2026 bila baseline dibuka semula dengan Adi.
-- PENDING fasa seterusnya: rotate kredential Neon (GATE terakhir sebelum finance
-  upload data betul); lepas tu rancang penutupan Streamlit.
+- PENDING fasa seterusnya: rotate kredential Neon (GATE terakhir sebelum finance upload
+  data betul, RUNBOOK SIAP di `rotateNeonRunbook.md` root gitignored, Cara A role baru
+  zero-downtime + Cara B reset + flag TLS verify-full); lepas tu rancang penutupan
+  Streamlit. Next.js kini cover 100% view Streamlit (jurang parity terakhir ditutup 6/7 Jul).
 
 ### Arahan dev webApp (untuk sesi kerja)
 - Dev DB: `cd webApp && node scripts/devDb.mjs` (background; Postgres embedded port

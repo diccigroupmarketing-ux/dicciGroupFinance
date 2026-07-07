@@ -39,6 +39,16 @@ def main():
              for _, r in s["per_bill"].iterrows()],
             key=lambda x: x["bill_id"],
         )
+        stokis_kat = sorted(
+            [{"seller": r["seller"], "kategori": r["kategori"], "n": int(r["n"])}
+             for _, r in s["stokis_kat"].iterrows()],
+            key=lambda x: (x["seller"], x["kategori"]),
+        )
+        other_courier = sorted(
+            [{"courier": k, "orders": int(v["order"]), "value": r2(v["nilai"])}
+             for k, v in s["other_courier"].items()],
+            key=lambda x: x["courier"],
+        )
         out[key] = {
             "katN": {k: int(v) for k, v in sorted(s["kat_n"].items())},
             "linesN": int(s["lines_n"]), "linesCod": r2(s["lines_cod"]),
@@ -46,6 +56,7 @@ def main():
             "integN": int(s["integ_n"]), "agedN": int(s["aged_n"]),
             "tallyN": int(s["tally_n"]), "tallyCod": r2(s["tally_cod"]),
             "daily": daily, "perBill": per_bill,
+            "stokisKat": stokis_kat, "otherCourier": other_courier,
         }
     sb = reconSql.stockist_bottles(conn)
     out["stockists"] = sorted(

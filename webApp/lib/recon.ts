@@ -82,6 +82,8 @@ export interface StreamSummary {
   tallyN: number; tallyCod: number;
   auditPreview: ExcRow[];
   scopedOrders: number;
+  stokisKat: { seller: string; kategori: string; n: number }[];
+  otherCouriers: { courier: string; orders: number; value: number }[];
 }
 
 function iso(d: Date): string {
@@ -326,6 +328,12 @@ export async function streamSummaryImpl(
     const scoped = await client.query(`
       SELECT COUNT(*) AS n FROM tmp_m WHERE order_id IS NOT NULL`);
 
+    // Cross-tab stokis x kategori (port setia stokis_kat dari reconSql.py). Guna
+    // tmp_m, jadi WAJIB dibaca sebelum ROLLBACK.
+    const stokisKat = await client.query(`
+      SELECT COALESCE(seller_name, '(no order)') AS seller, kategori, COUNT(*) AS n
+      FROM tmp_m GROUP BY 1, 2`);
+
     await client.query("ROLLBACK");
 
     // Bahagian luar tmp_m (baca terus, tiada transaksi perlu).
@@ -337,6 +345,15 @@ export async function streamSummaryImpl(
       SELECT bill_id, settlement_date, source_file FROM cod_bills
       WHERE courier = $1
       ORDER BY settlement_date IS NULL, settlement_date, bill_id`, [cfg.courierLabel]);
+
+    // Order COD yang naik courier LAIN dari stream ni (luar skop Fasa 1). Port
+    // setia other_courier dari reconSql.py. shipping_provider NULL disingkir oleh
+    // <> ALL (NULL), sama macam NOT IN Python.
+    const other = await client.query(`
+      SELECT shipping_provider, COUNT(*) AS n, SUM(selling_price) AS nilai
+      FROM orders
+      WHERE payment_method = ANY($1) AND shipping_provider <> ALL($2)
+      GROUP BY shipping_provider`, [COD_VALUES, cfg.provider]);
 
     const integN = INTEGRITY_EXC.reduce((a, k) => a + (katN[k] ?? 0), 0);
     const agedN = AGED.reduce((a, k) => a + (katN[k] ?? 0), 0);
@@ -357,6 +374,12 @@ export async function streamSummaryImpl(
       tallyN: katN["tally"] ?? 0, tallyCod: katCod["tally"] ?? 0,
       auditPreview: excRows(audit.rows),
       scopedOrders: Number(scoped.rows[0].n),
+      stokisKat: stokisKat.rows.map((r) => ({
+        seller: r.seller as string, kategori: r.kategori as string, n: Number(r.n),
+      })),
+      otherCouriers: other.rows.map((r) => ({
+        courier: r.shipping_provider as string, orders: Number(r.n), value: toNum(r.nilai),
+      })),
     };
   } catch (e) {
     await client.query("ROLLBACK").catch(() => {});
