@@ -10,6 +10,7 @@
 import { PoolClient } from "pg";
 import { unstable_cache } from "next/cache";
 import { getPool } from "./db";
+import { ensureGiftTable } from "./giftsSchema";
 
 export const REMIT_PENDING_DAYS = 14;
 // Tarikh rujukan aging (baseline enjin Python; nanti jadi "hari ini" bila
@@ -648,6 +649,121 @@ export async function commissionBreakdown(seller: string): Promise<CommissionDet
 }
 
 // ====================================================================
+// Free gift (giveaway) , terikat SKU (sku_gifts). Kos derive = order_skus.qty x
+// sku_gifts.qty x unit_cost, corak SAMA botol. SEMUA query di sini query SENDIRI
+// (tak join ke query botol) supaya N gift per SKU tak fan-out kiraan botol.
+// Sifar kesan parity/recon (lapisan kos, bukan kategori duit).
+// ====================================================================
+export interface SkuGiftItem { gift_name: string; unit_cost: number; qty: number; }
+export interface SkuGifts {
+  sku: string; product_name: string | null; gifts: SkuGiftItem[]; costPerUnit: number;
+}
+
+// Senarai SKU (dari sku_bottles = katalog SKU) + gift masing-masing. SKU tanpa
+// gift tetap muncul (gifts kosong) supaya finance boleh tambah.
+export async function skuGiftsListImpl(): Promise<SkuGifts[]> {
+  await ensureGiftTable();
+  const res = await getPool().query(`
+    SELECT sb.sku, sb.product_name, sg.gift_name, sg.unit_cost, sg.qty
+    FROM sku_bottles sb
+    LEFT JOIN sku_gifts sg ON UPPER(TRIM(sg.sku)) = UPPER(TRIM(sb.sku))
+    ORDER BY sb.sku, sg.gift_name`);
+  const map = new Map<string, SkuGifts>();
+  for (const r of res.rows) {
+    let e = map.get(r.sku as string);
+    if (!e) {
+      e = { sku: r.sku, product_name: r.product_name, gifts: [], costPerUnit: 0 };
+      map.set(r.sku as string, e);
+    }
+    if (r.gift_name != null) {
+      const uc = toNum(r.unit_cost), q = toNum(r.qty);
+      e.gifts.push({ gift_name: r.gift_name, unit_cost: uc, qty: q });
+      e.costPerUnit += uc * q;
+    }
+  }
+  return [...map.values()];
+}
+
+export interface GiftCostSummary {
+  confirmedCost: number;   // gift atas order Completed + duit disahkan
+  atRiskCost: number;      // gift atas order Returned/Rejected atau Completed tapi duit tak masuk = bocor
+  giftsGiven: number;      // unit gift (confirmed)
+  giftTypes: number;       // bilangan jenis gift dalam katalog
+  skusWithGifts: number;   // bilangan SKU yang ada gift
+  skuCount: number;        // jumlah SKU dalam katalog
+  byGiftType: { gift_name: string; qty: number; cost: number }[]; // confirmed
+}
+
+export async function giftCostSummaryImpl(): Promise<GiftCostSummary> {
+  await ensureGiftTable();
+  const p = getPool();
+  const agg = await p.query(`
+    WITH og AS (
+      SELECT o.order_id, o.status,
+             SUM(os.qty * sg.qty * COALESCE(sg.unit_cost, 0)) AS gift_cost,
+             MAX(${CONF_SQL}) AS conf
+      FROM orders o
+      JOIN order_skus os ON os.order_id = o.order_id
+      JOIN sku_gifts sg ON UPPER(TRIM(sg.sku)) = os.sku
+      GROUP BY o.order_id, o.status
+    )
+    SELECT
+      COALESCE(SUM(CASE WHEN status = 'Completed' AND conf = 1 THEN gift_cost END), 0) AS confirmed_cost,
+      COALESCE(SUM(CASE WHEN status IN ('Returned', 'Rejected')
+                          OR (status = 'Completed' AND conf = 0)
+                        THEN gift_cost END), 0) AS atrisk_cost
+    FROM og`);
+  const byType = await p.query(`
+    SELECT sg.gift_name,
+           SUM(os.qty * sg.qty) AS qty,
+           SUM(os.qty * sg.qty * COALESCE(sg.unit_cost, 0)) AS cost
+    FROM orders o
+    JOIN order_skus os ON os.order_id = o.order_id
+    JOIN sku_gifts sg ON UPPER(TRIM(sg.sku)) = os.sku
+    WHERE o.status = 'Completed' AND (${CONF_SQL}) = 1
+    GROUP BY sg.gift_name ORDER BY cost DESC, sg.gift_name`);
+  const counts = await p.query(`
+    SELECT
+      (SELECT COUNT(*) FROM sku_bottles) AS sku_count,
+      (SELECT COUNT(DISTINCT UPPER(TRIM(sku))) FROM sku_gifts) AS skus_with_gifts,
+      (SELECT COUNT(DISTINCT gift_name) FROM sku_gifts) AS gift_types`);
+  const c = counts.rows[0];
+  return {
+    confirmedCost: toNum(agg.rows[0].confirmed_cost),
+    atRiskCost: toNum(agg.rows[0].atrisk_cost),
+    giftsGiven: byType.rows.reduce((a, r) => a + toNum(r.qty), 0),
+    giftTypes: Number(c.gift_types),
+    skusWithGifts: Number(c.skus_with_gifts),
+    skuCount: Number(c.sku_count),
+    byGiftType: byType.rows.map((r) => ({
+      gift_name: r.gift_name as string, qty: toNum(r.qty), cost: toNum(r.cost),
+    })),
+  };
+}
+
+export interface StockistGift { stockist: string; gift_name: string; qty: number; cost: number; }
+
+// Gift per stokis (confirmed sahaja, selaras botol confirmed). Page stokis
+// kumpul ikut stokis jadi chip + total kos.
+export async function stockistGiftsImpl(): Promise<StockistGift[]> {
+  await ensureGiftTable();
+  const res = await getPool().query(`
+    SELECT COALESCE(o.seller_name, '(no stockist)') AS stockist,
+           sg.gift_name,
+           SUM(os.qty * sg.qty) AS qty,
+           SUM(os.qty * sg.qty * COALESCE(sg.unit_cost, 0)) AS cost
+    FROM orders o
+    JOIN order_skus os ON os.order_id = o.order_id
+    JOIN sku_gifts sg ON UPPER(TRIM(sg.sku)) = os.sku
+    WHERE o.status = 'Completed' AND (${CONF_SQL}) = 1
+    GROUP BY 1, 2 ORDER BY 1, cost DESC`);
+  return res.rows.map((r) => ({
+    stockist: r.stockist as string, gift_name: r.gift_name as string,
+    qty: toNum(r.qty), cost: toNum(r.cost),
+  }));
+}
+
+// ====================================================================
 // Cache lapisan data: agregat berat di-cache dgn tag "recon", dibatalkan
 // (revalidateTag "recon") masa upload / simpan SKU / reset. revalidate 3600s =
 // jaring keselamatan kalau ada tulisan terlepas invalidate. Drill/search/bank
@@ -663,3 +779,6 @@ export const stockistBottles = unstable_cache(stockistBottlesImpl, ["stockistBot
 export const skuMap = unstable_cache(skuMapImpl, ["skuMap"], RECON_CACHE);
 export const unmappedSkus = unstable_cache(unmappedSkusImpl, ["unmappedSkus"], RECON_CACHE);
 export const commissionSummary = unstable_cache(commissionSummaryImpl, ["commissionSummary"], RECON_CACHE);
+export const skuGiftsList = unstable_cache(skuGiftsListImpl, ["skuGiftsList"], RECON_CACHE);
+export const giftCostSummary = unstable_cache(giftCostSummaryImpl, ["giftCostSummary"], RECON_CACHE);
+export const stockistGifts = unstable_cache(stockistGiftsImpl, ["stockistGifts"], RECON_CACHE);

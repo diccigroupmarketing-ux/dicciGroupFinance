@@ -1,4 +1,4 @@
-import { COURIERS, StreamKey, streamSummary, storeCounts, lastIngest } from "@/lib/recon";
+import { COURIERS, StreamKey, streamSummary, storeCounts, lastIngest, giftCostSummary } from "@/lib/recon";
 import { fmtDate, fmtInt, fmtRM, GRAIN_LABEL, groupByGrain, parseGrain } from "@/lib/format";
 import { Chip } from "@/components/Chip";
 import GrainSwitcher from "@/components/GrainSwitcher";
@@ -13,7 +13,9 @@ export default async function Dashboard(
   { searchParams }: { searchParams: Promise<{ grain?: string }> },
 ) {
   const grain = parseGrain((await searchParams).grain);
-  const [counts, asOf] = await Promise.all([storeCounts(), lastIngest()]);
+  const [counts, asOf, gift] = await Promise.all([
+    storeCounts(), lastIngest(), giftCostSummary(),
+  ]);
 
   if (counts.orders === 0) {
     return (
@@ -71,6 +73,13 @@ export default async function Dashboard(
         </div>
         <div className="heroSub">
           <b>{fmtInt(totParcels)} parcels</b> across <b>{withMoney} courier{withMoney === 1 ? "" : "s"}</b> · expected to land in bank after courier fees
+          {gift.confirmedCost > 0 && (
+            <> · giveaway cost <b>{fmtRM(gift.confirmedCost)}</b>
+              {gift.atRiskCost > 0 && (
+                <span style={{ color: "#EFB8B0" }}> (+{fmtRM(gift.atRiskCost)} at risk)</span>
+              )}
+            </>
+          )}
         </div>
       </div>
 

@@ -307,6 +307,22 @@ th.num{text-align:right}
 .chipMut{background:var(--sunken);color:var(--muted)}
 .chipMut .cdot{background:var(--faint)}
 
+/* ---------- free gift editor + chips ---------- */
+.giftChips{display:flex;flex-wrap:wrap;gap:5px}
+.giftChip{
+  display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:600;
+  background:var(--sunken);color:var(--muted);border:1px solid var(--border);
+  border-radius:999px;padding:2px 9px;
+}
+.giftChip b{color:var(--inkStrong);font-weight:800}
+.giftEditBtn{padding:5px 16px;font-size:12.5px}
+.giftModalTotal{
+  display:flex;justify-content:space-between;align-items:center;
+  margin:16px 0 6px;padding-top:13px;border-top:1px solid var(--border);
+}
+.giftModalTotal .lbl{font-size:12.5px;color:var(--muted)}
+.giftModalTotal .val{font-family:var(--display);font-size:19px;color:var(--inkStrong);font-weight:700}
+
 /* ---------- breakdown bars ---------- */
 .breakRow{display:grid;grid-template-columns:170px 1fr 56px;gap:12px;align-items:center;padding:7px 0}
 .breakName{font-size:12.5px;font-weight:700;color:var(--inkStrong);display:flex;align-items:center;gap:8px}

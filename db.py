@@ -142,6 +142,19 @@ CREATE TABLE IF NOT EXISTS sku_bottles (
     free         INTEGER DEFAULT 0
 );
 
+-- Free gift (giveaway) terikat SKU: satu SKU boleh ada beberapa gift (kurma,
+-- arabic gold massage, dll), tiap satu kos sendiri. Kos giveaway per order
+-- dikira order_skus.qty x sku_gifts.qty x unit_cost (corak sama sku_bottles).
+-- Config (macam sku_bottles): KEKAL bila reset data, TAK sentuh logik recon.
+CREATE TABLE IF NOT EXISTS sku_gifts (
+    sku       TEXT,
+    gift_name TEXT,
+    unit_cost DOUBLE PRECISION DEFAULT 0,
+    qty       INTEGER DEFAULT 1,
+    PRIMARY KEY (sku, gift_name)
+);
+CREATE INDEX IF NOT EXISTS idx_sku_gifts_sku ON sku_gifts(sku);
+
 CREATE TABLE IF NOT EXISTS cod_bills (
     bill_id         TEXT PRIMARY KEY,
     courier         TEXT,

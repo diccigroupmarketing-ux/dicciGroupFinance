@@ -4,12 +4,19 @@
 // Bacaan recon kekal di recon.ts; mutasi diasingkan supaya recon.ts tetap
 // cermin murni reconSql.py.
 import { getPool } from "./db";
+import { ensureGiftTable } from "./giftsSchema";
 
 export interface SkuInput {
   sku: string;
   product_name?: string | null;
   paid?: number | null;
   free?: number | null;
+}
+
+export interface GiftInput {
+  gift_name: string;
+  unit_cost?: number | null;
+  qty?: number | null;
 }
 
 // Jadikan integer >= 0 (padan INTEGER DEFAULT 0 dalam skema; buang pecahan & negatif).
@@ -49,6 +56,63 @@ export async function saveSkuMap(rows: SkuInput[]): Promise<number> {
     }
     await client.query("COMMIT");
     return clean.length;
+  } catch (e) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+// Kos RM >= 0, dua titik perpuluhan (sen). Qty gift integer >= 1.
+function money(v: unknown): number {
+  const n = Number(v);
+  return Number.isFinite(n) && n >= 0 ? Math.round(n * 100) / 100 : 0;
+}
+function posInt(v: unknown): number {
+  const n = Math.trunc(Number(v));
+  return Number.isFinite(n) && n > 0 ? n : 1;
+}
+
+// Ganti SEMUA free gift untuk SATU SKU (delete where sku, insert baru). Per-SKU
+// supaya edit satu SKU tak sentuh SKU lain (selamat concurrent, sepadan modal
+// yang edit satu SKU pada satu masa). Dibungkus transaksi.
+export async function saveGifts(sku: string, gifts: GiftInput[]): Promise<number> {
+  await ensureGiftTable();
+  const skuKey = String(sku ?? "").trim();
+  if (!skuKey) throw new Error("SKU kosong");
+  const clean = (gifts ?? [])
+    .filter((g) => g && typeof g === "object")
+    .map((g) => ({
+      name: String(g?.gift_name ?? "").trim(),
+      cost: money(g?.unit_cost),
+      qty: posInt(g?.qty),
+    }))
+    .filter((g) => g.name);
+  // Buang nama gift berganda dalam SATU SKU (case-insensitive; PK sku,gift_name).
+  const seen = new Set<string>();
+  const rows = clean.filter((g) => {
+    const k = g.name.toUpperCase();
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+
+  const client = await getPool().connect();
+  try {
+    await client.query("BEGIN");
+    await client.query(
+      "DELETE FROM sku_gifts WHERE UPPER(TRIM(sku)) = UPPER(TRIM($1))", [skuKey]);
+    for (const g of rows) {
+      await client.query(
+        `INSERT INTO sku_gifts (sku, gift_name, unit_cost, qty)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT (sku, gift_name) DO UPDATE SET
+           unit_cost = excluded.unit_cost, qty = excluded.qty`,
+        [skuKey, g.name, g.cost, g.qty]);
+    }
+    await client.query("COMMIT");
+    return rows.length;
   } catch (e) {
     await client.query("ROLLBACK").catch(() => {});
     throw e;

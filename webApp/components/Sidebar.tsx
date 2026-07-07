@@ -71,6 +71,12 @@ const ICONS: Record<string, React.ReactNode> = {
       <path d="M10 3v8m0 0 3-3m-3 3-3-3M4 14.5v2A1.5 1.5 0 0 0 5.5 18h9a1.5 1.5 0 0 0 1.5-1.5v-2" />
     </svg>
   ),
+  gift: (
+    <svg className="navIcon" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.7">
+      <path d="M4 8h12v9H4z" /><path d="M2.5 8h15v3h-15z" /><path d="M10 8v9" />
+      <path d="M10 8C10 6 8.8 4.5 7.5 4.5S6 5.5 7 6.5s3 1.5 3 1.5m0 0C10 6 11.2 4.5 12.5 4.5S14 5.5 13 6.5s-3 1.5-3 1.5" />
+    </svg>
+  ),
 };
 
 const STREAMS = [
@@ -163,6 +169,9 @@ export default function Sidebar() {
         </Link>
         <Link href="/impact/stockists" className={cls(path === "/impact/stockists")} title={tip("Stockists")}>
           {ICONS.stockists} <span className="navText">Stockists</span>
+        </Link>
+        <Link href="/impact/gifts" className={cls(path === "/impact/gifts")} title={tip("Free gifts")}>
+          {ICONS.gift} <span className="navText">Free gifts</span>
         </Link>
       </nav>
 

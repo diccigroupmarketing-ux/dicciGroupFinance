@@ -1,6 +1,6 @@
 import Link from "next/link";
-import { stockistBottles, stockistOrders, storeCounts } from "@/lib/recon";
-import { fmtDate, fmtInt, trackingOrDash } from "@/lib/format";
+import { stockistBottles, stockistGifts, stockistOrders, storeCounts } from "@/lib/recon";
+import { fmtDate, fmtInt, fmtRM, trackingOrDash } from "@/lib/format";
 import { Chip } from "@/components/Chip";
 import ExportCsv from "@/components/ExportCsv";
 
@@ -11,6 +11,7 @@ const BOTTLE_COLS = [
   { key: "free_bottles", header: "Free bottles" },
   { key: "total_bottles", header: "Total bottles" },
   { key: "unconfirmed_bottles", header: "Unconfirmed bottles" },
+  { key: "giveaway_cost", header: "Giveaway cost (RM)" },
 ];
 const DRILL_COLS = [
   { key: "order_id", header: "Order" }, { key: "order_date", header: "Date" },
@@ -40,10 +41,23 @@ export default async function StockistsPage(
     );
   }
 
-  const rows = await stockistBottles();
+  const [rows, giftsRaw] = await Promise.all([stockistBottles(), stockistGifts()]);
+  // Kumpul gift ikut stokis: chip (nama x qty) + total kos. Query berasingan
+  // (tak fan-out kiraan botol), digabung di sini ikut nama stokis.
+  const giftMap = new Map<string, { gifts: { name: string; qty: number }[]; cost: number }>();
+  for (const g of giftsRaw) {
+    let e = giftMap.get(g.stockist);
+    if (!e) { e = { gifts: [], cost: 0 }; giftMap.set(g.stockist, e); }
+    e.gifts.push({ name: g.gift_name, qty: g.qty });
+    e.cost += g.cost;
+  }
+  const rowsExport = rows.map((r) => ({
+    ...r, giveaway_cost: Math.round((giftMap.get(r.stockist)?.cost ?? 0) * 100) / 100,
+  }));
   const totBottles = rows.reduce((a, r) => a + r.total_bottles, 0);
   const totFree = rows.reduce((a, r) => a + r.free_bottles, 0);
   const totUnconfirmed = rows.reduce((a, r) => a + r.unconfirmed_bottles, 0);
+  const totGiftCost = giftsRaw.reduce((a, g) => a + g.cost, 0);
 
   const picked = s && rows.some((r) => r.stockist === s) ? s : null;
   const drill = picked ? await stockistOrders(picked) : null;
@@ -58,14 +72,14 @@ export default async function StockistsPage(
           <div className="cardHint">
             paid (sales) + free (cost), counted once payment is confirmed
           </div>
-          <ExportCsv rows={rows} columns={BOTTLE_COLS}
+          <ExportCsv rows={rowsExport} columns={BOTTLE_COLS}
             filename="impact-stockist-bottles.csv" />
         </div>
         <p className="pageSub" style={{ marginTop: 2 }}>
           Confirmed: <b>{fmtInt(totBottles)}</b> bottles ({fmtInt(totFree)} free) across{" "}
           {rows.length} stockists. Awaiting payment confirmation: {fmtInt(totUnconfirmed)} bottles.
-          Bottles count across all couriers, but only for Completed orders whose money is
-          confirmed by an uploaded money feed.
+          Giveaway cost (confirmed): <b>{fmtRM(totGiftCost)}</b>. Bottles &amp; gift cost count
+          across all couriers, only for Completed orders whose money is confirmed.
         </p>
         <div className="tableWrap">
           <table>
@@ -77,25 +91,48 @@ export default async function StockistsPage(
                 <th className="num">Free bottles</th>
                 <th className="num">Total bottles</th>
                 <th className="num">Unconfirmed</th>
+                <th>Free gifts</th>
+                <th className="num">Giveaway cost</th>
               </tr>
             </thead>
             <tbody>
-              {rows.map((r) => (
-                <tr key={r.stockist}
-                  style={picked === r.stockist ? { background: "#FAF7EF" } : undefined}>
-                  <td>
-                    <Link href={`/impact/stockists?s=${encodeURIComponent(r.stockist)}`}
-                      className="cellMain" style={{ color: "var(--goldDark)" }}>
-                      {r.stockist}
-                    </Link>
-                  </td>
-                  <td className="num">{fmtInt(r.confirmed_orders)}</td>
-                  <td className="num">{fmtInt(r.paid_bottles)}</td>
-                  <td className="num">{fmtInt(r.free_bottles)}</td>
-                  <td className="num"><b>{fmtInt(r.total_bottles)}</b></td>
-                  <td className="num">{fmtInt(r.unconfirmed_bottles)}</td>
-                </tr>
-              ))}
+              {rows.map((r) => {
+                const g = giftMap.get(r.stockist);
+                const gifts = g?.gifts ?? [];
+                return (
+                  <tr key={r.stockist}
+                    style={picked === r.stockist ? { background: "#FAF7EF" } : undefined}>
+                    <td>
+                      <Link href={`/impact/stockists?s=${encodeURIComponent(r.stockist)}`}
+                        className="cellMain" style={{ color: "var(--goldDark)" }}>
+                        {r.stockist}
+                      </Link>
+                    </td>
+                    <td className="num">{fmtInt(r.confirmed_orders)}</td>
+                    <td className="num">{fmtInt(r.paid_bottles)}</td>
+                    <td className="num">{fmtInt(r.free_bottles)}</td>
+                    <td className="num"><b>{fmtInt(r.total_bottles)}</b></td>
+                    <td className="num">{fmtInt(r.unconfirmed_bottles)}</td>
+                    <td>
+                      {gifts.length === 0
+                        ? <span style={{ color: "var(--faint)" }}>—</span>
+                        : (
+                          <div className="giftChips">
+                            {gifts.slice(0, 4).map((x) => (
+                              <span className="giftChip" key={x.name}>{x.name} <b>×{fmtInt(x.qty)}</b></span>
+                            ))}
+                            {gifts.length > 4 && (
+                              <span className="giftChip">+{gifts.length - 4}</span>
+                            )}
+                          </div>
+                        )}
+                    </td>
+                    <td className="num" style={{ color: "var(--goldDark)" }}>
+                      {g && g.cost > 0 ? <b>{fmtRM(g.cost)}</b> : <span style={{ color: "var(--faint)" }}>—</span>}
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>

@@ -595,6 +595,40 @@ Owner suka sidebar sedia ada, cuma nak butang collapse untuk big picture. Pilih 
 - Enjin berubah? `bash scripts/syncEngine.sh` (sync salinan api/engine/) sebelum deploy.
 - Deploy: `cd webApp && vercel deploy --prod --yes` (deploy TAK auto dari git push).
 
+## Sesi 8 Jul: Free gift (giveaway) tracking (LIVE)
+
+Finance nak tahu KOS (COGS) gift percuma yang diberi (kurma, arabic gold massage,
+tote, dll) supaya nampak kos/bocor. Direka lewat panel `/timbang` (3 lensa) + mockup
+yang owner lulus. **Keputusan owner terkunci:**
+- Gift **terikat SKU** (bukan tag per order). Finance config sekali per SKU, kos
+  **auto-derive** per order dari SKU. Cermin corak `sku_bottles`.
+- **Inline per SKU** (bukan katalog kongsi). **Derive live** (bukan snapshot) , konsisten
+  dgn botol/recon yang recompute dari config semasa.
+- Fasa 1: **gift manual je** (kurma/dll). Botol juice free (KORBAN 4+2) kekal kiraan
+  tanpa kos buat masa ni.
+- Kos dipapar **split confirmed vs at-risk** (gift atas order Returned/Rejected/tak-confirmed
+  = potensi bocor).
+
+**Bina (murni UI + config, SIFAR kesan parity/recon):**
+- `db.py` SCHEMA: jadual `sku_gifts (sku, gift_name, unit_cost, qty; PK sku+gift_name)`.
+  Config macam `sku_bottles`: **KEKAL bila reset**, jadual asing supaya `save_sku_map`
+  Streamlit (DELETE+INSERT 4 lajur) tak wipe gift. Sync ke `api/engine/db.py`.
+- `webApp/lib/giftsSchema.ts` `ensureGiftTable()` (cermin audit.ts) , cipta di Neon auto
+  tanpa migrasi manual.
+- `webApp/lib/recon.ts`: `skuGiftsList` + `giftCostSummary` (confirmed/at-risk + byGiftType)
+  + `stockistGifts`. **Semua query BERASINGAN, TAK join query botol** (elak N-gift fan-out
+  gandakan kiraan botol , guard sudah disahkan).
+- `webApp/lib/mutations.ts` `saveGifts` (ganti gift per SKU, transaksi) + `app/api/gifts/route.ts`
+  (validate, `revalidateTag recon`, `logEvent`).
+- UI: `components/GiftEditor.tsx` (senarai SKU + **modal pop-up per SKU**) + page
+  `app/impact/gifts/page.tsx` + nav "Free gifts" (Sidebar, bawah People) + lajur chip
+  "Free gifts" + "Giveaway cost" di Stockists + subline kos giveaway di Dashboard hero.
+- **Verify:** `tsc` + `npm run build` hijau; ujian data dev DB LULUS (kos derive betul +
+  **GUARD: total botol IDENTIK sebelum/selepas seed gift = sifar fan-out**).
+- **Pending fasa depan:** gift luar order (bukan terikat order), kos botol juice free masuk
+  COGS, snapshot/period-freeze (kalau finance nak tutup buku bulanan). Nota: dev DB ada
+  placeholder gift yang diseed masa ujian (boleh clear dari editor).
+
 ## Status sekarang
 
 - [x] Borak, kunci skop + keputusan Fasa 1.
@@ -613,7 +647,10 @@ Owner suka sidebar sedia ada, cuma nak butang collapse untuk big picture. Pilih 
   (6/7 Jul): CSV per-page (N-of-M) + Close Pack rekonsiliasi** (seksyen "Sesi 6/7 Jul").
 - [x] Sidebar collapse (icon rail) LIVE (8 Jul): butang chevron, mengecut jadi rail ~64px,
   simpan localStorage, no-flash pra-paint, mobile tak disentuh. Murni UI (seksyen bawah).
-- [ ] Export Fasa B (lapisan server dataset penuh) + komisen enrich + free gift:
+- [x] Free gift (giveaway) tracking (8 Jul): jadual `sku_gifts`, page /impact/gifts (senarai
+  SKU + modal per SKU), kos auto-derive per SKU, split confirmed vs at-risk, chip+kos di
+  Stockists + subline Dashboard. Murni UI+config, guard fan-out lulus (seksyen "Sesi 8 Jul").
+- [ ] Export Fasa B (lapisan server dataset penuh) + komisen enrich:
   HOLD/tangguh (lihat seksyen "Sesi 6/7 Jul" + auto-memory).
 - [ ] Wire feed courier seterusnya (DHL, Ninja Van): perlu PDF sampel dari Adi dulu.
 - [ ] Wire feed prepaid (CHIP/transfer) + TikTok: perlu bentuk export dari Adi.
