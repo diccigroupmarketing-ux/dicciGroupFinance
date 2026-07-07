@@ -565,8 +565,24 @@ Owner pilih bentuk **Hybrid + Close Pack** (via panel timbang 3 lensa). Turutan 
     ~21% komisen atas order bukan-Completed/takde = calon leak. Gate G2: (a) percaya Fighter
     as-is vs sahkan; (b) "Withdraw" wallet = transfer bank keluar?
   - **Free gift** (giveaway/botol `free` + kos) , borak berasingan.
-  - **Sidebar collapse toggle** , owner suka sidebar sekarang, cuma nak butang collapse untuk
-    big picture. Buat selepas Export.
+  - **Sidebar collapse toggle** , ✅ SIAP + LIVE 8 Jul (lihat subseksyen bawah).
+
+### Sidebar collapse (icon rail) , LIVE 8 Jul 2026
+
+Owner suka sidebar sedia ada, cuma nak butang collapse untuk big picture. Pilih bentuk
+**icon rail** (bukan full-hide) supaya nav kekal satu klik.
+
+- Butang chevron di kanan atas jenama. Klik = sidebar mengecut dari 250px jadi rail ~64px:
+  teks/label hilang, ikon kekal (center), upload jadi ikon emas, avatar + sign out bertindan.
+  Klik lagi = buka balik penuh.
+- Pilihan disimpan `localStorage` (`dicci.sideRailed`). Inline script kecil dalam
+  `app/impact/layout.tsx` set keadaan **sebelum paint** supaya tiada flash buka->tutup bila
+  reload. Grid transition 200ms, dihormati `prefers-reduced-motion`. Mobile (≤940px) tak
+  disentuh (butang toggle disorok, layout kekal top-bar).
+- **Murni UI, recon/data langsung tak disentuh** (tiada parity perlu). Fail: `Sidebar.tsx`,
+  `UploadModal.tsx`, `app/impact/layout.tsx`, `app/globals.css` (blok `:root.sideRailed`).
+- Verify: `tsc` + `npm run build` hijau; browser (harness CSS+markup sebenar) sahkan
+  collapse/expand, persistence reload tanpa flash, round-trip.
 
 ### Arahan dev webApp (untuk sesi kerja)
 - Dev DB: `cd webApp && node scripts/devDb.mjs` (background; Postgres embedded port
@@ -595,8 +611,10 @@ Owner pilih bentuk **Hybrid + Close Pack** (via panel timbang 3 lensa). Turutan 
   ingest (parser Python sebenar), 100% cover view Streamlit, bank confirmation, audit log,
   cache recon, search, SKU editor, stokis_kat/other_courier. **Export finance LIVE
   (6/7 Jul): CSV per-page (N-of-M) + Close Pack rekonsiliasi** (seksyen "Sesi 6/7 Jul").
-- [ ] Export Fasa B (lapisan server dataset penuh) + komisen enrich + free gift + sidebar
-  collapse: HOLD/tangguh (lihat seksyen "Sesi 6/7 Jul" + auto-memory).
+- [x] Sidebar collapse (icon rail) LIVE (8 Jul): butang chevron, mengecut jadi rail ~64px,
+  simpan localStorage, no-flash pra-paint, mobile tak disentuh. Murni UI (seksyen bawah).
+- [ ] Export Fasa B (lapisan server dataset penuh) + komisen enrich + free gift:
+  HOLD/tangguh (lihat seksyen "Sesi 6/7 Jul" + auto-memory).
 - [ ] Wire feed courier seterusnya (DHL, Ninja Van): perlu PDF sampel dari Adi dulu.
 - [ ] Wire feed prepaid (CHIP/transfer) + TikTok: perlu bentuk export dari Adi.
 - [ ] Hardening keselamatan: rotate kredential DB Neon + audit akses team.

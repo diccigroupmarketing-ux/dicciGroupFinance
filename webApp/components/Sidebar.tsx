@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { SignOutButton, useUser } from "@clerk/nextjs";
@@ -85,11 +86,41 @@ export default function Sidebar() {
   const initial = (email[0] ?? "D").toUpperCase();
   const cls = (active: boolean) => "navItem" + (active ? " active" : "");
 
+  // Collapse jadi icon rail. Keadaan sebenar dipegang class `sideRailed` pada
+  // <html> (diset pra-paint oleh script kecil dalam layout supaya tiada flash).
+  // State di sini cuma cermin dia untuk aria + tooltip.
+  const [collapsed, setCollapsed] = useState(false);
+  useEffect(() => {
+    setCollapsed(document.documentElement.classList.contains("sideRailed"));
+  }, []);
+  const toggleRail = () => {
+    setCollapsed((prev) => {
+      const next = !prev;
+      document.documentElement.classList.toggle("sideRailed", next);
+      try { localStorage.setItem("dicci.sideRailed", next ? "1" : "0"); } catch {}
+      return next;
+    });
+  };
+  const tip = (label: string) => (collapsed ? label : undefined);
+
   return (
     <aside className="side">
-      <div className="brand">
-        <div className="brandName">DICCI</div>
-        <div className="brandSub">Group Finance</div>
+      <div className="sideTop">
+        <div className="brand">
+          <div className="brandName">DICCI</div>
+          <div className="brandSub">Group Finance</div>
+        </div>
+        <button
+          className="railToggle"
+          onClick={toggleRail}
+          aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+          aria-expanded={!collapsed}
+          title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+        >
+          <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.9">
+            <path d="M12 5.5 7.5 10l4.5 4.5" />
+          </svg>
+        </button>
       </div>
 
       <div className="company">
@@ -102,14 +133,14 @@ export default function Sidebar() {
 
       <nav className="navGroup" aria-label="Overview">
         <div className="navLabel">Overview</div>
-        <Link href="/impact" className={cls(path === "/impact")}>
-          {ICONS.dashboard} Dashboard
+        <Link href="/impact" className={cls(path === "/impact")} title={tip("Dashboard")}>
+          {ICONS.dashboard} <span className="navText">Dashboard</span>
         </Link>
-        <Link href="/impact/search" className={cls(path === "/impact/search")}>
-          {ICONS.search} Find order
+        <Link href="/impact/search" className={cls(path === "/impact/search")} title={tip("Find order")}>
+          {ICONS.search} <span className="navText">Find order</span>
         </Link>
-        <Link href="/impact/export" className={cls(path === "/impact/export")}>
-          {ICONS.export} Export
+        <Link href="/impact/export" className={cls(path === "/impact/export")} title={tip("Export")}>
+          {ICONS.export} <span className="navText">Export</span>
         </Link>
       </nav>
 
@@ -117,31 +148,31 @@ export default function Sidebar() {
         <div className="navLabel">Income streams</div>
         {STREAMS.map((s) => (
           <Link key={s.key} href={`/impact/streams/${s.key}`}
-            className={cls(path === `/impact/streams/${s.key}`)}>
-            {ICONS[s.key]} {s.name}
+            className={cls(path === `/impact/streams/${s.key}`)} title={tip(s.name)}>
+            {ICONS[s.key]} <span className="navText">{s.name}</span>
           </Link>
         ))}
-        <span className="navItem disabled">{ICONS.chip} CHIP <span className="navBadge">Soon</span></span>
-        <span className="navItem disabled">{ICONS.bank} Bank Transfer <span className="navBadge">Soon</span></span>
+        <span className="navItem disabled">{ICONS.chip} <span className="navText">CHIP</span> <span className="navBadge">Soon</span></span>
+        <span className="navItem disabled">{ICONS.bank} <span className="navText">Bank Transfer</span> <span className="navBadge">Soon</span></span>
       </nav>
 
       <nav className="navGroup" aria-label="People">
         <div className="navLabel">People</div>
-        <Link href="/impact/commission" className={cls(path === "/impact/commission")}>
-          {ICONS.commission} Commission
+        <Link href="/impact/commission" className={cls(path === "/impact/commission")} title={tip("Commission")}>
+          {ICONS.commission} <span className="navText">Commission</span>
         </Link>
-        <Link href="/impact/stockists" className={cls(path === "/impact/stockists")}>
-          {ICONS.stockists} Stockists
+        <Link href="/impact/stockists" className={cls(path === "/impact/stockists")} title={tip("Stockists")}>
+          {ICONS.stockists} <span className="navText">Stockists</span>
         </Link>
       </nav>
 
       <nav className="navGroup" aria-label="Setup">
         <div className="navLabel">Setup</div>
-        <Link href="/impact/skus" className={cls(path === "/impact/skus")}>
-          {ICONS.sku} SKU / Bottles
+        <Link href="/impact/skus" className={cls(path === "/impact/skus")} title={tip("SKU / Bottles")}>
+          {ICONS.sku} <span className="navText">SKU / Bottles</span>
         </Link>
-        <Link href="/impact/activity" className={cls(path === "/impact/activity")}>
-          {ICONS.activity} Activity
+        <Link href="/impact/activity" className={cls(path === "/impact/activity")} title={tip("Activity")}>
+          {ICONS.activity} <span className="navText">Activity</span>
         </Link>
       </nav>
 
