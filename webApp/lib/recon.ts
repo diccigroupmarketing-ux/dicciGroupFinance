@@ -514,15 +514,25 @@ export interface StockistOrder {
   payment_method: string | null; shipping_provider: string | null;
   tracking: string | null; botol_paid: number; botol_free: number;
   botol_total: number; duit: "confirmed" | "unconfirmed";
+  expected: number | null; net_remit: number | null;
 }
 
+// Enrich: tambah RM (expected = selling_price, net_remit = cod_amount - fee dari
+// bil courier) + penapis tarikh OPTIONAL (order_date, prefix 10 char supaya immune
+// pada bahagian masa). from/to null = semua masa (backward-compat dgn pemanggil lama).
 export async function stockistOrders(
   seller: string, cap: number = DRILL_CAP,
+  from?: string, to?: string,
 ): Promise<{ rows: StockistOrder[]; total: number }> {
   const p = getPool();
+  const scoped = Boolean(from && to);
+  const listDate = scoped ? "AND LEFT(order_date, 10) BETWEEN $3 AND $4" : "";
+  const listParams = scoped ? [seller, cap, from, to] : [seller, cap];
   const res = await p.query(`
     SELECT o.order_id, o.order_date, o.status, o.payment_method,
-           o.shipping_provider, o.tracking,
+           o.shipping_provider, o.tracking, o.selling_price,
+           (SELECT cl.cod_amount - COALESCE(cl.fee, 0) FROM cod_bill_lines cl
+            WHERE cl.awb = o.tracking LIMIT 1) AS net_remit,
            COALESCE((SELECT SUM(os.qty * COALESCE(sb.paid, 0))
                      FROM order_skus os
                      LEFT JOIN sku_bottles sb ON UPPER(TRIM(sb.sku)) = os.sku
@@ -534,12 +544,14 @@ export async function stockistOrders(
            CASE WHEN ${CONF_SQL.trim()} = 1 THEN 'confirmed'
                 ELSE 'unconfirmed' END AS duit
     FROM (SELECT * FROM orders
-          WHERE COALESCE(seller_name, '(no stockist)') = $1
+          WHERE COALESCE(seller_name, '(no stockist)') = $1 ${listDate}
           ORDER BY order_date DESC LIMIT $2) o
-    ORDER BY o.order_date DESC`, [seller, cap]);
+    ORDER BY o.order_date DESC`, listParams);
+  const totDate = scoped ? "AND LEFT(order_date, 10) BETWEEN $2 AND $3" : "";
+  const totParams = scoped ? [seller, from, to] : [seller];
   const tot = await p.query(
     `SELECT COUNT(*) AS n FROM orders
-     WHERE COALESCE(seller_name, '(no stockist)') = $1`, [seller]);
+     WHERE COALESCE(seller_name, '(no stockist)') = $1 ${totDate}`, totParams);
   return {
     rows: res.rows.map((r) => ({
       order_id: r.order_id, order_date: r.order_date, status: r.status,
@@ -548,6 +560,8 @@ export async function stockistOrders(
       botol_paid: toNum(r.botol_paid), botol_free: toNum(r.botol_free),
       botol_total: toNum(r.botol_paid) + toNum(r.botol_free),
       duit: r.duit,
+      expected: r.selling_price == null ? null : toNum(r.selling_price),
+      net_remit: r.net_remit == null ? null : toNum(r.net_remit),
     })),
     total: Number(tot.rows[0].n),
   };
@@ -761,6 +775,213 @@ export async function stockistGiftsImpl(): Promise<StockistGift[]> {
     stockist: r.stockist as string, gift_name: r.gift_name as string,
     qty: toNum(r.qty), cost: toNum(r.cost),
   }));
+}
+
+// ====================================================================
+// Stockist mini page (drill modal): potret satu stokis, berpenapis tarikh.
+// SEMUA additive + read-only, guna semula CONF_SQL. TIDAK sentuh
+// stockistBottlesImpl / streamSummary / CONF_SQL (yang dalam harness parity).
+// Tarikh: order-based blok ikut order_date; komisen ikut txn_date. Prefix 10
+// char (LEFT(...,10)) supaya immune pada bahagian masa; NULL tarikh terkecuali.
+// Bukan di-cache (per-arg + perlu segar, selari drill/search sedia ada).
+// ====================================================================
+export interface StockistDetail {
+  stockist: string; from: string; to: string;
+  money: {
+    expected: number; confirmedNet: number; awaiting: number;
+    ordersTotal: number; ordersWithFeed: number;
+    collectedOnReturned: number; returnedWithMoney: number;
+  };
+  bottles: { total: number; paid: number; free: number; confirmed: number; unconfirmed: number };
+  status: {
+    completed: number; returned: number; rejected: number; other: number;
+    total: number; returnRate: number; returnedBottles: number; rejectedBottles: number;
+  };
+  commission: {
+    level: string; earned: number; paid: number; balance: number;
+    leakAmount: number; leakOrders: number;
+  };
+  products: { sku: string; product_name: string | null; bottles: number }[];
+  gifts: {
+    confirmed: { gift_name: string; qty: number; cost: number }[];
+    confirmedCost: number; atRiskCost: number;
+  };
+  orders: { rows: StockistOrder[]; total: number };
+}
+
+export async function stockistDetail(
+  seller: string, from: string, to: string,
+): Promise<StockistDetail> {
+  await ensureGiftTable();
+  const p = getPool();
+  const A = [seller, from, to]; // param set sama untuk semua query order-based
+
+  const [money, bottles, statusCounts, lossBottles, comm, commLeak,
+         products, giftsConf, giftsRisk, orders] = await Promise.all([
+    // MONEY
+    p.query(`
+      WITH ord AS (
+        SELECT o.status, o.selling_price,
+               ${CONF_SQL} AS conf,
+               (SELECT cl.cod_amount FROM cod_bill_lines cl WHERE cl.awb = o.tracking LIMIT 1) AS cod_amt,
+               (SELECT cl.fee FROM cod_bill_lines cl WHERE cl.awb = o.tracking LIMIT 1) AS cod_fee,
+               (SELECT COALESCE(SUM(pp.amount - COALESCE(pp.fee, 0)), 0)
+                FROM prepaid_payments pp WHERE pp.order_ref = o.order_id) AS prepaid_net
+        FROM orders o
+        WHERE COALESCE(o.seller_name, '(no stockist)') = $1
+          AND LEFT(o.order_date, 10) BETWEEN $2 AND $3
+      )
+      SELECT
+        COALESCE(SUM(selling_price), 0) AS expected,
+        COALESCE(SUM(CASE WHEN conf = 1
+          THEN COALESCE(cod_amt, 0) - COALESCE(cod_fee, 0) + COALESCE(prepaid_net, 0) END), 0) AS confirmed_net,
+        COALESCE(SUM(CASE WHEN conf = 0 THEN selling_price END), 0) AS awaiting,
+        COUNT(*) AS orders_total,
+        COALESCE(SUM(CASE WHEN conf = 1 THEN 1 ELSE 0 END), 0) AS orders_with_feed,
+        COALESCE(SUM(CASE WHEN status = 'Returned' AND cod_amt IS NOT NULL THEN cod_amt END), 0) AS collected_on_returned,
+        COALESCE(SUM(CASE WHEN status = 'Returned' AND cod_amt IS NOT NULL THEN 1 ELSE 0 END), 0) AS returned_with_money
+      FROM ord`, A),
+    // BOTTLES (Completed sahaja = botol bergerak; split paid/free + confirmed/unconfirmed)
+    p.query(`
+      SELECT
+        COALESCE(SUM(bp + bf), 0) AS total,
+        COALESCE(SUM(bp), 0) AS paid,
+        COALESCE(SUM(bf), 0) AS free,
+        COALESCE(SUM(CASE WHEN conf = 1 THEN bp + bf END), 0) AS confirmed,
+        COALESCE(SUM(CASE WHEN conf = 0 THEN bp + bf END), 0) AS unconfirmed
+      FROM (SELECT COALESCE(os.qty * COALESCE(sb.paid, 0), 0) AS bp,
+                   COALESCE(os.qty * COALESCE(sb.free, 0), 0) AS bf,
+                   ${CONF_SQL} AS conf
+            FROM orders o
+            LEFT JOIN order_skus os ON os.order_id = o.order_id
+            LEFT JOIN sku_bottles sb ON UPPER(TRIM(sb.sku)) = os.sku
+            WHERE o.status = 'Completed'
+              AND COALESCE(o.seller_name, '(no stockist)') = $1
+              AND LEFT(o.order_date, 10) BETWEEN $2 AND $3) x`, A),
+    // STATUS counts
+    p.query(`
+      SELECT
+        COALESCE(SUM(CASE WHEN status = 'Completed' THEN 1 ELSE 0 END), 0) AS completed,
+        COALESCE(SUM(CASE WHEN status = 'Returned' THEN 1 ELSE 0 END), 0) AS returned,
+        COALESCE(SUM(CASE WHEN status = 'Rejected' THEN 1 ELSE 0 END), 0) AS rejected,
+        COALESCE(SUM(CASE WHEN status IS NULL OR status NOT IN ('Completed','Returned','Rejected') THEN 1 ELSE 0 END), 0) AS other,
+        COUNT(*) AS total
+      FROM orders o
+      WHERE COALESCE(o.seller_name, '(no stockist)') = $1
+        AND LEFT(o.order_date, 10) BETWEEN $2 AND $3`, A),
+    // LOSS bottles (Returned / Rejected)
+    p.query(`
+      SELECT
+        COALESCE(SUM(CASE WHEN status = 'Returned' THEN bqty END), 0) AS returned_bottles,
+        COALESCE(SUM(CASE WHEN status = 'Rejected' THEN bqty END), 0) AS rejected_bottles
+      FROM (SELECT o.status,
+                   COALESCE(SUM(os.qty * (COALESCE(sb.paid, 0) + COALESCE(sb.free, 0))), 0) AS bqty
+            FROM orders o
+            LEFT JOIN order_skus os ON os.order_id = o.order_id
+            LEFT JOIN sku_bottles sb ON UPPER(TRIM(sb.sku)) = os.sku
+            WHERE COALESCE(o.seller_name, '(no stockist)') = $1
+              AND LEFT(o.order_date, 10) BETWEEN $2 AND $3
+              AND o.status IN ('Returned', 'Rejected')
+            GROUP BY o.order_id, o.status) t`, A),
+    // COMMISSION summary (ikut txn_date)
+    p.query(`
+      SELECT MIN(seller_role) AS level,
+             SUM(CASE WHEN status = 'Approved' AND txn_type = 'IN' THEN amount ELSE 0 END) AS earned,
+             SUM(CASE WHEN status = 'Approved' AND txn_type = 'OUT' AND source = 'Withdraw' THEN amount ELSE 0 END) AS paid
+      FROM wallet_txns w
+      WHERE seller_name = $1 AND LEFT(w.txn_date, 10) BETWEEN $2 AND $3`, A),
+    // COMMISSION leak: komisen IN Approved atas order BUKAN confirmed-paid
+    p.query(`
+      SELECT COALESCE(SUM(w.amount), 0) AS leak_amount, COUNT(*) AS leak_orders
+      FROM wallet_txns w
+      JOIN orders o ON o.order_id = w.order_id
+      WHERE w.seller_name = $1 AND w.status = 'Approved' AND w.txn_type = 'IN'
+        AND LEFT(w.txn_date, 10) BETWEEN $2 AND $3
+        AND (${CONF_SQL}) = 0`, A),
+    // PRODUCTS: top SKU ikut botol (Completed)
+    p.query(`
+      SELECT os.sku AS sku, MAX(sb.product_name) AS product_name,
+             COALESCE(SUM(os.qty * (COALESCE(sb.paid, 0) + COALESCE(sb.free, 0))), 0) AS bottles
+      FROM orders o
+      JOIN order_skus os ON os.order_id = o.order_id
+      LEFT JOIN sku_bottles sb ON UPPER(TRIM(sb.sku)) = os.sku
+      WHERE o.status = 'Completed'
+        AND COALESCE(o.seller_name, '(no stockist)') = $1
+        AND LEFT(o.order_date, 10) BETWEEN $2 AND $3
+      GROUP BY os.sku
+      HAVING SUM(os.qty * (COALESCE(sb.paid, 0) + COALESCE(sb.free, 0))) > 0
+      ORDER BY bottles DESC, os.sku LIMIT 8`, A),
+    // GIFTS confirmed (Completed + duit disahkan)
+    p.query(`
+      SELECT sg.gift_name, SUM(os.qty * sg.qty) AS qty,
+             SUM(os.qty * sg.qty * COALESCE(sg.unit_cost, 0)) AS cost
+      FROM orders o
+      JOIN order_skus os ON os.order_id = o.order_id
+      JOIN sku_gifts sg ON UPPER(TRIM(sg.sku)) = os.sku
+      WHERE o.status = 'Completed' AND (${CONF_SQL}) = 1
+        AND COALESCE(o.seller_name, '(no stockist)') = $1
+        AND LEFT(o.order_date, 10) BETWEEN $2 AND $3
+      GROUP BY sg.gift_name ORDER BY cost DESC, sg.gift_name`, A),
+    // GIFTS at-risk vs confirmed cost
+    p.query(`
+      WITH og AS (
+        SELECT o.order_id, o.status, ${CONF_SQL} AS conf,
+               SUM(os.qty * sg.qty * COALESCE(sg.unit_cost, 0)) AS gc
+        FROM orders o
+        JOIN order_skus os ON os.order_id = o.order_id
+        JOIN sku_gifts sg ON UPPER(TRIM(sg.sku)) = os.sku
+        WHERE COALESCE(o.seller_name, '(no stockist)') = $1
+          AND LEFT(o.order_date, 10) BETWEEN $2 AND $3
+        GROUP BY o.order_id, o.status, o.tracking
+      )
+      SELECT
+        COALESCE(SUM(CASE WHEN status = 'Completed' AND conf = 1 THEN gc END), 0) AS confirmed_cost,
+        COALESCE(SUM(CASE WHEN status IN ('Returned','Rejected') OR (status = 'Completed' AND conf = 0) THEN gc END), 0) AS atrisk_cost
+      FROM og`, A),
+    // ORDERS (enriched + scoped)
+    stockistOrders(seller, DRILL_CAP, from, to),
+  ]);
+
+  const m = money.rows[0], b = bottles.rows[0], sc = statusCounts.rows[0];
+  const lb = lossBottles.rows[0], cm = comm.rows[0], cl = commLeak.rows[0];
+  const gr = giftsRisk.rows[0];
+  const returned = toNum(sc.returned), rejected = toNum(sc.rejected), total = toNum(sc.total);
+  const earned = toNum(cm.earned), paid = toNum(cm.paid);
+
+  return {
+    stockist: seller, from, to,
+    money: {
+      expected: toNum(m.expected), confirmedNet: toNum(m.confirmed_net),
+      awaiting: toNum(m.awaiting), ordersTotal: toNum(m.orders_total),
+      ordersWithFeed: toNum(m.orders_with_feed),
+      collectedOnReturned: toNum(m.collected_on_returned),
+      returnedWithMoney: toNum(m.returned_with_money),
+    },
+    bottles: {
+      total: toNum(b.total), paid: toNum(b.paid), free: toNum(b.free),
+      confirmed: toNum(b.confirmed), unconfirmed: toNum(b.unconfirmed),
+    },
+    status: {
+      completed: toNum(sc.completed), returned, rejected, other: toNum(sc.other),
+      total, returnRate: total > 0 ? (returned + rejected) / total : 0,
+      returnedBottles: toNum(lb.returned_bottles), rejectedBottles: toNum(lb.rejected_bottles),
+    },
+    commission: {
+      level: cm.level ?? "", earned, paid,
+      balance: Math.round((earned - paid) * 100) / 100,
+      leakAmount: toNum(cl.leak_amount), leakOrders: Number(cl.leak_orders),
+    },
+    products: products.rows.map((r) => ({
+      sku: r.sku, product_name: r.product_name, bottles: toNum(r.bottles),
+    })),
+    gifts: {
+      confirmed: giftsConf.rows.map((r) => ({
+        gift_name: r.gift_name, qty: toNum(r.qty), cost: toNum(r.cost),
+      })),
+      confirmedCost: toNum(gr.confirmed_cost), atRiskCost: toNum(gr.atrisk_cost),
+    },
+    orders,
+  };
 }
 
 // ====================================================================

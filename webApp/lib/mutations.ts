@@ -64,6 +64,30 @@ export async function saveSkuMap(rows: SkuInput[]): Promise<number> {
   }
 }
 
+// Tambah SATU SKU baru ke katalog (sku_bottles) tanpa sentuh SKU lain , berbeza
+// dari saveSkuMap yang ganti PENUH. Dipakai dari page Free gift supaya finance
+// boleh cipta SKU LENGKAP (terus dengan botol) tanpa loncat ke page SKU. Tolak
+// kalau SKU dah wujud (case-insensitive) , join recon guna UPPER(TRIM), jadi dua
+// baris case-variant = double count botol. Error "sudah wujud" -> route balas 409.
+export async function addSku(row: SkuInput): Promise<void> {
+  const sku = String(row?.sku ?? "").trim();
+  if (!sku || sku.toLowerCase() === "nan") throw new Error("SKU kosong");
+  const pn = row?.product_name == null ? "" : String(row.product_name);
+  const paid = nonNegInt(row?.paid);
+  const free = nonNegInt(row?.free);
+  const client = await getPool().connect();
+  try {
+    const dup = await client.query(
+      "SELECT 1 FROM sku_bottles WHERE UPPER(TRIM(sku)) = UPPER(TRIM($1))", [sku]);
+    if (dup.rowCount) throw new Error(`SKU '${sku}' sudah wujud`);
+    await client.query(
+      "INSERT INTO sku_bottles (sku, product_name, paid, free) VALUES ($1, $2, $3, $4)",
+      [sku, pn, paid, free]);
+  } finally {
+    client.release();
+  }
+}
+
 // Kos RM >= 0, dua titik perpuluhan (sen). Qty gift integer >= 1.
 function money(v: unknown): number {
   const n = Number(v);

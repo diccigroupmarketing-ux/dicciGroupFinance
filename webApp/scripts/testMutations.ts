@@ -1,7 +1,7 @@
 // Test helper mutasi atas dev PG (port 5433). Self-restoring untuk saveSkuMap;
 // resetStore diuji betul, restore selepas via loadDevDb.py (backup = data sama).
 //   npx tsx scripts/testMutations.ts
-import { saveSkuMap, resetStore, isAdmin } from "../lib/mutations";
+import { saveSkuMap, addSku, resetStore, isAdmin } from "../lib/mutations";
 // Versi *Impl (tanpa cache) , unstable_cache perlukan konteks request Next.
 import { skuMapImpl as skuMap, storeCountsImpl as storeCounts, type SkuRow } from "../lib/recon";
 import { getPool } from "../lib/db";
@@ -68,6 +68,21 @@ async function main() {
   const restored = await skuMap();
   ok(restored.length === 9 && restored.find((r) => r.sku === "JAG-MY-1")?.paid === 1,
     "sku_bottles dipulihkan ke 9 asal");
+
+  console.log("== addSku (tambah satu, additive) ==");
+  await addSku({ sku: "gift-new-1", product_name: "Gift New", paid: 3, free: 1 });
+  const addl = await skuMap();
+  ok(addl.length === 10, `addSku tambah 1 SKU (${addl.length}, jangka 10)`);
+  const nb = await bottlesFor("GIFT-NEW-1");
+  ok(nb?.paid === 3 && nb?.free === 1, `addSku botol betul (paid=${nb?.paid} free=${nb?.free})`);
+  let dupThrew = false;
+  try { await addSku({ sku: "GIFT-NEW-1", product_name: "x", paid: 9, free: 9 }); }
+  catch { dupThrew = true; }
+  ok(dupThrew, "addSku tolak SKU sedia ada (case-insensitive)");
+  const nb2 = await bottlesFor("GIFT-NEW-1");
+  ok(nb2?.paid === 3, "SKU sedia ada TAK ditimpa bila dup ditolak");
+  await saveSkuMap(original);
+  ok((await skuMap()).length === 9, "restore ke 9 selepas addSku");
 
   console.log("== resetStore (restore selepas via loadDevDb.py) ==");
   const before = await storeCounts();

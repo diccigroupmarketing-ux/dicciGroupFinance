@@ -1,8 +1,8 @@
 import Link from "next/link";
-import { stockistBottles, stockistGifts, stockistOrders, storeCounts } from "@/lib/recon";
-import { fmtDate, fmtInt, fmtRM, trackingOrDash } from "@/lib/format";
-import { Chip } from "@/components/Chip";
+import { stockistBottles, stockistGifts, storeCounts } from "@/lib/recon";
+import { fmtInt, fmtRM } from "@/lib/format";
 import ExportCsv from "@/components/ExportCsv";
+import StockistModal from "@/components/StockistModal";
 
 const BOTTLE_COLS = [
   { key: "stockist", header: "Stockist" },
@@ -13,14 +13,6 @@ const BOTTLE_COLS = [
   { key: "unconfirmed_bottles", header: "Unconfirmed bottles" },
   { key: "giveaway_cost", header: "Giveaway cost (RM)" },
 ];
-const DRILL_COLS = [
-  { key: "order_id", header: "Order" }, { key: "order_date", header: "Date" },
-  { key: "status", header: "Status" }, { key: "payment_method", header: "Payment" },
-  { key: "shipping_provider", header: "Courier" }, { key: "tracking", header: "Tracking" },
-  { key: "botol_paid", header: "Paid" }, { key: "botol_free", header: "Free" },
-  { key: "botol_total", header: "Total bottles" }, { key: "duit", header: "Money" },
-];
-
 export const dynamic = "force-dynamic";
 
 export default async function StockistsPage(
@@ -60,7 +52,6 @@ export default async function StockistsPage(
   const totGiftCost = giftsRaw.reduce((a, g) => a + g.cost, 0);
 
   const picked = s && rows.some((r) => r.stockist === s) ? s : null;
-  const drill = picked ? await stockistOrders(picked) : null;
 
   return (
     <>
@@ -138,54 +129,7 @@ export default async function StockistsPage(
         </div>
       </div>
 
-      {drill && picked && (
-        <>
-          <div className="sectionGap" />
-          <div className="card">
-            <div className="cardHead">
-              <div className="cardTitle">{picked}</div>
-              <div className="cardHint">orders one by one, latest first</div>
-              <ExportCsv rows={drill.rows} columns={DRILL_COLS} total={drill.total}
-                filename={`stockist-${picked}-orders.csv`} />
-              <Link href="/impact/stockists" className="cardLink">Close ×</Link>
-            </div>
-            {drill.rows.length < drill.total && (
-              <div className="cardHint">
-                Showing latest {fmtInt(drill.rows.length)} of {fmtInt(drill.total)} orders.
-              </div>
-            )}
-            <div className="tableWrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Order</th><th>Date</th><th>Status</th><th>Payment</th>
-                    <th>Courier</th><th>Tracking</th>
-                    <th className="num">Paid</th><th className="num">Free</th>
-                    <th>Money</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {drill.rows.map((o) => (
-                    <tr key={o.order_id}>
-                      <td className="cellMain">{o.order_id}</td>
-                      <td>{fmtDate(o.order_date)}</td>
-                      <td>{o.status ?? "—"}</td>
-                      <td>{o.payment_method ?? "—"}</td>
-                      <td>{o.shipping_provider ?? "—"}</td>
-                      <td>{trackingOrDash(o.tracking)}</td>
-                      <td className="num">{fmtInt(o.botol_paid)}</td>
-                      <td className="num">{fmtInt(o.botol_free)}</td>
-                      <td>{o.duit === "confirmed"
-                        ? <Chip tone="pos">Confirmed</Chip>
-                        : <Chip tone="mut">Unconfirmed</Chip>}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </>
-      )}
+      {picked && <StockistModal stockist={picked} />}
 
       <div className="footNote">
         &quot;Unconfirmed&quot; flips automatically once the matching money feed

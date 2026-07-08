@@ -532,8 +532,10 @@ CSS tokens dari mockup (tanpa Tailwind), font next/font (Fraunces + Manrope).
   frozen aging date 18 Jun 2026 bila baseline dibuka semula dengan Adi.
 - PENDING fasa seterusnya: rotate kredential Neon (GATE terakhir sebelum finance upload
   data betul, RUNBOOK SIAP di `rotateNeonRunbook.md` root gitignored, Cara A role baru
-  zero-downtime + Cara B reset + flag TLS verify-full); lepas tu rancang penutupan
-  Streamlit. Next.js kini cover 100% view Streamlit (jurang parity terakhir ditutup 6/7 Jul).
+  zero-downtime + Cara B reset + flag TLS verify-full). Bila rotate: **update env Vercel
+  SAHAJA** (keputusan 8 Jul, lihat seksyen "keputusan Streamlit lama"); Streamlit dibiar
+  basi = bersara sendiri, tak perlu formal delete. Next.js kini cover 100% view Streamlit
+  (jurang parity terakhir ditutup 6/7 Jul).
 
 ## Sesi 6/7 Jul (lanjutan): Export finance (Fasa A + C LIVE)
 
@@ -629,6 +631,103 @@ yang owner lulus. **Keputusan owner terkunci:**
   COGS, snapshot/period-freeze (kalau finance nak tutup buku bulanan). Nota: dev DB ada
   placeholder gift yang diseed masa ujian (boleh clear dari editor).
 
+### Add SKU terus dari page Free gift (8 Jul, LIVE)
+
+Owner nak finance tak payah loncat ke page SKU semata mata nak cipta SKU baru. Ditambah butang
+**"+ Add SKU"** dalam page Free gift: modal cipta SKU **LENGKAP** (kod + nama + botol paid/free)
++ boleh terus lampir gift sekali. Reka bentuk penting: SKU dicipta dengan **botol betul** (bukan
+0 senyap), sebab join recon `UPPER(TRIM)` , SKU 0-botol akan salah kira botol.
+- `lib/mutations.ts` `addSku` , upsert SATU baris `sku_bottles` (additive, BUKAN ganti penuh
+  macam `saveSkuMap`). Tolak kalau SKU dah wujud (case-insensitive) , elak baris case-variant
+  = double count botol. Error "sudah wujud" -> route balas **409**.
+- `app/api/skus/route.ts` , handler **POST** baru (auth + `revalidateTag recon` + logEvent `sku_add`).
+- `components/GiftEditor.tsx` , butang "+ Add SKU" + modal mode-tambah (guna semula UI gift rows;
+  medan sku/nama/botol muncul bila mode tambah). Save = POST /api/skus, lepas tu PUT /api/gifts
+  kalau ada gift diisi.
+- **Verify:** `tsc` + `npm run build` hijau; `testMutations.ts` +5 assertion LULUS (tambah betul,
+  botol betul, tolak dup case-insensitive, tak timpa SKU sedia ada, restore ke 9). SIFAR kesan
+  recon/parity (lapisan config). Semak visual browser (localhost, dev DB) DISAHKAN Adi.
+  **DEPLOYED 8 Jul (dpl_Hei9F8firXAfLHzxkJLKmWQxAzun):** smoke lulus (sign-in 200, /impact/gifts
+  + /api/skus 404 via curl = terlindung). Butang "+ Add SKU" hidup di app live.
+
+## Sesi 8 Jul (lanjutan): keputusan Streamlit lama + rotate Neon
+
+Borak owner pasal butang reset data + nasib app Streamlit lama. Keputusan dikunci:
+
+- **Neon vs Supabase: KEKAL Neon.** Ditanya owner, disahkan tak tukar. Neon dah live,
+  Postgres tulen, recon SQL biasa. Tukar Supabase = migrasi kosong (sifar untung fungsi);
+  batteries Supabase (auth/storage/realtime) tak perlu sebab auth dah Clerk.
+- **App Streamlit lama TAK jadi dibuang (kekal buat masa ni).** Ia redundant (Next.js dah
+  cover 100%) TAPI harmless: dua app baca Neon yang SAMA, biar hidup pun tak ganggu data,
+  free tier tak makan kos, app private (allowlist). Delete boleh bila bila (2 minit).
+- **Bila rotate Neon nanti: update env Vercel SAHAJA, ABAIKAN Streamlit.** Selepas rotate,
+  password lama mati, jadi secret `DATABASE_URL` Streamlit jadi basi dan app Streamlit gagal
+  connect sendiri (papar error) = cara halus ia "bersara". Tiada risiko data/keselamatan.
+  Satu kesan sampingan sahaja: sesiapa yang buka URL Streamlit lama nampak error, bukan
+  dashboard. Kalau nak elak kekeliruan tu langsung, baru berbaloi formal delete kemudian.
+- **Lokasi butang RESET DATA (untuk rujukan):** app Next.js, page `/impact/skus`, kad
+  "Store admin" (`components/StoreDanger.tsx` -> `POST /api/admin/reset` -> `resetStore`).
+  Admin sahaja (env `ADMIN_EMAILS` = impactdicci@gmail.com + aimandicci07@gmail.com). Padam
+  6 jadual transaksi, KEKAL `sku_bottles`/`sku_gifts`. Neon Console TIADA butang wipe satu klik.
+- **Nota automation (kenapa Claude tak boleh delete Streamlit sendiri):** app Streamlit dimiliki
+  akaun `diccigroupmarketing@gmail.com`, tapi extension Claude-in-Chrome TIADA dalam profile
+  Chrome DC Group Marketing tu (dan takde versi Safari langsung). Yang ada extension: profile
+  Chrome DC Impact di Mac (akaun impactdicci, 0 app Streamlit) + satu Chrome Windows. Jadi
+  untuk apa apa tindakan pada app Streamlit, Adi kena buat sendiri (Claude pandu sahaja).
+
+### Prod Neon bersih + PERATURAN KERJA data-safe (8 Jul 2026)
+
+**Keadaan prod Neon disahkan 8 Jul (sambung terus, kira baris):** SEMUA jadual transaksi = 0
+(orders, order_skus, cod_bills, cod_bill_lines, wallet_txns, prepaid_payments, sku_gifts).
+`sku_bottles` = 9 (config seed, dikekalkan). `app_events` dibersihkan 8 Jul (2 rekod
+store_reset 7 Jul dari impactdicci dibuang) supaya log audit finance mula dari kosong.
+Data sampel ~1,208 order (nota lama) DAH TIADA , dikosongkan via butang reset webApp 7 Jul.
+**Kesimpulan: prod sedia untuk finance upload data betul; upload mereka = satu satunya data.**
+(Rotate Neon masih ditangguh , keputusan owner, bukan blok reset.)
+
+**Objektif owner (8 Jul):** lepas finance mula upload, kerja harian mereka (upload fail) TAK
+boleh terganggu bila kita adjust sistem, dan TAK payah reset data lagi. Cara capai =
+peraturan kerja "dua buku":
+
+- **Buku SEBENAR = prod Neon = data finance. SUCI.** Kita TAK PERNAH dev/test/eksperimen
+  lawan prod. Butang Reset JANGAN sentuh lagi pada prod selama lamanya.
+- **Buku LATIHAN = dev DB (embedded PG port 5433 + snapshot).** Semua ubah suai diuji di sini
+  dulu: `node scripts/devDb.mjs` + `python3 scripts/loadDevDb.py`, ubah, test, parity kalau
+  sentuh recon, baru deploy.
+- **Schema TAMBAH sahaja** (jadual/lajur baru; `CREATE TABLE IF NOT EXISTS`, `ensureTable`
+  lazily, seed-bila-kosong). JANGAN drop/rename destruktif , data lama tak musnah.
+- **`python backup.py` sebelum deploy berisiko** (snapshot + content-hash ke backups/).
+- **Deploy = kod sahaja, tak sentuh data.** Vercel tukar versi atomik ~zero downtime + rollback
+  segera, jadi finance boleh terus upload masa kita deploy tanpa terganggu.
+
+## Sesi 8 Jul: Mini page stokis (modal drill + penapis tarikh) (LIVE)
+
+Owner nak drill-down stokis jadi **MODAL "mini page"** yang bagi potret penuh satu stokis
+(bukan sekadar senarai order). Direka lewat mockup artifact diluluskan berperingkat (4 blok +
+penapis tarikh + blok botol). SEMUA **additive + read-only**, **SIFAR kesan parity** (guna semula
+`CONF_SQL`; TIDAK sentuh `stockistBottlesImpl`/`streamSummary`/`CONF_SQL`).
+
+Kandungan modal (ikut tempoh dipilih):
+- **Money accountability** , Expected (Σ selling_price) vs Confirmed net remit (cod_amount−fee +
+  prepaid net) vs Awaiting + feed coverage + flag "duit collected on Returned" (leak).
+- **Bottles moved** , Total + split Paid/Free + split Confirmed/Unconfirmed.
+- **Order health** , Completed/Returned/Rejected/other + return rate + botol atas returned/rejected.
+- **Commission** , earned/paid/balance + flag komisen atas order BUKAN confirmed-paid (leak).
+- **Products & gifts** , top SKU ikut botol + gift confirmed + at-risk cost.
+- **Orders** , senarai + lajur RM (Expected/Net remit) + Download CSV.
+- **Penapis tarikh:** preset (This month / Last month / 90 days / All time) + julat From→To;
+  blok order-based ikut `order_date`, komisen ikut `txn_date` (`LEFT(...,10)` immune bahagian masa).
+
+Fail: `lib/recon.ts` (`stockistDetail` baru + `stockistOrders` diperkaya RM/tarikh),
+`app/api/stockist/route.ts` (GET on-demand, auth), `components/StockistModal.tsx` (client,
+createPortal, fetch per tempoh), `app/globals.css` (blok `.stk*`), `app/impact/stockists/page.tsx`
+(drill inline -> `<StockistModal>`). `scripts/testStockistDetail.ts` (smoke + cross-check).
+
+Verify: `tsc` + `npm run build` hijau; **PARITY LULUS** (recon terkunci tak berubah);
+`testStockistDetail` cross-check botol confirmed/unconfirmed PADAN `stockistBottles` + penapis tarikh
+berfungsi; visual localhost disahkan Adi. **DEPLOYED 8 Jul (dpl_6ngMnR1H2noTG2t4dWwrcVJvy2oQ)**,
+smoke lulus (sign-in 200, /impact/stockists + /api/stockist terlindung).
+
 ## Status sekarang
 
 - [x] Borak, kunci skop + keputusan Fasa 1.
@@ -650,6 +749,11 @@ yang owner lulus. **Keputusan owner terkunci:**
 - [x] Free gift (giveaway) tracking (8 Jul): jadual `sku_gifts`, page /impact/gifts (senarai
   SKU + modal per SKU), kos auto-derive per SKU, split confirmed vs at-risk, chip+kos di
   Stockists + subline Dashboard. Murni UI+config, guard fan-out lulus (seksyen "Sesi 8 Jul").
+- [x] Add SKU dari page Free gift (8 Jul, LIVE dpl_Hei9F8f...): modal cipta SKU lengkap
+  (kod+nama+botol) + gift, `addSku` upsert additive, tolak dup case-insensitive.
+- [x] Mini page stokis (modal drill + penapis tarikh) LIVE (8 Jul, dpl_6ngMnR1H...): 6 blok
+  (money/bottles/order health/commission/products+gifts/orders) ikut tempoh. Additive,
+  parity LULUS, cross-check botol padan (seksyen "Mini page stokis").
 - [ ] Export Fasa B (lapisan server dataset penuh) + komisen enrich:
   HOLD/tangguh (lihat seksyen "Sesi 6/7 Jul" + auto-memory).
 - [ ] Wire feed courier seterusnya (DHL, Ninja Van): perlu PDF sampel dari Adi dulu.

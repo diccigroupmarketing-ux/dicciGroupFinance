@@ -4,7 +4,7 @@
 import { NextResponse } from "next/server";
 import { revalidateTag } from "next/cache";
 import { auth, currentUser } from "@clerk/nextjs/server";
-import { saveSkuMap, type SkuInput } from "@/lib/mutations";
+import { saveSkuMap, addSku, type SkuInput } from "@/lib/mutations";
 import { logEvent } from "@/lib/audit";
 
 export const runtime = "nodejs";
@@ -55,5 +55,37 @@ export async function PUT(req: Request) {
   } catch (e) {
     return NextResponse.json(
       { error: e instanceof Error ? e.message : "simpan gagal" }, { status: 500 });
+  }
+}
+
+// Tambah SATU SKU baru (dipanggil dari page Free gift). Additive, tak sentuh SKU
+// sedia ada. Balas 409 kalau SKU dah wujud (case-insensitive).
+export async function POST(req: Request) {
+  const { userId } = await auth();
+  if (!userId) {
+    return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  }
+
+  let body: { sku?: string; product_name?: string | null; paid?: number | null; free?: number | null };
+  try {
+    body = await req.json();
+  } catch {
+    return NextResponse.json({ error: "JSON tidak sah" }, { status: 400 });
+  }
+  const sku = String(body.sku ?? "").trim();
+  if (!sku) {
+    return NextResponse.json({ error: "medan 'sku' diperlukan" }, { status: 400 });
+  }
+
+  try {
+    await addSku({ sku, product_name: body.product_name, paid: body.paid, free: body.free });
+    revalidateTag("recon", { expire: 0 });
+    const user = await currentUser();
+    await logEvent(user?.primaryEmailAddress?.emailAddress ?? "unknown",
+      "sku_add", `${sku} added`);
+    return NextResponse.json({ added: sku });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : "tambah gagal";
+    return NextResponse.json({ error: msg }, { status: msg.includes("sudah wujud") ? 409 : 500 });
   }
 }
