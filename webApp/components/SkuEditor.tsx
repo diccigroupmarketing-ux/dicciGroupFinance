@@ -19,6 +19,18 @@ export default function SkuEditor({ initial }: { initial: SkuRow[] }) {
   const [dirty, setDirty] = useState(false);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
+  const [q, setQ] = useState("");
+
+  // Tapis untuk PAPARAN sahaja; edit/delete kekal ikut index baris asal supaya
+  // patch tak tersasar ke baris lain masa senarai ditapis.
+  const visible = useMemo(() => {
+    const needle = q.trim().toUpperCase();
+    const all = rows.map((r, i) => ({ r, i }));
+    if (!needle) return all;
+    return all.filter(({ r }) =>
+      r.sku.toUpperCase().includes(needle) ||
+      r.product_name.toUpperCase().includes(needle));
+  }, [rows, q]);
 
   const edit = (i: number, patch: Partial<Row>) => {
     setRows((prev) => prev.map((r, j) => (j === i ? { ...r, ...patch } : r)));
@@ -29,6 +41,7 @@ export default function SkuEditor({ initial }: { initial: SkuRow[] }) {
     setRows((prev) => [...prev, { sku: "", product_name: "", paid: 0, free: 0 }]);
     setDirty(true);
     setMsg(null);
+    setQ(""); // baris baru kosong, kosongkan tapisan supaya dia nampak
   };
   const delRow = (i: number) => {
     setRows((prev) => prev.filter((_, j) => j !== i));
@@ -77,7 +90,22 @@ export default function SkuEditor({ initial }: { initial: SkuRow[] }) {
     <div className="card">
       <div className="cardHead">
         <div className="cardTitle">SKU mapping</div>
-        <div className="cardHint">{rows.length} SKUs · edit inline</div>
+        <div className="cardHint">
+          {q.trim() ? `${visible.length} of ${rows.length} SKUs` : `${rows.length} SKUs · edit inline`}
+        </div>
+        <div className="searchBox" style={{ marginLeft: 12 }}>
+          <svg className="searchIc" width="15" height="15" viewBox="0 0 20 20" fill="none"
+               stroke="currentColor" strokeWidth="1.8">
+            <circle cx="9" cy="9" r="6" /><path d="m14 14 3.5 3.5" />
+          </svg>
+          <input
+            className="searchInput" type="search" value={q}
+            placeholder="Search SKU or product…"
+            onChange={(e) => setQ(e.target.value)}
+            aria-label="Search SKUs"
+            style={{ maxWidth: 220, padding: "7px 10px", fontSize: 13 }}
+          />
+        </div>
         {msg && (
           <span className={"chip " + (msg.kind === "ok" ? "chipPos" : "chipDan")}
                 style={{ marginLeft: "auto" }}>
@@ -98,7 +126,7 @@ export default function SkuEditor({ initial }: { initial: SkuRow[] }) {
             </tr>
           </thead>
           <tbody>
-            {rows.map((r, i) => {
+            {visible.map(({ r, i }) => {
               const isDup = dupKeys.has(r.sku.trim().toUpperCase());
               const isEmpty = !r.sku.trim();
               return (
@@ -153,6 +181,11 @@ export default function SkuEditor({ initial }: { initial: SkuRow[] }) {
             })}
             {rows.length === 0 && (
               <tr><td colSpan={6} className="cellMuted">No SKUs yet. Add one below.</td></tr>
+            )}
+            {rows.length > 0 && visible.length === 0 && (
+              <tr><td colSpan={6} className="cellMuted">
+                No SKU matches &quot;{q}&quot;. Clear the search to see all {rows.length}.
+              </td></tr>
             )}
           </tbody>
         </table>
