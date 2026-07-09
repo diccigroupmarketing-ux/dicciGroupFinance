@@ -27,3 +27,9 @@ rotateNeonRunbook.md
 # OS
 .DS_Store
 .vercel
+
+# Peta arkitektur Understand-Anything (local sahaja, jangan masuk repo public)
+.understand-anything/
+
+# Output graphify (local sahaja)
+graphify-out/

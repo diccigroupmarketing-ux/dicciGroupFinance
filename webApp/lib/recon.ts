@@ -807,6 +807,7 @@ export interface StockistDetail {
     confirmedCost: number; atRiskCost: number;
   };
   orders: { rows: StockistOrder[]; total: number };
+  unmappedSkus: string[];
 }
 
 export async function stockistDetail(
@@ -817,7 +818,7 @@ export async function stockistDetail(
   const A = [seller, from, to]; // param set sama untuk semua query order-based
 
   const [money, bottles, statusCounts, lossBottles, comm, commLeak,
-         products, giftsConf, giftsRisk, orders] = await Promise.all([
+         products, giftsConf, giftsRisk, orders, unmapped] = await Promise.all([
     // MONEY
     p.query(`
       WITH ord AS (
@@ -940,6 +941,15 @@ export async function stockistDetail(
       FROM og`, A),
     // ORDERS (enriched + scoped)
     stockistOrders(seller, DRILL_CAP, from, to),
+    // SKU unmapped stokis+tempoh ni: dikira 0 botol, punca klasik "botol kosong"
+    p.query(`
+      SELECT DISTINCT os.sku
+      FROM orders o
+      JOIN order_skus os ON os.order_id = o.order_id
+      WHERE COALESCE(o.seller_name, '(no stockist)') = $1
+        AND LEFT(o.order_date, 10) BETWEEN $2 AND $3
+        AND os.sku NOT IN (SELECT UPPER(TRIM(sku)) FROM sku_bottles WHERE sku IS NOT NULL)
+      ORDER BY os.sku`, A),
   ]);
 
   const m = money.rows[0], b = bottles.rows[0], sc = statusCounts.rows[0];
@@ -981,7 +991,36 @@ export async function stockistDetail(
       confirmedCost: toNum(gr.confirmed_cost), atRiskCost: toNum(gr.atrisk_cost),
     },
     orders,
+    unmappedSkus: unmapped.rows.map((r) => r.sku as string),
   };
+}
+
+// ====================================================================
+// Fail upload: dikesan dari source_file setiap jadual transaksi. Satu fail
+// biasanya satu jenis feed; kalau fail sama isi >1 jadual, keluar >1 baris.
+// TAK di-cache: page uploads force-dynamic, mesti segar sejurus lepas delete.
+// ====================================================================
+export interface UploadedFile {
+  file: string; kind: string; rows: number; lastAt: string | null;
+}
+
+export async function uploadedFiles(): Promise<UploadedFile[]> {
+  const res = await getPool().query(`
+    SELECT source_file AS file, kind, COUNT(*) AS n_rows, MAX(ingested_at) AS last_at
+    FROM (
+      SELECT source_file, 'orders' AS kind, ingested_at FROM orders WHERE source_file IS NOT NULL
+      UNION ALL
+      SELECT source_file, 'cod', ingested_at FROM cod_bill_lines WHERE source_file IS NOT NULL
+      UNION ALL
+      SELECT source_file, 'prepaid', ingested_at FROM prepaid_payments WHERE source_file IS NOT NULL
+      UNION ALL
+      SELECT source_file, 'wallet', ingested_at FROM wallet_txns WHERE source_file IS NOT NULL
+    ) t
+    GROUP BY source_file, kind
+    ORDER BY MAX(ingested_at) DESC, source_file`);
+  return res.rows.map((r) => ({
+    file: r.file, kind: r.kind, rows: toNum(r.n_rows), lastAt: r.last_at,
+  }));
 }
 
 // ====================================================================

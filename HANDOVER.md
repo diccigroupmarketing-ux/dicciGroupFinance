@@ -2,6 +2,13 @@
 
 Tarikh mula: 2026-06-18
 
+## Status
+- progress: Fasa 1 pada dasarnya siap. WebApp Next.js LIVE di Vercel (diccigroupfinance.vercel.app), terkunci belakang Clerk auth (allowlist), cover 100% view Streamlit lama. Ciri terkini: auto-daftar SKU masa upload Fighter + page Uploads (delete per fail, dua langkah confirm) + amaran SKU unmapped dalam popup stokis (sesi 9 Jul). Finance DAH upload data sebenar (561 order, 2 bil J&T); 16 SKU live perlu masuk katalog di prod (re-upload fail Orders sama selepas deploy, atau run backfillAutoSkus.py dengan URL Neon).
+- fasa: WebApp Next.js production LIVE, mod handoff data-safe (prod Neon suci, semua ubah suai diuji atas dev DB dulu). Streamlit lama kekal hidup sebagai backup pasif (soft-retire, tak jadi delete).
+- seterusnya: (1) Rotate kredential Neon = GATE terakhir sebelum jemput finance upload data BETUL, runbook siap di rotateNeonRunbook.md, bila rotate update env Vercel SAHAJA. (2) Wire feed courier DHL + Ninja Van, perlu PDF sampel dari Adi. (3) Adi kumpul SEMUA bil COD J&T cover period untuk recon penuh. Export Fasa B + komisen enrich = HOLD tunggu keputusan owner.
+- nota (2026-07-09): peta Arkitektur (Understand-Anything) untuk projek ni DAH wujud di `.understand-anything/knowledge-graph.json` (221 node, 451 edge, 7 layer nama Melayu, tour 12 langkah, output BM), sudah di-gitignore jadi repo public selamat (52 fail data peribadi/secrets/build di-skip sengaja). HUD modul Arkitektur render terus (endpoint `/api/arch/ua` terima root). Refresh bila kod berubah: run `/understand` dalam projek ni (incremental, fingerprint baseline dah ada).
+- kemaskini: 2026-07-09
+
 ## Apa projek ni
 
 Automation Finance Dicci Group untuk semak duit masuk harian tally dengan rekod. Skop penuh besar, dipecah step by step. Ini Fasa 1.
@@ -727,6 +734,35 @@ Verify: `tsc` + `npm run build` hijau; **PARITY LULUS** (recon terkunci tak beru
 `testStockistDetail` cross-check botol confirmed/unconfirmed PADAN `stockistBottles` + penapis tarikh
 berfungsi; visual localhost disahkan Adi. **DEPLOYED 8 Jul (dpl_6ngMnR1H2noTG2t4dWwrcVJvy2oQ)**,
 smoke lulus (sign-in 200, /impact/stockists + /api/stockist terlindung).
+
+## Sesi 9 Jul: Auto-daftar SKU + page Uploads (delete per fail)
+
+Finance dah upload data betul (561 order, 2 bil J&T) tapi popup stokis papar botol 0.
+Siasatan: BUKAN bug sambungan DB, tapi 16 SKU live (MYS-JAG*, MYSE-JAG*, BULK-TT-*, KJS-*)
+tiada dalam katalog `sku_bottles` (hanya 9 SKU seed lama), SKU unmapped = 0 botol. Fix 3 lapis:
+
+1. **Auto-daftar SKU masa ingest** (`ingest.py`: `derive_bottles` + `register_new_skus`,
+   dipanggil dalam `ingest_fighter`). Corak nama SKU → (paid, free): `...-4-2` = 4+2,
+   `...1PLUS1` = 1+1, `...JAG2-AGM1` = 2+1 (AGM = produk minyak, dikira unit free,
+   keputusan owner), `...-2` = 2+0. Corak sepadan 100% dengan 9 SKU manual sedia ada.
+   SKU baru dapat `product_name` penanda "Auto-added from upload, review bottle counts"
+   supaya finance semak di page SKUs. Corak tak difahami TIDAK didaftar (kekal unmapped).
+   Engine disync ke `webApp/api/engine`. `backfillAutoSkus.py` (root) = backfill one-off
+   untuk SKU yang dah terlanjur masuk order_skus; DAH run atas dev DB, **prod Neon BELUM**
+   (classifier blok tulisan prod terus), cara prod: re-upload fail Orders sama (idempotent)
+   ATAU `DATABASE_URL=<neon> python3 backfillAutoSkus.py`.
+2. **Amaran unmapped dalam popup stokis** (`stockistDetail` pulang `unmappedSkus[]`,
+   `StockistModal` papar banner + link page SKUs bila ada SKU dikira 0).
+3. **Page Uploads** (`/impact/uploads`, nav Setup): senarai fail upload (dari `source_file`
+   semua jadual) + **Delete per fail** untuk fix fail tersalah upload. Semua user sign-in
+   boleh (keputusan owner), TAPI dua langkah (butang → panel confirm + checkbox → butang akhir),
+   audit log `upload_delete`, revalidate cache. `deleteUpload` (mutations.ts) = satu transaksi:
+   orders + order_skus (ikut order_id) + cod_bill_lines + cod_bills (termasuk orphan) +
+   prepaid + wallet. `scripts/testUploads.ts` = 12 PASS atas dev PG.
+
+Nota admin: `ADMIN_EMAILS` prod DAH ada aimandicci07@gmail.com (diset 4 Jul), Aiman boleh
+reset store dari page SKUs. Verify: `tsc` hijau, baseline recon kekal RM 63,912.00 (369 order),
+testUploads 12/12, popup stokis dev tunjuk botol betul (MANZ VENTURE 355 total).
 
 ## Status sekarang
 

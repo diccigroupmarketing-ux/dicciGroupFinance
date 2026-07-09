@@ -168,6 +168,52 @@ export async function resetStore(): Promise<void> {
   }
 }
 
+// Padam SEMUA baris yang datang dari SATU fail upload (source_file). Untuk
+// finance betulkan fail tersalah upload: padam, upload semula versi betul
+// (parser idempotent). SATU transaksi supaya tak separuh padam. order_skus
+// tiada source_file, jadi ikut order_id fail tu. Bil courier tanpa baris
+// tinggal (orphan) turut dibersih supaya tak jadi baki mati.
+export interface DeleteUploadResult {
+  orders: number; orderSkus: number; billLines: number; bills: number;
+  prepaid: number; wallet: number; total: number;
+}
+
+export async function deleteUpload(file: string): Promise<DeleteUploadResult> {
+  const f = String(file ?? "").trim();
+  if (!f) throw new Error("nama fail kosong");
+  const client = await getPool().connect();
+  try {
+    await client.query("BEGIN");
+    const orderSkus = await client.query(
+      `DELETE FROM order_skus WHERE order_id IN
+         (SELECT order_id FROM orders WHERE source_file = $1)`, [f]);
+    const orders = await client.query(
+      "DELETE FROM orders WHERE source_file = $1", [f]);
+    const billLines = await client.query(
+      "DELETE FROM cod_bill_lines WHERE source_file = $1", [f]);
+    const bills = await client.query(
+      `DELETE FROM cod_bills WHERE source_file = $1
+         OR bill_id NOT IN (SELECT bill_id FROM cod_bill_lines WHERE bill_id IS NOT NULL)`, [f]);
+    const prepaid = await client.query(
+      "DELETE FROM prepaid_payments WHERE source_file = $1", [f]);
+    const wallet = await client.query(
+      "DELETE FROM wallet_txns WHERE source_file = $1", [f]);
+    await client.query("COMMIT");
+    const n = (r: { rowCount: number | null }) => r.rowCount ?? 0;
+    const out = {
+      orders: n(orders), orderSkus: n(orderSkus), billLines: n(billLines),
+      bills: n(bills), prepaid: n(prepaid), wallet: n(wallet), total: 0,
+    };
+    out.total = out.orders + out.billLines + out.prepaid + out.wallet;
+    return out;
+  } catch (e) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
 // Admin = email dalam allowlist ADMIN_EMAILS (koma). Tak diset -> tiada admin
 // (selamat by default; reset kekal terkunci sampai env diisi).
 export function isAdmin(email: string | null | undefined): boolean {

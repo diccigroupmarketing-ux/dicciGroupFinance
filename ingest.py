@@ -158,6 +158,61 @@ def _ymd_series(series):
     return pd.to_datetime(s, format="%Y%m%d", errors="coerce")
 
 
+# ---------- Auto-daftar SKU baru ke katalog botol ----------
+# Nama SKU Dicci menterjemah bilangan botol: "KK-JAQ-4-2" = 4 paid 2 free,
+# "BULK-TT-1PLUS1" = 1 paid 1 free, "MYS-JAG2-AGM1" = 2 paid 1 free (AGM =
+# produk minyak, dikira unit free). SKU baru dari fail Fighter didaftar terus
+# ke sku_bottles dengan agakan corak ini + product_name penanda, supaya finance
+# semak di page SKUs. Corak yang tak difahami TIDAK didaftar (kekal dalam
+# amaran unmapped, tetap 0 botol sampai diisi manual).
+AUTO_SKU_NOTE = "Auto-added from upload, review bottle counts"
+
+
+def derive_bottles(sku):
+    """Agak (paid, free) dari nama SKU; None kalau corak tak difahami."""
+    s = str(sku or "").upper().strip()
+    if not s:
+        return None
+    m = re.search(r"(\d+)\s*PLUS\s*(\d+)", s)          # ...-1PLUS1
+    if m:
+        return int(m.group(1)), int(m.group(2))
+    m = re.search(r"-(\d+)-(\d+)$", s)                 # ...-4-2
+    if m:
+        return int(m.group(1)), int(m.group(2))
+    m = re.search(r"[A-Z](\d+)-[A-Z]+(\d+)$", s)       # ...JAG4-FREE2 / JAG2-AGM1
+    if m:
+        return int(m.group(1)), int(m.group(2))
+    m = re.search(r"-(\d+)$", s)                       # ...-2
+    if m:
+        return int(m.group(1)), 0
+    return None
+
+
+def register_new_skus(conn, sku_keys):
+    """Daftar SKU yang belum wujud dalam sku_bottles. Pulang bilangan ditambah."""
+    keys = sorted({str(k or "").upper().strip() for k in sku_keys} - {""})
+    if not keys:
+        return 0
+    existing = {
+        str(r[0] or "").upper().strip()
+        for r in conn.execute(text("SELECT sku FROM sku_bottles")).fetchall()
+    }
+    added = 0
+    for key in keys:
+        if key in existing:
+            continue
+        guess = derive_bottles(key)
+        if guess is None:
+            continue
+        conn.execute(
+            text("INSERT INTO sku_bottles (sku, product_name, paid, free) "
+                 "VALUES (:sku, :pn, :paid, :free) ON CONFLICT (sku) DO NOTHING"),
+            {"sku": key, "pn": AUTO_SKU_NOTE, "paid": guess[0], "free": guess[1]},
+        )
+        added += 1
+    return added
+
+
 # ---------- Fighter ----------
 ORDERS_UPSERT = text("""
     INSERT INTO orders (order_id, order_date, status, seller_name, payment_method,
@@ -196,7 +251,10 @@ def ingest_fighter(df, source_file, conn):
     conn.execute(ORDERS_UPSERT, rows)
     # Bentuk normalized SKU (order_skus) untuk recon/botol SQL-side; hanya
     # order dalam fail ni yang dibina semula (idempotent macam upsert di atas).
-    db.rebuild_order_skus(conn, list(zip(o["order_id"], o["skus"])))
+    pairs = list(zip(o["order_id"], o["skus"]))
+    db.rebuild_order_skus(conn, pairs)
+    register_new_skus(
+        conn, (key for _, skus_str in pairs for key, _, _ in db.parse_skus(skus_str)))
     conn.commit()
     return len(rows)
 

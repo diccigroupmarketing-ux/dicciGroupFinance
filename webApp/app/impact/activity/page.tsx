@@ -6,10 +6,12 @@ export const dynamic = "force-dynamic";
 const ACTION_LABEL: Record<string, string> = {
   upload: "Upload", sku_save: "SKU mapping", store_reset: "Store reset",
   bank_confirm: "Bank confirmed", bank_clear: "Bank cleared",
+  upload_delete: "Upload deleted",
 };
 const ACTION_TONE: Record<string, string> = {
   upload: "chipPos", sku_save: "chipMut", store_reset: "chipDan",
   bank_confirm: "chipPos", bank_clear: "chipCau",
+  upload_delete: "chipDan",
 };
 
 // "2026-07-05T12:34:56.000Z" -> "5 Jul, 12:34"

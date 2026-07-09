@@ -66,6 +66,12 @@ const ICONS: Record<string, React.ReactNode> = {
       <path d="M2.5 10.5h3l2-5 3 11 2.5-6h4.5" />
     </svg>
   ),
+  uploads: (
+    <svg className="navIcon" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.7">
+      <path d="M4 4.5A1.5 1.5 0 0 1 5.5 3h5L14 6.5v9a1.5 1.5 0 0 1-1.5 1.5h-7A1.5 1.5 0 0 1 4 15.5z" />
+      <path d="M10.5 3v3.5H14M7 12.5h4M7 9.8h4" />
+    </svg>
+  ),
   export: (
     <svg className="navIcon" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.7">
       <path d="M10 3v8m0 0 3-3m-3 3-3-3M4 14.5v2A1.5 1.5 0 0 0 5.5 18h9a1.5 1.5 0 0 0 1.5-1.5v-2" />
@@ -179,6 +185,9 @@ export default function Sidebar() {
         <div className="navLabel">Setup</div>
         <Link href="/impact/skus" className={cls(path === "/impact/skus")} title={tip("SKU / Bottles")}>
           {ICONS.sku} <span className="navText">SKU / Bottles</span>
+        </Link>
+        <Link href="/impact/uploads" className={cls(path === "/impact/uploads")} title={tip("Uploads")}>
+          {ICONS.uploads} <span className="navText">Uploads</span>
         </Link>
         <Link href="/impact/activity" className={cls(path === "/impact/activity")} title={tip("Activity")}>
           {ICONS.activity} <span className="navText">Activity</span>

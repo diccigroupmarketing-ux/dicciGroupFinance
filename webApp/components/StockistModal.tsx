@@ -186,6 +186,15 @@ export default function StockistModal({ stockist }: { stockist: string }) {
               {/* BOTTLES */}
               <section>
                 <div className="stkSecTitle">Bottles moved <span className="h">Completed orders in period</span></div>
+                {data.unmappedSkus.length > 0 && (
+                  <div className="stkLeak" style={{ marginBottom: 10 }}><Warn />
+                    <div><b>{fmtInt(data.unmappedSkus.length)} SKU{data.unmappedSkus.length === 1 ? "" : "s"} not mapped to bottles yet</b>{" "}
+                      ({data.unmappedSkus.slice(0, 6).join(", ")}
+                      {data.unmappedSkus.length > 6 ? ` +${data.unmappedSkus.length - 6} more` : ""}).
+                      These count as 0 bottles, so the numbers below undercount.{" "}
+                      <a href="/impact/skus" style={{ fontWeight: 700, textDecoration: "underline" }}>Map them on the SKU page</a>.</div>
+                  </div>
+                )}
                 <div className="stkBottle">
                   <div className="stkbT">
                     <div className="l">Total bottles</div>
