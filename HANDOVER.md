@@ -9,6 +9,12 @@ Tarikh mula: 2026-06-18
 - nota (2026-07-09): peta Arkitektur (Understand-Anything) untuk projek ni DAH wujud di `.understand-anything/knowledge-graph.json` (221 node, 451 edge, 7 layer nama Melayu, tour 12 langkah, output BM), sudah di-gitignore jadi repo public selamat (52 fail data peribadi/secrets/build di-skip sengaja). HUD modul Arkitektur render terus (endpoint `/api/arch/ua` terima root). Refresh bila kod berubah: run `/understand` dalam projek ni (incremental, fingerprint baseline dah ada).
 - kemaskini: 2026-07-09
 
+## Cara run
+
+```
+cd webApp && npm run dev
+```
+
 ## Apa projek ni
 
 Automation Finance Dicci Group untuk semak duit masuk harian tally dengan rekod. Skop penuh besar, dipecah step by step. Ini Fasa 1.
@@ -598,7 +604,12 @@ Owner suka sidebar sedia ada, cuma nak butang collapse untuk big picture. Pilih 
   5433, data kekal dalam devPgData/) lalu `python3 scripts/loadDevDb.py` (muat snapshot
   backups/ terkini).
 - App lokal: `npm run dev` (atau `npm run build && npm run start`), buka localhost:3000.
-  `.env.local`: DATABASE_URL=dev PG + INGEST_MODE=local (upload guna enjin root terus).
+  Override dev (DATABASE_URL=dev PG port 5433 + INGEST_MODE=local) duduk dalam
+  `webApp/.env.development.local` (gitignored), BUKAN lagi `.env.local` , Next utamakan
+  fail ni dalam mod dev dan `vercel env pull` cuma tulis ke `.env.local`, jadi override
+  dev takkan ditimpa (lihat sesi debug 11 Jul bawah).
+- **WAJIB restart `npm run dev` selepas ubah mana mana fail `.env*`** , env dibaca sekali
+  masa boot dan pool DB dimemo pada globalThis, betulkan env tanpa restart tak cukup.
 - Parity (WAJIB bila logik recon disentuh): `python3 scripts/parityDump.py >
   scripts/parityPython.json && npx tsx scripts/parityCheck.ts` , mesti LULUS.
 - Enjin berubah? `bash scripts/syncEngine.sh` (sync salinan api/engine/) sebelum deploy.
@@ -763,6 +774,40 @@ tiada dalam katalog `sku_bottles` (hanya 9 SKU seed lama), SKU unmapped = 0 boto
 Nota admin: `ADMIN_EMAILS` prod DAH ada aimandicci07@gmail.com (diset 4 Jul), Aiman boleh
 reset store dari page SKUs. Verify: `tsc` hijau, baseline recon kekal RM 63,912.00 (369 order),
 testUploads 12/12, popup stokis dev tunjuk botol betul (MANZ VENTURE 355 total).
+
+## Sesi 11 Jul: Debug "localhost nampak kosong" + guard dev DB (SELESAI)
+
+Gejala: dev localhost papar dashboard kosong walaupun dev DB ada data. Punca dua lapis:
+(a) Postgres embedded dev (`node scripts/devDb.mjs`, port 5433) tak dijalankan; (b) lebih
+penting, `vercel env pull` pernah TIMPA `webApp/.env.local` dan buang override dev
+(DATABASE_URL localhost + INGEST_MODE=local), jadi proses `next dev` yang start masa tu
+pegang env basi dan baca Neon **prod** (kosong) bukan dev DB. Pool `pg` dimemo pada
+`globalThis`, jadi betulkan `.env` tanpa restart penuh tak cukup , **WAJIB restart
+`npm run dev`**.
+
+**Penyelesaian kekal (dua lapis pertahanan):**
+1. Fail baru `webApp/.env.development.local` (gitignored) berisi 4 override dev
+   (DATABASE_URL localhost:5433, INGEST_MODE=local, NEXT_PUBLIC_CLERK_SIGN_IN_URL,
+   ADMIN_EMAILS). Next utamakan fail ni dalam mod dev, dan `vercel env pull` hanya tulis
+   ke `.env.local`, jadi override dev takkan ditimpa lagi.
+2. DEV GUARD dalam `webApp/lib/db.ts` `getPool()` (dibina serentak oleh sesi lain, siap
+   hari ni): bila `NODE_ENV=development` dan hostname `DATABASE_URL` bukan
+   localhost/127.0.0.1/::1, terus `throw Error` dengan mesej jelas. Lapisan kedua supaya
+   dev secara fizikal tak boleh sambung ke Neon prod walau env rosak. TAK aktif langsung
+   dalam produksi (`NODE_ENV=production`).
+
+**Workflow dev betul (rekod untuk sesi lain):** dua terminal , (1) `cd webApp && node
+scripts/devDb.mjs` biar hidup, (2) `cd webApp && npm run dev`. Data dev persistent dalam
+`webApp/devPgData`. Lepas ubah mana mana fail `.env*`, WAJIB restart `npm run dev` (env
+dibaca sekali masa boot + pool DB dimemo).
+
+**Nota data:** masa siasatan, fail test `fighterSample.xlsx` (852 baris) pernah di-ingest
+ke dev DB dan SUDAH dibuang guna logik `deleteUpload` sebenar, kiraan dev DB kembali
+baseline (orders=561, order_skus=568, sku_bottles=25). Prod Neon TAK disentuh langsung
+sepanjang sesi.
+
+**Peringatan kekal:** password Neon masih PENDING rotate (terdedah masa setup dulu) = gate
+sebelum finance upload data sebenar, masih belum dibuat.
 
 ## Status sekarang
 

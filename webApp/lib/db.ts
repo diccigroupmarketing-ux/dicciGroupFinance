@@ -12,6 +12,20 @@ export function getPool(): Pool {
   if (!global._dicciPool) {
     const url = process.env.DATABASE_URL;
     if (!url) throw new Error("DATABASE_URL tidak diset");
+    // DEV GUARD, lapisan kedua pertahanan: dalam mod development, hanya benarkan
+    // sambung ke DB tempatan. Kalau fail env rosak dan DATABASE_URL tercuri jadi
+    // Neon prod, throw awal supaya proses dev fizikalnya tak boleh sentuh prod.
+    if (process.env.NODE_ENV === "development") {
+      const host = new URL(url).hostname;
+      const localHosts = ["localhost", "127.0.0.1", "::1"];
+      if (!localHosts.includes(host)) {
+        throw new Error(
+          `DEV GUARD: DATABASE_URL menunjuk ke DB bukan localhost (${host}). ` +
+            "Dev mode hanya dibenarkan sambung ke DB tempatan. " +
+            "Semak webApp/.env.development.local."
+        );
+      }
+    }
     global._dicciPool = new Pool({
       connectionString: url,
       max: 8,
