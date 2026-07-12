@@ -92,7 +92,14 @@ function iso(d: Date): string {
 }
 
 function cutoff(pendingDays: number): string {
-  const d = new Date(TODAY.getTime() - (pendingDays + 1) * 86400_000);
+  // Bina cutoff dari komponen wall-clock TODAY guna Date.UTC supaya hasil sama
+  // tanpa kira zon waktu mesin (elak drift 8 jam lawan enjin Python di MYT).
+  // TODAY diparse waktu tempatan, jadi getter tempatan pulang jam dinding yang
+  // ditulis; Date.UTC bina semula sebagai UTC + tolak hari secara kalendar
+  // (underflow hari dinormalkan), padan _cutoff() reconSql.py yang naive.
+  const d = new Date(Date.UTC(
+    TODAY.getFullYear(), TODAY.getMonth(), TODAY.getDate() - (pendingDays + 1),
+    TODAY.getHours(), TODAY.getMinutes(), TODAY.getSeconds()));
   return iso(d);
 }
 
@@ -120,8 +127,18 @@ function mSqlCourier(key: StreamKey): string {
              WHEN l.awb IS NOT NULL THEN
                CASE
                  WHEN s.status = 'Completed' THEN
-                   CASE WHEN ${R2("s.selling_price")} = ${R2("l.cod_amount")}
-                        THEN 'tally' ELSE 'amount_mismatch' END
+                   -- Guard AWB dikongsi (port setia reconcile.py): bila >1 order
+                   -- padan baris bil YANG SAMA (kongsi tracking), duit satu parcel
+                   -- tak boleh dikira tally untuk setiap order (double count). Jatuh
+                   -- ke amount_mismatch supaya disiasat, bukan disorok jadi tally.
+                   CASE
+                     WHEN (SELECT COUNT(*) FROM orders o2
+                           WHERE o2.tracking = s.tracking
+                             AND o2.payment_method = ANY($3)
+                             AND o2.shipping_provider = ANY($4)) > 1
+                          THEN 'amount_mismatch'
+                     WHEN ${R2("s.selling_price")} = ${R2("l.cod_amount")}
+                          THEN 'tally' ELSE 'amount_mismatch' END
                  WHEN s.status = 'Returned' THEN 'duit_masuk_order_returned'
                  WHEN s.status = 'Rejected' THEN 'duit_masuk_order_rejected'
                  ELSE 'in_bil_tapi_intransit'

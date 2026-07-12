@@ -46,8 +46,9 @@ async function main() {
         tally: d.tally, exception: d.exception, botol: d.botol,
         botol_free: d.botol_free,
       })),
+      // Susun ikut code-point (bukan localeCompare) supaya padan urutan sort Python.
       perBill: [...s.perBill]
-        .sort((a, b) => a.bill_id.localeCompare(b.bill_id))
+        .sort((a, b) => cp(a.bill_id, b.bill_id))
         .map((b) => ({ bill_id: b.bill_id, parcel: b.parcel, cod: r2(b.cod),
                        fee: r2(b.fee), tally: b.tally, exc: b.exc })),
       // Susun ikut code-point (bukan localeCompare) supaya padan urutan sort Python.

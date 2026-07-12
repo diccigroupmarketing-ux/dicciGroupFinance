@@ -26,8 +26,11 @@ import db
 # Table durable yang enjin recon baca. sku_bottles = config (self-healing) tapi disertakan
 # supaya restore penuh + mapping SKU custom finance turut selamat. order_skus = derived
 # (boleh dibina semula dari orders.skus) tapi murah untuk disertakan.
+# bank_deposits = jumlah bank SEBENAR ditaip tangan finance, TAK boleh dibina semula dari
+# feed. sku_gifts = config kos giveaway per SKU, tiada seed default (hanya wujud dalam DB).
+# Kedua duanya data tak boleh diganti, WAJIB disertakan dalam jaring keselamatan ni.
 TABLES = ["orders", "order_skus", "cod_bills", "cod_bill_lines", "prepaid_payments",
-          "wallet_txns", "sku_bottles"]
+          "wallet_txns", "sku_bottles", "sku_gifts", "bank_deposits"]
 
 
 def _table_hash(dff):

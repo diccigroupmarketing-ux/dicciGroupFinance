@@ -23,6 +23,7 @@ CLAUDE.md
 
 # Runbook ops (langkah rotate, dll) , simpan tempatan, jangan masuk repo public
 rotateNeonRunbook.md
+runbookRotateNeon.md
 
 # OS
 .DS_Store

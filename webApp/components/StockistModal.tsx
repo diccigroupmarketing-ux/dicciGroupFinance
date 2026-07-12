@@ -147,7 +147,8 @@ export default function StockistModal({ stockist }: { stockist: string }) {
               <div className="stkNote">
                 All figures reflect{" "}
                 <b>{range.from === WIDE.from && range.to === WIDE.to
-                  ? "all time" : `${range.from} → ${range.to}`}</b>.
+                  ? "all time"
+                  : `${range.from === WIDE.from ? "the beginning" : range.from} → ${range.to === WIDE.to ? "today" : range.to}`}</b>.
               </div>
 
               {/* MONEY */}
@@ -281,7 +282,7 @@ export default function StockistModal({ stockist }: { stockist: string }) {
               {/* ORDERS */}
               <section>
                 <div className="stkSecTitle">Orders
-                  <span className="h">latest first · showing {fmtInt(data.orders.rows.length)} of {fmtInt(data.orders.total)}</span>
+                  <span className="h">latest first · showing {fmtInt(Math.min(60, data.orders.rows.length))} of {fmtInt(data.orders.total)}</span>
                   <ExportCsv rows={data.orders.rows} columns={ORDER_COLS} total={data.orders.total}
                     filename={`stockist-${stockist}-orders.csv`} /></div>
                 <div className="tableWrap">

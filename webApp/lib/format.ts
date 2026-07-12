@@ -65,7 +65,13 @@ export function groupByGrain(
       key = d.day.slice(0, 7); // YYYY-MM
     } else {
       const weekday = (dt.getDay() + 6) % 7; // Isnin = 0
-      key = new Date(dt.getTime() - weekday * 86400_000).toISOString().slice(0, 10);
+      // Guna komponen tarikh TEMPATAN (bukan toISOString UTC) supaya kunci minggu
+      // kekal Isnin pada TZ timur UTC (dev lokal KL), sepadan period_key Streamlit.
+      const mon = new Date(dt.getTime() - weekday * 86400_000);
+      const yy = mon.getFullYear();
+      const mm = String(mon.getMonth() + 1).padStart(2, "0");
+      const dd = String(mon.getDate()).padStart(2, "0");
+      key = `${yy}-${mm}-${dd}`;
     }
     const cur = acc.get(key) ?? { net: 0, parcels: 0 };
     cur.net += d.cod_dikutip - d.fee;

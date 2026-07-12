@@ -77,12 +77,24 @@ export async function addSku(row: SkuInput): Promise<void> {
   const free = nonNegInt(row?.free);
   const client = await getPool().connect();
   try {
+    await client.query("BEGIN");
+    // Kunci berasaskan SKU ternormal (UPPER+TRIM) supaya dua permintaan Add SKU
+    // serentak untuk varian case sama (cth 'abc-1' vs 'ABC-1') tak lepas check
+    // then insert dua dua , tanpa ni kedua dua SELECT dup nampak kosong lalu
+    // kedua dua INSERT jaya (PK sku MENTAH berbeza) dan botol tergandakan dalam
+    // recon yang join UPPER(TRIM). Lock dilepas automatik hujung transaksi.
+    await client.query(
+      "SELECT pg_advisory_xact_lock(hashtext(UPPER(TRIM($1))))", [sku]);
     const dup = await client.query(
       "SELECT 1 FROM sku_bottles WHERE UPPER(TRIM(sku)) = UPPER(TRIM($1))", [sku]);
     if (dup.rowCount) throw new Error(`SKU '${sku}' sudah wujud`);
     await client.query(
       "INSERT INTO sku_bottles (sku, product_name, paid, free) VALUES ($1, $2, $3, $4)",
       [sku, pn, paid, free]);
+    await client.query("COMMIT");
+  } catch (e) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw e;
   } finally {
     client.release();
   }
@@ -189,11 +201,44 @@ export async function deleteUpload(file: string): Promise<DeleteUploadResult> {
          (SELECT order_id FROM orders WHERE source_file = $1)`, [f]);
     const orders = await client.query(
       "DELETE FROM orders WHERE source_file = $1", [f]);
+    // Padam baris bil fail ni, kutip bill_id terkesan (RETURNING) supaya lepas
+    // ni kita boleh skop pembersihan header pada bil yang betul betul terjejas.
     const billLines = await client.query(
-      "DELETE FROM cod_bill_lines WHERE source_file = $1", [f]);
+      "DELETE FROM cod_bill_lines WHERE source_file = $1 RETURNING bill_id", [f]);
+    const affectedBills = [
+      ...new Set(
+        (billLines.rows as { bill_id: string | null }[])
+          .map((r) => r.bill_id)
+          .filter((b): b is string => b != null),
+      ),
+    ];
+    // Header bil dipadam HANYA kalau tiada baris tinggal (elak orphan: baris fail
+    // lain kongsi bill_id sama bila di-upsert source_file, kalau header dipadam
+    // membabi buta duitnya lesap senyap dari recon). Skop pada bil fail ni sahaja
+    // (header source_file sama, atau bil yang baru kehilangan baris), bukan padam
+    // semua bil kosong merentas courier/fail lain.
     const bills = await client.query(
-      `DELETE FROM cod_bills WHERE source_file = $1
-         OR bill_id NOT IN (SELECT bill_id FROM cod_bill_lines WHERE bill_id IS NOT NULL)`, [f]);
+      `DELETE FROM cod_bills c
+         WHERE (c.source_file = $1 OR c.bill_id = ANY($2::text[]))
+           AND NOT EXISTS (SELECT 1 FROM cod_bill_lines l WHERE l.bill_id = c.bill_id)
+         RETURNING c.bill_id`,
+      [f, affectedBills]);
+    // Pengesahan bank terikat pada bill_id. Bila header bil betul betul dipadam,
+    // buang deposit basi supaya ia tak bangkit semula (auto-attach) bila bil sama
+    // di-upload semula , kalau tidak variance (isyarat bocor duit) tersembunyi.
+    // Guard to_regclass sebab jadual bank_deposits dicipta malas (lib/bank.ts).
+    const deletedBillIds = (bills.rows as { bill_id: string | null }[])
+      .map((r) => r.bill_id)
+      .filter((b): b is string => b != null);
+    if (deletedBillIds.length) {
+      const hasBank = await client.query(
+        "SELECT to_regclass('bank_deposits') AS t");
+      if (hasBank.rows[0]?.t) {
+        await client.query(
+          "DELETE FROM bank_deposits WHERE bill_id = ANY($1::text[])",
+          [deletedBillIds]);
+      }
+    }
     const prepaid = await client.query(
       "DELETE FROM prepaid_payments WHERE source_file = $1", [f]);
     const wallet = await client.query(

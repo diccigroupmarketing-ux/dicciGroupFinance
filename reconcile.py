@@ -30,6 +30,21 @@ INTEGRITY_EXC = [
 # Aged: tak padan + dah lama. Dalam fasa data tak lengkap, ni didominasi artifak bil tak cukup.
 AGED = ["hilang_lewat"]
 
+# Sentinel dari norm_trk (db.py): sel tracking/AWB kosong jadi string 'NAN'/'NONE',
+# bukan kunci padanan sebenar. Satu baris bil junk (contoh baris total) dengan AWB
+# kosong TIDAK boleh dibenarkan padan dengan order tanpa tracking.
+SENTINEL_TRK = {"NAN", "NONE", ""}
+
+
+def _no_match_keys(vals, prefix):
+    """Pulang kunci merge: nilai asal, tapi sentinel kosong diganti kunci unik
+    (prefix + index) supaya baris tanpa AWB tak padan sesama sendiri masa merge."""
+    up = vals.astype(str).str.strip().str.upper()
+    mask = up.isin(SENTINEL_TRK) | vals.isna()
+    out = vals.copy()
+    out.loc[mask] = [f"{prefix}{i}" for i in out.index[mask]]
+    return out
+
 
 def _bottles_for_skus(skus_str, sku_map):
     """Pulang (botol_paid, botol_free, senarai_sku_tak_dipetakan) untuk satu order."""
@@ -75,7 +90,8 @@ def reconcile(conn, pending_days=REMIT_PENDING_DAYS, courier="jnt"):
     courier_bill_ids = set(bills_all.loc[bills_all["courier"] == courier_label, "bill_id"])
     lines = lines[lines["bill_id"].isin(courier_bill_ids)].copy()
 
-    all_trk = set(orders["tracking"].dropna())
+    # Buang sentinel: order tanpa tracking bukan "tracking wujud" untuk semakan skop.
+    all_trk = set(orders["tracking"].dropna()) - SENTINEL_TRK
 
     cod = orders[orders["payment_method"].isin(COD_VALUES)].copy()
     other = cod[~cod["shipping_provider"].isin(provider)]
@@ -90,9 +106,23 @@ def reconcile(conn, pending_days=REMIT_PENDING_DAYS, courier="jnt"):
     }
 
     scoped = cod[cod["shipping_provider"].isin(provider)].copy()
-    m = scoped.merge(lines, left_on="tracking", right_on="awb",
+    # Merge atas kunci selamat-sentinel: 'NAN'/'NONE' tak boleh jadi padanan.
+    scoped["_mkey"] = _no_match_keys(scoped["tracking"], "__noawb_o_")
+    lines["_mkey"] = _no_match_keys(lines["awb"], "__noawb_l_")
+    m = scoped.merge(lines, on="_mkey",
                      how="outer", indicator=True, suffixes=("_o", "_l"))
+    m = m.drop(columns=["_mkey"])
+    lines = lines.drop(columns=["_mkey"])
     m["umur_hari"] = (TODAY - pd.to_datetime(m["order_date"], errors="coerce")).dt.days
+
+    # Guard AWB dikongsi: bila >1 order padan baris bil YANG SAMA, duit satu parcel
+    # tak boleh dikira "tally" untuk setiap order (double count). Tanda supaya
+    # kategori jatuh ke amount_mismatch dan disiasat, bukan disorok sebagai tally.
+    both_side = m["_merge"] == "both"
+    m["awb_shared"] = False
+    if both_side.any():
+        m.loc[both_side, "awb_shared"] = (
+            m.loc[both_side].groupby("awb")["awb"].transform("size").gt(1))
 
     def cat(r):
         side = r["_merge"]
@@ -101,6 +131,8 @@ def reconcile(conn, pending_days=REMIT_PENDING_DAYS, courier="jnt"):
         if side == "both":
             st = r["status"]
             if st == COMPLETED:
+                if r["awb_shared"]:
+                    return "amount_mismatch"  # AWB dikongsi >1 order, duit tak boleh tally berganda
                 return "tally" if round(r["selling_price"], 2) == round(r["cod_amount"], 2) else "amount_mismatch"
             if st == RETURNED:
                 return "duit_masuk_order_returned"

@@ -14,7 +14,7 @@ export async function GET(req: Request) {
   const url = new URL(req.url);
   const key = url.searchParams.get("key") ?? "";
   const bill = url.searchParams.get("bill") ?? "";
-  if (!(key in COURIERS)) {
+  if (!Object.prototype.hasOwnProperty.call(COURIERS, key)) {
     return NextResponse.json({ error: "stream tidak sah" }, { status: 400 });
   }
   if (!bill) {

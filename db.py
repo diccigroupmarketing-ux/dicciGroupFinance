@@ -34,7 +34,11 @@ JNT_PROVIDER = {"J&T Express"}
 COMPLETED, RETURNED, REJECTED, IN_TRANSIT = "Completed", "Returned", "Rejected", "In Transit"
 
 REMIT_PENDING_DAYS = 14
-TODAY = pd.Timestamp("2026-06-18")
+# TODAY default = tarikh sebenar hari ini supaya pengesan aging (hilang_lewat)
+# bergerak dengan masa. Untuk run baseline deterministik, beku via env
+# RECON_TODAY (contoh RECON_TODAY="2026-06-18").
+_today_env = os.environ.get("RECON_TODAY")
+TODAY = pd.Timestamp(_today_env) if _today_env else pd.Timestamp.now().normalize()
 
 # Handshake untuk guard self-heal app.py (kesan proses lama selepas deploy tanpa
 # restart). TAK perlu bump untuk deploy biasa, mtime fail yang jaga tu; nilai ni

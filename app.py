@@ -620,7 +620,7 @@ def render_stream_body(s, pending_days, L):
                     "botol_free": st.column_config.NumberColumn("Free bottles"),
                     "cod_dikutip": st.column_config.NumberColumn("COD collected",
                                                                  format="RM %.2f"),
-                    "fee": st.column_config.NumberColumn("J&T fee", format="RM %.2f"),
+                    "fee": st.column_config.NumberColumn(f"{cname} fee", format="RM %.2f"),
                     "net_remit": st.column_config.NumberColumn("Net remit",
                                                               format="RM %.2f"),
                     "tally": st.column_config.NumberColumn("Tally"),
@@ -749,7 +749,8 @@ def render_stream_body(s, pending_days, L):
         with col_a:
             theme.section("Category summary")
             cc = (pd.DataFrame([{"kategori": k, "count": int(n)}
-                                for k, n in s["kat_n"].items()])
+                                for k, n in s["kat_n"].items()],
+                               columns=["kategori", "count"])
                   .sort_values("count", ascending=False).reset_index(drop=True))
             st.dataframe(theme.style_kategori(cc), width="stretch", hide_index=True,
                          column_config={"kategori": st.column_config.TextColumn("Status"),

@@ -100,7 +100,15 @@ def detect(df):
 
 def _load_df(data, filename):
     if filename.lower().endswith(".csv"):
-        df = pd.read_csv(io.BytesIO(data))
+        try:
+            df = pd.read_csv(io.BytesIO(data))
+        except UnicodeDecodeError:
+            # Excel Windows simpan "CSV" dalam ANSI (cp1252), bukan UTF-8. Fallback
+            # supaya fail sah dari sisi user tak ditolak dengan error mentah.
+            try:
+                df = pd.read_csv(io.BytesIO(data), encoding="cp1252")
+            except UnicodeDecodeError:
+                df = pd.read_csv(io.BytesIO(data), encoding="latin-1")
     else:
         df = pd.read_excel(io.BytesIO(data))
     df.columns = df.columns.str.strip()
@@ -167,24 +175,36 @@ def _ymd_series(series):
 # amaran unmapped, tetap 0 botol sampai diisi manual).
 AUTO_SKU_NOTE = "Auto-added from upload, review bottle counts"
 
+# Siling waras auto-daftar: nombor besar dalam nama SKU (tahun kempen "RAYA-2026-1",
+# kod promo "PROMO-50") BUKAN kiraan botol. Melebihi siling = tak didaftar, SKU
+# kekal dalam amaran unmapped untuk finance isi manual.
+MAX_AUTO_BOTTLES = 24
+
+
+def _sane_bottles(paid, free):
+    # None kalau tak waras, jangan biar nombor gila masuk kiraan botol/komisen.
+    if paid > MAX_AUTO_BOTTLES or free > MAX_AUTO_BOTTLES:
+        return None
+    return paid, free
+
 
 def derive_bottles(sku):
-    """Agak (paid, free) dari nama SKU; None kalau corak tak difahami."""
+    """Agak (paid, free) dari nama SKU; None kalau corak tak difahami/tak waras."""
     s = str(sku or "").upper().strip()
     if not s:
         return None
     m = re.search(r"(\d+)\s*PLUS\s*(\d+)", s)          # ...-1PLUS1
     if m:
-        return int(m.group(1)), int(m.group(2))
+        return _sane_bottles(int(m.group(1)), int(m.group(2)))
     m = re.search(r"-(\d+)-(\d+)$", s)                 # ...-4-2
     if m:
-        return int(m.group(1)), int(m.group(2))
+        return _sane_bottles(int(m.group(1)), int(m.group(2)))
     m = re.search(r"[A-Z](\d+)-[A-Z]+(\d+)$", s)       # ...JAG4-FREE2 / JAG2-AGM1
     if m:
-        return int(m.group(1)), int(m.group(2))
+        return _sane_bottles(int(m.group(1)), int(m.group(2)))
     m = re.search(r"-(\d+)$", s)                       # ...-2
     if m:
-        return int(m.group(1)), 0
+        return _sane_bottles(int(m.group(1)), 0)
     return None
 
 
@@ -232,8 +252,12 @@ ORDERS_UPSERT = text("""
 
 
 def ingest_fighter(df, source_file, conn):
+    # Buang baris tanpa Order ID (baris total/blank export). Satu sel kosong buat
+    # pandas baca lajur sebagai float, jadi buang juga suffix ".0" (macam wallet
+    # txn_id dan norm_trk), kalau tak "6479145.0" duduk sebelah "6479145" (double count).
+    df = df[df[F_ORDER].notna()].copy()
     o = pd.DataFrame({
-        "order_id": df[F_ORDER].astype(str).str.strip(),
+        "order_id": df[F_ORDER].astype(str).str.replace(r"\.0$", "", regex=True).str.strip(),
         "order_date": iso(db.parse_dt(df[F_DATE], dayfirst=True)),
         "status": df[F_STATUS],
         "seller_name": df[F_SELLER],
@@ -248,7 +272,8 @@ def ingest_fighter(df, source_file, conn):
         "ingested_at": now_iso(),
     })
     rows = db.to_records(o)
-    conn.execute(ORDERS_UPSERT, rows)
+    if rows:  # fail sah tapi kosong (header sahaja) tak patut crash executemany
+        conn.execute(ORDERS_UPSERT, rows)
     # Bentuk normalized SKU (order_skus) untuk recon/botol SQL-side; hanya
     # order dalam fail ni yang dibina semula (idempotent macam upsert di atas).
     pairs = list(zip(o["order_id"], o["skus"]))
@@ -302,7 +327,8 @@ def ingest_wallet(df, source_file, conn):
         "ingested_at": now_iso(),
     })
     rows = db.to_records(w)
-    conn.execute(WALLET_UPSERT, rows)
+    if rows:  # fail sah tapi kosong (header sahaja) tak patut crash executemany
+        conn.execute(WALLET_UPSERT, rows)
     conn.commit()
     return len(rows)
 
@@ -342,6 +368,10 @@ LINES_UPSERT = text("""
 
 
 def ingest_jnt(df, source_file, conn):
+    # Buang baris AWB kosong (baris total/blank hujung bil), macam guard Ninja/DHL.
+    # Kalau tak, NaN jadi string "NAN" dan padan dengan semua order tanpa tracking.
+    df = df[df[J_AWB].notna()].copy()
+    df = df[df[J_AWB].astype(str).str.strip() != ""]
     bill_id, settlement = parse_bill_meta(source_file)
     conn.execute(BILLS_UPSERT, {
         "bill_id": bill_id, "courier": "J&T Express", "settlement_date": settlement,
@@ -359,7 +389,8 @@ def ingest_jnt(df, source_file, conn):
         "ingested_at": now_iso(),
     })
     rows = db.to_records(l)
-    conn.execute(LINES_UPSERT, rows)
+    if rows:  # fail sah tapi kosong (header sahaja) tak patut crash executemany
+        conn.execute(LINES_UPSERT, rows)
     conn.commit()
     return len(rows)
 
@@ -376,12 +407,15 @@ def parse_dhl(data):
     meta, rows, header = {}, [], None
     for line in txt.splitlines():
         cells = [c.strip() for c in line.split("\t")]
-        cells = [c for c in cells if c != ""]
-        if len(cells) == 2 and cells[0].endswith(":"):
-            meta[cells[0].rstrip(":")] = cells[1]
-        elif cells and cells[0] == "No.":
+        # `packed` (tanpa sel kosong) HANYA untuk kenal jenis baris. Header dan
+        # baris data mesti kekal posisi penuh, kalau buang sel kosong, satu sel
+        # optional yang tak diisi anjakkan semua lajur ke kiri (nilai duit rosak).
+        packed = [c for c in cells if c != ""]
+        if len(packed) == 2 and packed[0].endswith(":"):
+            meta[packed[0].rstrip(":")] = packed[1]
+        elif packed and packed[0] == "No.":
             header = cells
-        elif header and cells and cells[0].isdigit():
+        elif header and packed and packed[0].isdigit():
             rows.append(cells)
     return {"meta": meta, "header": header, "rows": rows}
 
@@ -401,6 +435,9 @@ def ingest_dhl(parsed, source_file, conn):
         "cod": [col(r, D_COD) for r in rows],
         "deliv": [col(r, D_DELIVERED) for r in rows],
     })
+    # Buang baris ref kosong (awb='' runtuh jadi satu rekod atas PK awb, jumlah
+    # COD bil terkurang senyap), guard sama corak dengan J&T/Ninja.
+    df = df[df["ref"].astype(str).str.strip() != ""]
     conn.execute(BILLS_UPSERT, {
         "bill_id": bill_id, "courier": "DHL eCommerce", "settlement_date": settlement,
         "source_file": source_file, "ingested_at": now_iso(),
@@ -474,10 +511,19 @@ PREPAID_UPSERT = text("""
 
 
 def _num(v):
+    # Terima juga teks berformat statement: "RM 51.90" dan "(10.00)" (kurungan =
+    # negatif, notasi perakaunan). Kalau tak, nilai jadi 0.0 senyap tapi order
+    # tetap ditanda confirmed paid.
+    s = str(v).replace(",", "").strip()
+    neg = s.startswith("(") and s.endswith(")")
+    if neg:
+        s = s[1:-1].strip()
+    s = re.sub(r"(?i)^rm\s*", "", s).strip()
     try:
-        return float(str(v).replace(",", "").strip())
+        n = float(s)
     except Exception:
         return 0.0
+    return -n if neg else n
 
 
 def _txt(v):
@@ -563,6 +609,9 @@ def run():
         try:
             kind, n = ingest_bytes(p.read_bytes(), p.name, conn)
         except Exception as e:
+            # Rollback wajib: kalau tak, transaksi Postgres kekal aborted dan
+            # SEMUA fail selepas ni gagal senyap (atau baris separa ter-commit).
+            conn.rollback()
             print(f"[SKIP] {p.name}: {e}")
             continue
         if not kind:

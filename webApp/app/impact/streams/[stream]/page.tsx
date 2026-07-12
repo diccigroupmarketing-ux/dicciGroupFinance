@@ -269,7 +269,7 @@ export default async function StreamPage(
             <div className="cardHead">
               <div className="cardTitle">Net remit by {GRAIN_LABEL[grain]}</div>
               <div className="cardHint">delivery-signature date</div>
-              <GrainSwitcher grain={grain} basePath={`/impact/streams/${key}`} />
+              <GrainSwitcher grain={grain} basePath={`/impact/streams/${key}`} pending={pending} />
             </div>
             <WeeklyChart bars={weekly} />
           </div>

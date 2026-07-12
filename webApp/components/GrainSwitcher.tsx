@@ -8,12 +8,22 @@ const OPTIONS: { key: Grain; label: string }[] = [
 ];
 
 // Penukar grain chart (pautan server-side, kekal boleh bookmark/share).
-export default function GrainSwitcher({ grain, basePath }: { grain: Grain; basePath: string }) {
+// pending optional, dikekalkan dalam href supaya tukar grain tak reset ambang aging.
+export default function GrainSwitcher(
+  { grain, basePath, pending }: { grain: Grain; basePath: string; pending?: number },
+) {
+  const hrefFor = (key: Grain) => {
+    const params = new URLSearchParams();
+    if (key !== "weekly") params.set("grain", key);
+    if (pending != null) params.set("pending", String(pending));
+    const qs = params.toString();
+    return qs ? `${basePath}?${qs}` : basePath;
+  };
   return (
     <div className="segRow" role="group" aria-label="Chart period grain">
       {OPTIONS.map((o) => (
         <Link key={o.key}
-          href={o.key === "weekly" ? basePath : `${basePath}?grain=${o.key}`}
+          href={hrefFor(o.key)}
           className={"segBtn" + (grain === o.key ? " active" : "")}>
           {o.label}
         </Link>
