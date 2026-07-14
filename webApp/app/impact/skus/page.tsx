@@ -13,6 +13,7 @@ export default async function SkusPage() {
   ]);
   const admin = isAdmin(user?.primaryEmailAddress?.emailAddress);
   const counts = admin ? await storeCounts() : null;
+  const resetEnabled = process.env.ALLOW_STORE_RESET === "1";
 
   return (
     <>
@@ -48,7 +49,7 @@ export default async function SkusPage() {
       {admin && counts && (
         <StoreDanger counts={{
           orders: counts.orders, billLines: counts.billLines, wallet: counts.wallet,
-        }} />
+        }} resetEnabled={resetEnabled} />
       )}
 
       <div className="footNote">

@@ -1,6 +1,7 @@
 // Reset store: padam SEMUA data transaksi (kekal mapping SKU). DESTRUKTIF,
 // admin sahaja (email dalam ADMIN_EMAILS). Perlu body {confirm:true} supaya
 // tak ter-trigger sengaja.
+// Kill-switch env: dimatikan melainkan ALLOW_STORE_RESET=1 (prod Vercel tak set, jadi data prod selamat).
 import { NextResponse } from "next/server";
 import { revalidateTag } from "next/cache";
 import { auth, currentUser } from "@clerk/nextjs/server";
@@ -18,6 +19,11 @@ export async function POST(req: Request) {
   const email = user?.primaryEmailAddress?.emailAddress ?? null;
   if (!isAdmin(email)) {
     return NextResponse.json({ error: "forbidden , admin sahaja" }, { status: 403 });
+  }
+  if (process.env.ALLOW_STORE_RESET !== "1") {
+    return NextResponse.json(
+      { error: "reset dimatikan pada environment ini , set ALLOW_STORE_RESET=1 untuk benarkan" },
+      { status: 403 });
   }
 
   let body: { confirm?: boolean };

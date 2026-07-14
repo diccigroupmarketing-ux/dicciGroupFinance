@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 
 type Counts = { orders: number; billLines: number; wallet: number };
 
-export default function StoreDanger({ counts }: { counts: Counts }) {
+export default function StoreDanger({ counts, resetEnabled }: { counts: Counts; resetEnabled: boolean }) {
   const router = useRouter();
   const [confirm, setConfirm] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -58,21 +58,31 @@ export default function StoreDanger({ counts }: { counts: Counts }) {
           <path d="M10 7v4m0 3h.01M10 2.5 18 16H2z" />
         </svg>
         <div>
-          <b>Reset clears all uploaded data.</b>
-          <p>Orders, courier bills, and wallet transactions are permanently
-            deleted. The SKU mapping above is kept. This cannot be undone.</p>
+          {resetEnabled ? (
+            <>
+              <b>Reset clears all uploaded data.</b>
+              <p>Orders, courier bills, and wallet transactions are permanently
+                deleted. The SKU mapping above is kept. This cannot be undone.</p>
+            </>
+          ) : (
+            <>
+              <b>Reset disabled on this environment.</b>
+              <p>Set ALLOW_STORE_RESET=1 to enable (dev only). Production keeps
+                this off so finance data can never be wiped.</p>
+            </>
+          )}
         </div>
       </div>
 
       <label className="confirmRow">
         <input type="checkbox" checked={confirm}
-               onChange={(e) => setConfirm(e.target.checked)} disabled={busy} />
+               onChange={(e) => setConfirm(e.target.checked)} disabled={busy || !resetEnabled} />
         I understand this permanently deletes all uploaded data.
       </label>
 
       <div className="editorBar">
         <span />
-        <button className="dangerBtn" onClick={reset} disabled={!confirm || busy}>
+        <button className="dangerBtn" onClick={reset} disabled={!confirm || busy || !resetEnabled}>
           {busy ? "Resetting…" : "Reset store"}
         </button>
       </div>

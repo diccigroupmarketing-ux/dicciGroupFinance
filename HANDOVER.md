@@ -709,6 +709,7 @@ peraturan kerja "dua buku":
 
 - **Buku SEBENAR = prod Neon = data finance. SUCI.** Kita TAK PERNAH dev/test/eksperimen
   lawan prod. Butang Reset JANGAN sentuh lagi pada prod selama lamanya.
+- **Kill-switch reset (15 Jul 2026):** route /api/admin/reset pulang 403 melainkan env ALLOW_STORE_RESET=1. Prod Vercel TIDAK set env ini, jadi butang Reset mustahil padam data finance; dev set dalam webApp/.env.local.
 - **Buku LATIHAN = dev DB (embedded PG port 5433 + snapshot).** Semua ubah suai diuji di sini
   dulu: `node scripts/devDb.mjs` + `python3 scripts/loadDevDb.py`, ubah, test, parity kalau
   sentuh recon, baru deploy.
