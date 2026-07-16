@@ -20,6 +20,7 @@ backups/
 # Konteks projek tempatan untuk Claude (jangan masuk repo public)
 CLAUDE.md
 .claude/settings.local.json
+.claude/worktrees/
 
 # Runbook ops (langkah rotate, dll) , simpan tempatan, jangan masuk repo public
 rotateNeonRunbook.md
