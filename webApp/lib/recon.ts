@@ -484,13 +484,133 @@ export async function searchOrders(q: string): Promise<SearchResult[]> {
 // Botol per stokis (semua courier + payment; confirmed via feed duit).
 // Salinan setia stockist_bottles / stockist_orders dari reconSql.py.
 // ====================================================================
+// Prepaid confirmed = ada baris prepaid untuk order ni, TAPI hanya bila status
+// berjaya DAN amount > 0 (mirror reconSql.py _PREPAID_OK / db.PREPAID_SUCCESS_STATUS).
+// Sekadar wujud TAK cukup , elak bocor tersorok bila CHIP diaktifkan nanti.
+const PREPAID_OK =
+  "pp.amount > 0 AND LOWER(TRIM(pp.status)) IN " +
+  "('paid','success','successful','completed','settled','cleared','captured')";
+
 const CONF_SQL = `
   CASE WHEN EXISTS (SELECT 1 FROM cod_bill_lines cl WHERE cl.awb = o.tracking)
-         OR EXISTS (SELECT 1 FROM prepaid_payments pp WHERE pp.order_ref = o.order_id)
+         OR EXISTS (SELECT 1 FROM prepaid_payments pp WHERE pp.order_ref = o.order_id
+                    AND ${PREPAID_OK})
        THEN 1 ELSE 0 END
 `;
 
 const DRILL_CAP = 10_000;
+
+// ====================================================================
+// Baldi pengesahan bayaran JUJUR (paparan sahaja, diturunkan dari payment_method
+// + kehadiran feed). Memecahkan satu baldi kabur "Awaiting payment confirmation"
+// jadi baldi bermakna. TIDAK mengubah keahlian confirmed_paid_order_ids atau tally
+// COD , ini derivasi paparan atas data yang memang dah disimpan.
+// ====================================================================
+const sqlList = (a: string[]) => a.map((v) => `'${v.replace(/'/g, "''")}'`).join(",");
+const PREPAID_METHODS = ["CHIP"];
+const COD_IN = `o.payment_method IN (${sqlList(COD_VALUES)})`;
+const PREPAID_IN = `o.payment_method IN (${sqlList(PREPAID_METHODS)})`;
+const COD_LINE_EXISTS = `EXISTS (SELECT 1 FROM cod_bill_lines cl WHERE cl.awb = o.tracking)`;
+const PREPAID_OK_EXISTS =
+  `EXISTS (SELECT 1 FROM prepaid_payments pp WHERE pp.order_ref = o.order_id AND ${PREPAID_OK})`;
+
+// Turunkan baldi jujur per order (Completed): mirror maksud CONF_SQL tapi dipecah
+// ikut kaedah bayaran. confirmed_cod ∪ confirmed_prepaid = set "confirmed" CONF_SQL,
+// jadi jumlah botol sepadan dengan lajur confirmed/unconfirmed sedia ada.
+function payBucketCase(): string {
+  return `CASE
+    WHEN ${COD_IN} AND ${COD_LINE_EXISTS} THEN 'confirmed_cod'
+    WHEN ${COD_IN} THEN 'awaiting_cod'
+    WHEN ${PREPAID_IN} AND ${PREPAID_OK_EXISTS} THEN 'confirmed_prepaid'
+    WHEN ${PREPAID_IN} THEN 'awaiting_prepaid'
+    ELSE 'no_feed' END`;
+}
+
+export const PAY_BUCKET_ORDER = [
+  "confirmed_cod", "confirmed_prepaid", "awaiting_cod", "awaiting_prepaid", "no_feed",
+] as const;
+
+export interface PayBucket {
+  bucket: string; orders: number; bottles: number; expected: number;
+  oldestDays: number | null;
+}
+
+const BOTTLES_SUBQ = `COALESCE((SELECT SUM(os.qty * (COALESCE(sb.paid, 0) + COALESCE(sb.free, 0)))
+             FROM order_skus os LEFT JOIN sku_bottles sb ON UPPER(TRIM(sb.sku)) = os.sku
+             WHERE os.order_id = o.order_id), 0)`;
+
+function toBuckets(rows: Record<string, unknown>[]): PayBucket[] {
+  const map = new Map(rows.map((r) => [r.bucket as string, r]));
+  const out: PayBucket[] = [];
+  for (const k of PAY_BUCKET_ORDER) {
+    const r = map.get(k);
+    if (!r) continue;
+    const orders = Number(r.orders);
+    if (!orders) continue;
+    out.push({
+      bucket: k, orders, bottles: toNum(r.bottles), expected: toNum(r.expected),
+      // Aging ikut TODAY (rujukan aging app, 18 Jun 2026); clamp negatif ke 0.
+      oldestDays: r.oldest ? Math.max(0, umurHari(r.oldest as string) ?? 0) : null,
+    });
+  }
+  return out;
+}
+
+// Baldi jujur global (semua stokis, order Completed). Untuk dashboard + page stokis.
+export async function paymentBucketsImpl(): Promise<PayBucket[]> {
+  const res = await getPool().query(`
+    WITH b AS (
+      SELECT o.order_id, o.order_date, o.selling_price,
+             ${payBucketCase()} AS bucket,
+             ${BOTTLES_SUBQ} AS bottles
+      FROM orders o WHERE o.status = 'Completed'
+    )
+    SELECT bucket, COUNT(*) AS orders, COALESCE(SUM(bottles), 0) AS bottles,
+           COALESCE(SUM(selling_price), 0) AS expected, MIN(order_date) AS oldest
+    FROM b GROUP BY bucket`);
+  return toBuckets(res.rows);
+}
+
+// ====================================================================
+// Batch B: semak SKU auto-daftar + heuristik harga/botol rendah. Paparan sahaja,
+// TAK ubah nombor botol mana mana SKU , tolak ke mata owner untuk sahkan.
+// ====================================================================
+export const AUTO_SKU_NOTE = "Auto-added from upload, review bottle counts";
+// Ambang harga/botol "nampak rendah" (RM). Botol jus Arabic Gold di data ~RM32+
+// /botol; di bawah ambang ni = kiraan botol auto mungkin melambung (perlu semak).
+// Boleh tune; ini bendera semak, BUKAN kebenaran.
+export const LOW_PPB_THRESHOLD = 20;
+
+export interface SkuReview {
+  sku: string; product_name: string | null; paid: number; free: number;
+  autoAdded: boolean; pricePerBottle: number | null; sampleOrders: number;
+  lowPrice: boolean;
+}
+
+export async function skuReviewImpl(): Promise<SkuReview[]> {
+  const res = await getPool().query(`
+    SELECT sb.sku, sb.product_name, sb.paid, sb.free, st.ppb, st.n
+    FROM sku_bottles sb
+    LEFT JOIN LATERAL (
+      SELECT AVG(o.selling_price / NULLIF(os.qty * (sb.paid + sb.free), 0)) AS ppb,
+             COUNT(*) AS n
+      FROM orders o JOIN order_skus os ON os.order_id = o.order_id
+      WHERE os.sku = UPPER(TRIM(sb.sku)) AND o.status = 'Completed'
+        AND o.order_id IN (SELECT order_id FROM order_skus GROUP BY order_id HAVING COUNT(*) = 1)
+    ) st ON true
+    WHERE (COALESCE(sb.paid, 0) + COALESCE(sb.free, 0)) > 0
+    ORDER BY sb.sku`);
+  return res.rows.map((r) => {
+    const ppb = r.ppb == null ? null : Math.round(toNum(r.ppb) * 100) / 100;
+    return {
+      sku: r.sku, product_name: r.product_name,
+      paid: toNum(r.paid), free: toNum(r.free),
+      autoAdded: (r.product_name ?? "") === AUTO_SKU_NOTE,
+      pricePerBottle: ppb, sampleOrders: Number(r.n ?? 0),
+      lowPrice: ppb != null && ppb < LOW_PPB_THRESHOLD,
+    };
+  });
+}
 
 export interface StockistRow {
   stockist: string; confirmed_orders: number; paid_bottles: number;
@@ -808,6 +928,7 @@ export interface StockistDetail {
     expected: number; confirmedNet: number; awaiting: number;
     ordersTotal: number; ordersWithFeed: number;
     collectedOnReturned: number; returnedWithMoney: number;
+    buckets: PayBucket[];  // pecahan jujur baldi (Completed, scoped tempoh)
   };
   bottles: { total: number; paid: number; free: number; confirmed: number; unconfirmed: number };
   status: {
@@ -835,7 +956,7 @@ export async function stockistDetail(
   const A = [seller, from, to]; // param set sama untuk semua query order-based
 
   const [money, bottles, statusCounts, lossBottles, comm, commLeak,
-         products, giftsConf, giftsRisk, orders, unmapped] = await Promise.all([
+         products, giftsConf, giftsRisk, orders, unmapped, payBuckets] = await Promise.all([
     // MONEY
     p.query(`
       WITH ord AS (
@@ -967,6 +1088,20 @@ export async function stockistDetail(
         AND LEFT(o.order_date, 10) BETWEEN $2 AND $3
         AND os.sku NOT IN (SELECT UPPER(TRIM(sku)) FROM sku_bottles WHERE sku IS NOT NULL)
       ORDER BY os.sku`, A),
+    // PAY BUCKETS jujur (Completed, scoped stokis+tempoh)
+    p.query(`
+      WITH b AS (
+        SELECT o.order_id, o.order_date, o.selling_price,
+               ${payBucketCase()} AS bucket,
+               ${BOTTLES_SUBQ} AS bottles
+        FROM orders o
+        WHERE o.status = 'Completed'
+          AND COALESCE(o.seller_name, '(no stockist)') = $1
+          AND LEFT(o.order_date, 10) BETWEEN $2 AND $3
+      )
+      SELECT bucket, COUNT(*) AS orders, COALESCE(SUM(bottles), 0) AS bottles,
+             COALESCE(SUM(selling_price), 0) AS expected, MIN(order_date) AS oldest
+      FROM b GROUP BY bucket`, A),
   ]);
 
   const m = money.rows[0], b = bottles.rows[0], sc = statusCounts.rows[0];
@@ -983,6 +1118,7 @@ export async function stockistDetail(
       ordersWithFeed: toNum(m.orders_with_feed),
       collectedOnReturned: toNum(m.collected_on_returned),
       returnedWithMoney: toNum(m.returned_with_money),
+      buckets: toBuckets(payBuckets.rows),
     },
     bottles: {
       total: toNum(b.total), paid: toNum(b.paid), free: toNum(b.free),
@@ -1059,3 +1195,5 @@ export const commissionSummary = unstable_cache(commissionSummaryImpl, ["commiss
 export const skuGiftsList = unstable_cache(skuGiftsListImpl, ["skuGiftsList"], RECON_CACHE);
 export const giftCostSummary = unstable_cache(giftCostSummaryImpl, ["giftCostSummary"], RECON_CACHE);
 export const stockistGifts = unstable_cache(stockistGiftsImpl, ["stockistGifts"], RECON_CACHE);
+export const paymentBuckets = unstable_cache(paymentBucketsImpl, ["paymentBuckets"], RECON_CACHE);
+export const skuReview = unstable_cache(skuReviewImpl, ["skuReview"], RECON_CACHE);

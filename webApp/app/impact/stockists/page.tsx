@@ -1,8 +1,9 @@
 import Link from "next/link";
-import { stockistBottles, stockistGifts, storeCounts } from "@/lib/recon";
+import { stockistBottles, stockistGifts, storeCounts, paymentBuckets } from "@/lib/recon";
 import { fmtInt, fmtRM } from "@/lib/format";
 import ExportCsv from "@/components/ExportCsv";
 import StockistModal from "@/components/StockistModal";
+import PaymentBuckets from "@/components/PaymentBuckets";
 
 const BOTTLE_COLS = [
   { key: "stockist", header: "Stockist" },
@@ -33,7 +34,9 @@ export default async function StockistsPage(
     );
   }
 
-  const [rows, giftsRaw] = await Promise.all([stockistBottles(), stockistGifts()]);
+  const [rows, giftsRaw, buckets] = await Promise.all([
+    stockistBottles(), stockistGifts(), paymentBuckets(),
+  ]);
   // Kumpul gift ikut stokis: chip (nama x qty) + total kos. Query berasingan
   // (tak fan-out kiraan botol), digabung di sini ikut nama stokis.
   const giftMap = new Map<string, { gifts: { name: string; qty: number }[]; cost: number }>();
@@ -68,7 +71,8 @@ export default async function StockistsPage(
         </div>
         <p className="pageSub" style={{ marginTop: 2 }}>
           Confirmed: <b>{fmtInt(totBottles)}</b> bottles ({fmtInt(totFree)} free) across{" "}
-          {rows.length} stockists. Awaiting payment confirmation: {fmtInt(totUnconfirmed)} bottles.
+          {rows.length} stockists. Not yet confirmed: {fmtInt(totUnconfirmed)} bottles , see the
+          honest breakdown below (awaiting COD remittance, awaiting prepaid statement, no feed).
           Giveaway cost (confirmed): <b>{fmtRM(totGiftCost)}</b>. Bottles &amp; gift cost count
           across all couriers, only for Completed orders whose money is confirmed.
         </p>
@@ -128,6 +132,9 @@ export default async function StockistsPage(
           </table>
         </div>
       </div>
+
+      <PaymentBuckets buckets={buckets}
+        title="Where the not-yet-confirmed bottles sit" showBottles />
 
       {picked && <StockistModal stockist={picked} />}
 

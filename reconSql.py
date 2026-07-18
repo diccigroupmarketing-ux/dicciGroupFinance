@@ -423,9 +423,16 @@ def bill_parcels(conn, kind, key, pending_days, bill_id, cap=BILL_CAP):
 # ====================================================================
 # Botol per stokis (semua courier + payment; confirmed via feed duit)
 # ====================================================================
-CONF_SQL = """
+# Prepaid confirmed = ada baris prepaid untuk order ni, TAPI hanya bila status
+# berjaya DAN amount > 0 (mirror db.confirmed_paid_order_ids / db.PREPAID_SUCCESS_STATUS).
+# Sekadar wujud TAK cukup , elak bocor tersorok bila CHIP diaktifkan nanti.
+_PREPAID_OK = ("pp.amount > 0 AND LOWER(TRIM(pp.status)) IN "
+               "('paid','success','successful','completed','settled','cleared','captured')")
+
+CONF_SQL = f"""
     CASE WHEN EXISTS (SELECT 1 FROM cod_bill_lines cl WHERE cl.awb = o.tracking)
-           OR EXISTS (SELECT 1 FROM prepaid_payments pp WHERE pp.order_ref = o.order_id)
+           OR EXISTS (SELECT 1 FROM prepaid_payments pp WHERE pp.order_ref = o.order_id
+                      AND {_PREPAID_OK})
          THEN 1 ELSE 0 END
 """
 

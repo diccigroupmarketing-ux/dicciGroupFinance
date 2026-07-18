@@ -1,8 +1,9 @@
-import { COURIERS, StreamKey, streamSummary, storeCounts, lastIngest, giftCostSummary } from "@/lib/recon";
+import { COURIERS, StreamKey, streamSummary, storeCounts, lastIngest, giftCostSummary, paymentBuckets } from "@/lib/recon";
 import { fmtDate, fmtInt, fmtRM, GRAIN_LABEL, groupByGrain, parseGrain } from "@/lib/format";
 import { Chip } from "@/components/Chip";
 import GrainSwitcher from "@/components/GrainSwitcher";
 import WeeklyChart from "@/components/WeeklyChart";
+import PaymentBuckets from "@/components/PaymentBuckets";
 import Link from "next/link";
 
 export const dynamic = "force-dynamic";
@@ -13,8 +14,8 @@ export default async function Dashboard(
   { searchParams }: { searchParams: Promise<{ grain?: string }> },
 ) {
   const grain = parseGrain((await searchParams).grain);
-  const [counts, asOf, gift] = await Promise.all([
-    storeCounts(), lastIngest(), giftCostSummary(),
+  const [counts, asOf, gift, buckets] = await Promise.all([
+    storeCounts(), lastIngest(), giftCostSummary(), paymentBuckets(),
   ]);
 
   if (counts.orders === 0) {
@@ -186,6 +187,8 @@ export default async function Dashboard(
           )}
         </div>
       </div>
+
+      <PaymentBuckets buckets={buckets} title="Payment confirmation · all Completed orders" showBottles />
 
       <div className="footNote">
         Data: Neon Postgres <span className="sep">·</span> reconciliation runs in SQL

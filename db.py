@@ -98,6 +98,15 @@ PREPAID = {
     "chip": {"name": "CHIP", "methods": {"CHIP"}},
 }
 
+# Status baris prepaid yang dikira "duit betul betul masuk". Sekadar wujud dalam
+# prepaid_payments TAK cukup untuk sahkan bayaran (baris pending/gagal/RM0 tak
+# boleh mengesahkan). Confirmed prepaid = status dalam set ni DAN amount > 0.
+# NOTA (perlu sahkan owner): nilai sebenar lajur Status fail CHIP belum dilihat;
+# set ni heuristik defensif (ejaan berjaya biasa), laraskan bila fail CHIP sebenar
+# masuk. Semua perbandingan lower()+trim().
+PREPAID_SUCCESS_STATUS = {"paid", "success", "successful", "completed",
+                          "settled", "cleared", "captured"}
+
 
 def to_records(df: pd.DataFrame):
     """DataFrame -> list of dict, NaN/NaT jadi None, numpy scalar jadi native Python.
@@ -431,8 +440,18 @@ def confirmed_paid_order_ids(conn):
     awb = set(pd.read_sql(text("SELECT awb FROM cod_bill_lines"), conn)["awb"].dropna())
     od = pd.read_sql(text("SELECT order_id, tracking FROM orders"), conn)
     cod_ids = set(od.loc[od["tracking"].isin(awb), "order_id"])
-    # Prepaid (CHIP / online transfer): padan ikut order_ref = order_id.
-    prepaid = set(pd.read_sql(text("SELECT order_ref FROM prepaid_payments"), conn)["order_ref"].dropna())
+    # Prepaid (CHIP / online transfer): padan ikut order_ref = order_id, TAPI hanya
+    # bila baris menunjukkan berjaya (status dalam PREPAID_SUCCESS_STATUS) DAN
+    # amount > 0. Sekadar order_ref wujud TAK cukup , baris pending/gagal/RM0 tak
+    # boleh mengesahkan duit masuk (elak bocor tersorok bila CHIP diaktifkan nanti).
+    pp = pd.read_sql(text("SELECT order_ref, amount, status FROM prepaid_payments"), conn)
+    if len(pp):
+        amt = pd.to_numeric(pp["amount"], errors="coerce").fillna(0)
+        stat = pp["status"].astype(str).str.strip().str.lower()
+        ok = (amt > 0) & stat.isin(PREPAID_SUCCESS_STATUS)
+        prepaid = set(pp.loc[ok, "order_ref"].dropna())
+    else:
+        prepaid = set()
     return cod_ids | prepaid
 
 

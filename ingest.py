@@ -512,8 +512,9 @@ PREPAID_UPSERT = text("""
 
 def _num(v):
     # Terima juga teks berformat statement: "RM 51.90" dan "(10.00)" (kurungan =
-    # negatif, notasi perakaunan). Kalau tak, nilai jadi 0.0 senyap tapi order
-    # tetap ditanda confirmed paid.
+    # negatif, notasi perakaunan). Fallback 0.0 (dipakai untuk fee: fee hilang =
+    # 0 munasabah). JANGAN guna untuk amount yang menentukan confirmed (guna
+    # _amount_or_none supaya parse gagal tak jadi RM0 disahkan senyap).
     s = str(v).replace(",", "").strip()
     neg = s.startswith("(") and s.endswith(")")
     if neg:
@@ -523,6 +524,25 @@ def _num(v):
         n = float(s)
     except Exception:
         return 0.0
+    return -n if neg else n
+
+
+def _amount_or_none(v):
+    # Untuk laluan yang MENENTUKAN confirmed (amount prepaid): parse gagal ->
+    # None (NULL), BUKAN 0.0 senyap. Baris amount NULL tak akan auto-confirmed
+    # (confirmed perlu amount > 0), jadi ia jatuh ke "perlu semak", bukan
+    # "RM0 disahkan". Format sama _num (RM, koma, kurungan negatif).
+    s = str(v).replace(",", "").strip()
+    if s == "" or s.lower() in ("nan", "none"):
+        return None
+    neg = s.startswith("(") and s.endswith(")")
+    if neg:
+        s = s[1:-1].strip()
+    s = re.sub(r"(?i)^rm\s*", "", s).strip()
+    try:
+        n = float(s)
+    except Exception:
+        return None
     return -n if neg else n
 
 
@@ -570,6 +590,12 @@ def ingest_chip(df, source_file, conn):
     # Hanya baris 'purchase' = bayaran pelanggan masuk (disbursement diparkir).
     df = df[df[C_TYPE].astype(str).str.lower() == "purchase"].copy()
     df = df[df[C_REF].notna()]
+    # Hanya baris status BERJAYA: prepaid pending/gagal belum sahkan duit masuk,
+    # jangan simpan sebagai bukti bayaran (elak order ditanda confirmed atas
+    # bayaran yang belum jadi). Bila settle nanti, re-upload tangkap (idempotent).
+    if C_STATUS in df.columns:
+        df = df[df[C_STATUS].astype(str).str.strip().str.lower()
+                .isin(db.PREPAID_SUCCESS_STATUS)]
     df["order_ref"] = df[C_REF].astype(str).str.replace("FIGHTER-", "", regex=False).str.strip()
     df = df[df["order_ref"].astype(bool) & (df["order_ref"].str.lower() != "nan")]
     stmt_id = _chip_stmt_id(source_file)
@@ -578,7 +604,7 @@ def ingest_chip(df, source_file, conn):
         recs.append({
             "gateway": "chip",
             "order_ref": r["order_ref"],
-            "amount": _num(r.get(C_AMOUNT)),
+            "amount": _amount_or_none(r.get(C_AMOUNT)),
             "fee": _num(r.get(C_FEE)),
             "status": _txt(r.get(C_STATUS)),
             "paid_on": _chip_dt(r.get(C_PAID)),

@@ -46,6 +46,16 @@ const Warn = () => (
     <path d="M10 7v4m0 3h.01M10 2.5 18 16H2z" /></svg>
 );
 
+// Baldi jujur (paparan): label + nada, diturunkan dari payment_method + feed.
+const BUCKET_META: Record<string, { label: string; chip: string }> = {
+  confirmed_cod: { label: "Confirmed COD", chip: "chipPos" },
+  confirmed_prepaid: { label: "Confirmed prepaid (CHIP)", chip: "chipPos" },
+  awaiting_cod: { label: "Awaiting COD remittance", chip: "chipCau" },
+  awaiting_prepaid: { label: "Awaiting prepaid statement", chip: "chipCau" },
+  no_feed: { label: "No feed · cannot verify", chip: "chipDan" },
+};
+const CONFIRMED_BUCKETS = new Set(["confirmed_cod", "confirmed_prepaid"]);
+
 export default function StockistModal({ stockist }: { stockist: string }) {
   const router = useRouter();
   const [mounted, setMounted] = useState(false);
@@ -177,6 +187,30 @@ export default function StockistModal({ stockist }: { stockist: string }) {
                   <span className="stkTrack"><i style={{ width: `${pct(m.ordersWithFeed, m.ordersTotal)}%` }} /></span>
                   <span><b style={{ color: "var(--inkStrong)" }}>{fmtInt(m.ordersWithFeed)} of {fmtInt(m.ordersTotal)}</b> orders</span>
                 </div>
+                {m.buckets.length > 0 && (
+                  <div className="stkBuckets">
+                    <div className="stkBucketsHead">Honest breakdown (Completed orders)</div>
+                    {m.buckets.map((bk) => {
+                      const meta = BUCKET_META[bk.bucket] ?? { label: bk.bucket, chip: "chipMut" };
+                      const conf = CONFIRMED_BUCKETS.has(bk.bucket);
+                      return (
+                        <div className="stkBucketRow" key={bk.bucket}>
+                          <span className={"chip " + meta.chip}><span className="cdot" /> {meta.label}</span>
+                          <span className="stkBucketMeta">
+                            {fmtInt(bk.orders)} order{bk.orders === 1 ? "" : "s"} · RM {rmv(bk.expected)}
+                            {!conf && bk.oldestDays != null && (
+                              <span className="stkBucketAge"> · {fmtInt(bk.oldestDays)}d oldest</span>
+                            )}
+                          </span>
+                        </div>
+                      );
+                    })}
+                    <div className="stkNote" style={{ marginTop: 6 }}>
+                      Prepaid is paid at checkout , &quot;awaiting prepaid statement&quot; auto-confirms
+                      when the CHIP statement is uploaded, not leaked money.
+                    </div>
+                  </div>
+                )}
                 {m.collectedOnReturned > 0 && (
                   <div className="stkLeak"><Warn />
                     <div><b>Watch · RM {rmv(m.collectedOnReturned)} collected on {fmtInt(m.returnedWithMoney)} Returned order{m.returnedWithMoney === 1 ? "" : "s"}.</b> Money came in for returned orders , confirm the refund path or possible leak.</div>

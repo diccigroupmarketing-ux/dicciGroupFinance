@@ -34,7 +34,11 @@ JNT_PROVIDER = {"J&T Express"}
 COMPLETED, RETURNED, REJECTED, IN_TRANSIT = "Completed", "Returned", "Rejected", "In Transit"
 
 REMIT_PENDING_DAYS = 14
-TODAY = pd.Timestamp("2026-06-18")
+# TODAY default = tarikh sebenar hari ini supaya pengesan aging (hilang_lewat)
+# bergerak dengan masa. Untuk run baseline deterministik, beku via env
+# RECON_TODAY (contoh RECON_TODAY="2026-06-18").
+_today_env = os.environ.get("RECON_TODAY")
+TODAY = pd.Timestamp(_today_env) if _today_env else pd.Timestamp.now().normalize()
 
 # Handshake untuk guard self-heal app.py (kesan proses lama selepas deploy tanpa
 # restart). TAK perlu bump untuk deploy biasa, mtime fail yang jaga tu; nilai ni
@@ -93,6 +97,15 @@ COURIERS = {
 PREPAID = {
     "chip": {"name": "CHIP", "methods": {"CHIP"}},
 }
+
+# Status baris prepaid yang dikira "duit betul betul masuk". Sekadar wujud dalam
+# prepaid_payments TAK cukup untuk sahkan bayaran (baris pending/gagal/RM0 tak
+# boleh mengesahkan). Confirmed prepaid = status dalam set ni DAN amount > 0.
+# NOTA (perlu sahkan owner): nilai sebenar lajur Status fail CHIP belum dilihat;
+# set ni heuristik defensif (ejaan berjaya biasa), laraskan bila fail CHIP sebenar
+# masuk. Semua perbandingan lower()+trim().
+PREPAID_SUCCESS_STATUS = {"paid", "success", "successful", "completed",
+                          "settled", "cleared", "captured"}
 
 
 def to_records(df: pd.DataFrame):
@@ -427,8 +440,18 @@ def confirmed_paid_order_ids(conn):
     awb = set(pd.read_sql(text("SELECT awb FROM cod_bill_lines"), conn)["awb"].dropna())
     od = pd.read_sql(text("SELECT order_id, tracking FROM orders"), conn)
     cod_ids = set(od.loc[od["tracking"].isin(awb), "order_id"])
-    # Prepaid (CHIP / online transfer): padan ikut order_ref = order_id.
-    prepaid = set(pd.read_sql(text("SELECT order_ref FROM prepaid_payments"), conn)["order_ref"].dropna())
+    # Prepaid (CHIP / online transfer): padan ikut order_ref = order_id, TAPI hanya
+    # bila baris menunjukkan berjaya (status dalam PREPAID_SUCCESS_STATUS) DAN
+    # amount > 0. Sekadar order_ref wujud TAK cukup , baris pending/gagal/RM0 tak
+    # boleh mengesahkan duit masuk (elak bocor tersorok bila CHIP diaktifkan nanti).
+    pp = pd.read_sql(text("SELECT order_ref, amount, status FROM prepaid_payments"), conn)
+    if len(pp):
+        amt = pd.to_numeric(pp["amount"], errors="coerce").fillna(0)
+        stat = pp["status"].astype(str).str.strip().str.lower()
+        ok = (amt > 0) & stat.isin(PREPAID_SUCCESS_STATUS)
+        prepaid = set(pp.loc[ok, "order_ref"].dropna())
+    else:
+        prepaid = set()
     return cod_ids | prepaid
 
 
