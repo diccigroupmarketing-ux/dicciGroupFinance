@@ -530,28 +530,87 @@ export const PAY_BUCKET_ORDER = [
   "confirmed_cod", "confirmed_prepaid", "awaiting_cod", "awaiting_prepaid", "no_feed",
 ] as const;
 
+// Pecahan per kurier untuk baldi COD (J&T / DHL / Ninja Van). Diisi server-side
+// HANYA untuk baldi COD; baldi prepaid/no_feed kekal byCourier undefined.
+export interface PayBucketCourier {
+  provider: string; orders: number; expected: number; bottles: number;
+  oldestDays: number | null;
+}
+
 export interface PayBucket {
   bucket: string; orders: number; bottles: number; expected: number;
   oldestDays: number | null;
+  byCourier?: PayBucketCourier[];
 }
+
+// Baldi COD sahaja yang layak dipecah per kurier. Baldi prepaid (CHIP) dan
+// no_feed (Bank Transfer) = satu provider, tiada pecahan.
+const COD_BUCKET_KEYS = new Set(["confirmed_cod", "awaiting_cod"]);
 
 const BOTTLES_SUBQ = `COALESCE((SELECT SUM(os.qty * (COALESCE(sb.paid, 0) + COALESCE(sb.free, 0)))
              FROM order_skus os LEFT JOIN sku_bottles sb ON UPPER(TRIM(sb.sku)) = os.sku
              WHERE os.order_id = o.order_id), 0)`;
 
+// Aging ikut TODAY (rujukan aging app, 18 Jun 2026); clamp negatif ke 0.
+function agingDays(oldest: string | null): number | null {
+  return oldest ? Math.max(0, umurHari(oldest) ?? 0) : null;
+}
+
+// MIN dua tarikh string "YYYY-MM-DD..." (perbandingan leksikografik = kronologi).
+function minDate(a: string | null, b: string | null): string | null {
+  if (!a) return b;
+  if (!b) return a;
+  return a < b ? a : b;
+}
+
+// Fold baris (bucket, shipping_provider, ...) jadi jumlah baldi + sub-array per
+// kurier. Jumlah baldi = SUM merentas provider (identik dengan GROUP BY bucket
+// sahaja, jadi total kekal sama sebelum vs selepas). byCourier diisi HANYA untuk
+// baldi COD; provider NULL dikumpul di bawah "(no courier)" supaya
+// sum(byCourier) === jumlah baldi tetap terpelihara.
+type Acc = { orders: number; bottles: number; expected: number; oldest: string | null };
+function bump(a: Acc, orders: number, bottles: number, expected: number, oldest: string | null) {
+  a.orders += orders; a.bottles += bottles; a.expected += expected;
+  a.oldest = minDate(a.oldest, oldest);
+}
+
 function toBuckets(rows: Record<string, unknown>[]): PayBucket[] {
-  const map = new Map(rows.map((r) => [r.bucket as string, r]));
-  const out: PayBucket[] = [];
-  for (const k of PAY_BUCKET_ORDER) {
-    const r = map.get(k);
-    if (!r) continue;
+  const byBucket = new Map<string, Acc & { providers: Map<string, Acc> }>();
+  for (const r of rows) {
     const orders = Number(r.orders);
     if (!orders) continue;
-    out.push({
-      bucket: k, orders, bottles: toNum(r.bottles), expected: toNum(r.expected),
-      // Aging ikut TODAY (rujukan aging app, 18 Jun 2026); clamp negatif ke 0.
-      oldestDays: r.oldest ? Math.max(0, umurHari(r.oldest as string) ?? 0) : null,
-    });
+    const bucket = r.bucket as string;
+    const bottles = toNum(r.bottles);
+    const expected = toNum(r.expected);
+    const oldest = (r.oldest as string | null) ?? null;
+    let e = byBucket.get(bucket);
+    if (!e) {
+      e = { orders: 0, bottles: 0, expected: 0, oldest: null, providers: new Map() };
+      byBucket.set(bucket, e);
+    }
+    bump(e, orders, bottles, expected, oldest);
+    const prov = (r.shipping_provider as string | null) ?? "(no courier)";
+    let pe = e.providers.get(prov);
+    if (!pe) { pe = { orders: 0, bottles: 0, expected: 0, oldest: null }; e.providers.set(prov, pe); }
+    bump(pe, orders, bottles, expected, oldest);
+  }
+  const out: PayBucket[] = [];
+  for (const k of PAY_BUCKET_ORDER) {
+    const e = byBucket.get(k);
+    if (!e || !e.orders) continue;
+    const bkt: PayBucket = {
+      bucket: k, orders: e.orders, bottles: e.bottles, expected: e.expected,
+      oldestDays: agingDays(e.oldest),
+    };
+    if (COD_BUCKET_KEYS.has(k)) {
+      bkt.byCourier = [...e.providers.entries()]
+        .map(([provider, pv]) => ({
+          provider, orders: pv.orders, expected: pv.expected,
+          bottles: pv.bottles, oldestDays: agingDays(pv.oldest),
+        }))
+        .sort((a, b) => b.orders - a.orders || a.provider.localeCompare(b.provider));
+    }
+    out.push(bkt);
   }
   return out;
 }
@@ -560,14 +619,15 @@ function toBuckets(rows: Record<string, unknown>[]): PayBucket[] {
 export async function paymentBucketsImpl(): Promise<PayBucket[]> {
   const res = await getPool().query(`
     WITH b AS (
-      SELECT o.order_id, o.order_date, o.selling_price,
+      SELECT o.order_id, o.order_date, o.selling_price, o.shipping_provider,
              ${payBucketCase()} AS bucket,
              ${BOTTLES_SUBQ} AS bottles
       FROM orders o WHERE o.status = 'Completed'
     )
-    SELECT bucket, COUNT(*) AS orders, COALESCE(SUM(bottles), 0) AS bottles,
+    SELECT bucket, shipping_provider, COUNT(*) AS orders,
+           COALESCE(SUM(bottles), 0) AS bottles,
            COALESCE(SUM(selling_price), 0) AS expected, MIN(order_date) AS oldest
-    FROM b GROUP BY bucket`);
+    FROM b GROUP BY bucket, shipping_provider`);
   return toBuckets(res.rows);
 }
 
@@ -1091,7 +1151,7 @@ export async function stockistDetail(
     // PAY BUCKETS jujur (Completed, scoped stokis+tempoh)
     p.query(`
       WITH b AS (
-        SELECT o.order_id, o.order_date, o.selling_price,
+        SELECT o.order_id, o.order_date, o.selling_price, o.shipping_provider,
                ${payBucketCase()} AS bucket,
                ${BOTTLES_SUBQ} AS bottles
         FROM orders o
@@ -1099,9 +1159,10 @@ export async function stockistDetail(
           AND COALESCE(o.seller_name, '(no stockist)') = $1
           AND LEFT(o.order_date, 10) BETWEEN $2 AND $3
       )
-      SELECT bucket, COUNT(*) AS orders, COALESCE(SUM(bottles), 0) AS bottles,
+      SELECT bucket, shipping_provider, COUNT(*) AS orders,
+             COALESCE(SUM(bottles), 0) AS bottles,
              COALESCE(SUM(selling_price), 0) AS expected, MIN(order_date) AS oldest
-      FROM b GROUP BY bucket`, A),
+      FROM b GROUP BY bucket, shipping_provider`, A),
   ]);
 
   const m = money.rows[0], b = bottles.rows[0], sc = statusCounts.rows[0];

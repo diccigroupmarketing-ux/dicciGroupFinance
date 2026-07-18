@@ -10,6 +10,7 @@
   --pos:#1E7A5E; --posText:#155C46; --posBg:#E4F0EA;
   --cau:#8A6D2A; --cauBg:#F7EFD9;
   --dan:#A8312A; --danText:#8A2722; --danBg:#F7E7E4;
+  --info:#3A5AA8; --infoText:#2C4788; --infoBg:#E9EDF9; /* prepaid / CHIP channel */
   --display:var(--fontDisplay),'Hoefler Text',Georgia,serif;
   --body:var(--fontBody),-apple-system,'Segoe UI',sans-serif;
   --shadow:0 1px 2px rgba(10,61,69,.05),0 8px 24px -12px rgba(10,61,69,.14);
@@ -306,6 +307,19 @@ th.num{text-align:right}
 .chipDan .cdot{background:var(--dan)}
 .chipMut{background:var(--sunken);color:var(--muted)}
 .chipMut .cdot{background:var(--faint)}
+.chipInfo{background:var(--infoBg);color:var(--infoText)}
+.chipInfo .cdot{background:var(--info)}
+
+/* ---------- payment-channel tags (opt-in via NEXT_PUBLIC_SHOW_PAYTAGS) ---------- */
+.paytag{
+  display:inline-flex;align-items:center;border-radius:999px;
+  font-size:10px;font-weight:800;letter-spacing:.04em;text-transform:uppercase;
+  padding:2px 7px;margin-left:7px;vertical-align:middle;
+  border:1px solid transparent;white-space:nowrap;
+}
+.paytagCod{background:var(--posBg);color:var(--posText);border-color:#CBE3D6}
+.paytagChip{background:var(--infoBg);color:var(--infoText);border-color:#CBD4EE}
+.paytagBank{background:var(--sunken);color:var(--muted);border-color:var(--border)}
 
 /* ---------- free gift editor + chips ---------- */
 .giftChips{display:flex;flex-wrap:wrap;gap:5px}
@@ -612,3 +626,31 @@ th.num{text-align:right}
 .stkBucketRow{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:5px 0;flex-wrap:wrap}
 .stkBucketMeta{font-size:12.5px;color:var(--ink);font-variant-numeric:tabular-nums}
 .stkBucketAge{color:var(--cauText,#8a6d1a);font-weight:600}
+.stkBucketLabel{display:inline-flex;align-items:center;gap:6px}
+.stkBucketRow.expandable{cursor:pointer;border-radius:7px;margin:0 -6px;padding-left:6px;padding-right:6px;transition:background .12s}
+.stkBucketRow.expandable:hover{background:var(--sunken)}
+.stkBucketCaret{color:var(--muted);transition:transform .15s;flex:none}
+.stkBucketRow.open .stkBucketCaret{transform:rotate(90deg)}
+
+/* ---------- pecahan per kurier (accordion body dikongsi) ---------- */
+.courierBreak{
+  display:flex;flex-direction:column;gap:0;margin:4px 0 6px;padding:6px 11px;
+  background:var(--sunken);border-radius:8px;border:1px solid var(--border);
+}
+.courierBreakRow{
+  display:flex;align-items:center;justify-content:space-between;gap:10px;
+  padding:6px 0;flex-wrap:wrap;
+}
+.courierBreakRow + .courierBreakRow{border-top:1px solid var(--border)}
+.courierBreakName{font-size:12px;font-weight:700;color:var(--inkStrong)}
+.courierBreakMeta{font-size:12px;color:var(--ink);font-variant-numeric:tabular-nums}
+.courierBreakAge{color:var(--cauText,#8a6d1a);font-weight:600}
+
+/* ---------- baldi COD boleh buka (dashboard PaymentBuckets) ---------- */
+.bktRow.expandable{cursor:pointer}
+.bktLead{display:flex;align-items:center;gap:7px}
+.bktCaret{color:var(--muted);transition:transform .15s;flex:none}
+.bktRow.open .bktCaret{transform:rotate(90deg)}
+.bktBreakHint{color:var(--faint)}
+.bktSubRow:hover{background:transparent}
+.bktSubRow td.bktSubCell{padding:2px 10px 10px 10px;background:var(--card)}

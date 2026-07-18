@@ -72,7 +72,7 @@ export default async function StockistsPage(
         <p className="pageSub" style={{ marginTop: 2 }}>
           Confirmed: <b>{fmtInt(totBottles)}</b> bottles ({fmtInt(totFree)} free) across{" "}
           {rows.length} stockists. Not yet confirmed: {fmtInt(totUnconfirmed)} bottles , see the
-          honest breakdown below (awaiting COD remittance, awaiting prepaid statement, no feed).
+          honest breakdown below (awaiting COD remittance, awaiting CHIP statement, no feed).
           Giveaway cost (confirmed): <b>{fmtRM(totGiftCost)}</b>. Bottles &amp; gift cost count
           across all couriers, only for Completed orders whose money is confirmed.
         </p>

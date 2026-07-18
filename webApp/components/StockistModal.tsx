@@ -8,6 +8,7 @@ import { useRouter } from "next/navigation";
 import type { StockistDetail } from "@/lib/recon";
 import { fmtDate, fmtInt, fmtRM } from "@/lib/format";
 import ExportCsv from "@/components/ExportCsv";
+import CourierBreakdown, { canBreakdown } from "@/components/CourierBreakdown";
 
 const ORDER_COLS = [
   { key: "order_id", header: "Order" }, { key: "order_date", header: "Date" },
@@ -47,14 +48,24 @@ const Warn = () => (
 );
 
 // Baldi jujur (paparan): label + nada, diturunkan dari payment_method + feed.
+// CHIP (prepaid) diberi famili indigo supaya jelas beza dari COD (hijau/amber).
 const BUCKET_META: Record<string, { label: string; chip: string }> = {
   confirmed_cod: { label: "Confirmed COD", chip: "chipPos" },
-  confirmed_prepaid: { label: "Confirmed prepaid (CHIP)", chip: "chipPos" },
+  confirmed_prepaid: { label: "Confirmed prepaid (CHIP)", chip: "chipInfo" },
   awaiting_cod: { label: "Awaiting COD remittance", chip: "chipCau" },
-  awaiting_prepaid: { label: "Awaiting prepaid statement", chip: "chipCau" },
+  awaiting_prepaid: { label: "Awaiting CHIP statement", chip: "chipInfo" },
   no_feed: { label: "No feed · cannot verify", chip: "chipDan" },
 };
 const CONFIRMED_BUCKETS = new Set(["confirmed_cod", "confirmed_prepaid"]);
+
+// Tag saluran bayaran per baris baldi (sentiasa on, behavior prod).
+const PAY_TAG: Record<string, { text: string; cls: string }> = {
+  confirmed_cod: { text: "COD", cls: "paytagCod" },
+  awaiting_cod: { text: "COD", cls: "paytagCod" },
+  confirmed_prepaid: { text: "CHIP", cls: "paytagChip" },
+  awaiting_prepaid: { text: "CHIP", cls: "paytagChip" },
+  no_feed: { text: "Bank Transfer", cls: "paytagBank" },
+};
 
 export default function StockistModal({ stockist }: { stockist: string }) {
   const router = useRouter();
@@ -64,6 +75,8 @@ export default function StockistModal({ stockist }: { stockist: string }) {
   const [data, setData] = useState<StockistDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
+  // Accordion baldi COD: buka satu pada satu masa (default tutup).
+  const [openBucket, setOpenBucket] = useState<string | null>(null);
 
   useEffect(() => setMounted(true), []);
 
@@ -193,20 +206,46 @@ export default function StockistModal({ stockist }: { stockist: string }) {
                     {m.buckets.map((bk) => {
                       const meta = BUCKET_META[bk.bucket] ?? { label: bk.bucket, chip: "chipMut" };
                       const conf = CONFIRMED_BUCKETS.has(bk.bucket);
+                      const expandable = canBreakdown(bk);
+                      const isOpen = openBucket === bk.bucket;
                       return (
-                        <div className="stkBucketRow" key={bk.bucket}>
-                          <span className={"chip " + meta.chip}><span className="cdot" /> {meta.label}</span>
-                          <span className="stkBucketMeta">
-                            {fmtInt(bk.orders)} order{bk.orders === 1 ? "" : "s"} · RM {rmv(bk.expected)}
-                            {!conf && bk.oldestDays != null && (
-                              <span className="stkBucketAge"> · {fmtInt(bk.oldestDays)}d oldest</span>
-                            )}
-                          </span>
+                        <div key={bk.bucket}>
+                          <div
+                            className={"stkBucketRow" + (expandable ? " expandable" : "") + (isOpen ? " open" : "")}
+                            onClick={expandable ? () => setOpenBucket(isOpen ? null : bk.bucket) : undefined}
+                            role={expandable ? "button" : undefined}
+                            aria-expanded={expandable ? isOpen : undefined}
+                            tabIndex={expandable ? 0 : undefined}
+                            onKeyDown={expandable ? (e) => {
+                              if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setOpenBucket(isOpen ? null : bk.bucket); }
+                            } : undefined}
+                          >
+                            <span className="stkBucketLabel">
+                              {expandable && (
+                                <svg className="stkBucketCaret" width="11" height="11" viewBox="0 0 16 16" fill="none"
+                                  stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"
+                                  aria-hidden="true"><path d="M6 4l4 4-4 4" /></svg>
+                              )}
+                              <span className={"chip " + meta.chip}><span className="cdot" /> {meta.label}</span>
+                              {PAY_TAG[bk.bucket] && (
+                                <span className={"paytag " + PAY_TAG[bk.bucket].cls}>{PAY_TAG[bk.bucket].text}</span>
+                              )}
+                            </span>
+                            <span className="stkBucketMeta">
+                              {fmtInt(bk.orders)} order{bk.orders === 1 ? "" : "s"} · RM {rmv(bk.expected)}
+                              {!conf && bk.oldestDays != null && (
+                                <span className="stkBucketAge"> · {fmtInt(bk.oldestDays)}d oldest</span>
+                              )}
+                            </span>
+                          </div>
+                          {expandable && isOpen && (
+                            <CourierBreakdown items={bk.byCourier!} showAging={!conf} />
+                          )}
                         </div>
                       );
                     })}
                     <div className="stkNote" style={{ marginTop: 6 }}>
-                      Prepaid is paid at checkout , &quot;awaiting prepaid statement&quot; auto-confirms
+                      Prepaid is paid at checkout , &quot;awaiting CHIP statement&quot; auto-confirms
                       when the CHIP statement is uploaded, not leaked money.
                     </div>
                   </div>
