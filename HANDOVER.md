@@ -3,11 +3,12 @@
 Tarikh mula: 2026-06-18
 
 ## Status
-- progress: Fasa 1 pada dasarnya siap. WebApp Next.js LIVE di Vercel (diccigroupfinance.vercel.app), terkunci belakang Clerk auth (allowlist), cover 100% view Streamlit lama. Ciri terkini: auto-daftar SKU masa upload Fighter + page Uploads (delete per fail, dua langkah confirm) + amaran SKU unmapped dalam popup stokis (sesi 9 Jul). Finance DAH upload data sebenar (561 order, 2 bil J&T); 16 SKU live perlu masuk katalog di prod (re-upload fail Orders sama selepas deploy, atau run backfillAutoSkus.py dengan URL Neon).
+- progress: Fasa 1 pada dasarnya siap. WebApp Next.js LIVE di Vercel (diccigroupfinance.vercel.app), terkunci belakang Clerk auth (allowlist), cover 100% view Streamlit lama. Ciri terkini (19 Jul): "honest breakdown" baldi bayaran (pecah baldi kabur "unconfirmed" jadi baldi jujur: Confirmed COD/prepaid, Awaiting COD/prepaid statement, No payment feed) + accordion pecahan per-kurier + label CHIP jelas + paytag pill, SEMUA LIVE. Finance DAH upload data sebenar (561 order, 2 bil J&T); 16 SKU live perlu masuk katalog di prod (re-upload fail Orders sama selepas deploy, atau run backfillAutoSkus.py dengan URL Neon).
 - fasa: WebApp Next.js production LIVE, mod handoff data-safe (prod Neon suci, semua ubah suai diuji atas dev DB dulu). Streamlit lama kekal hidup sebagai backup pasif (soft-retire, tak jadi delete).
-- seterusnya: (1) Rotate kredential Neon = GATE terakhir sebelum jemput finance upload data BETUL, runbook siap di rotateNeonRunbook.md, bila rotate update env Vercel SAHAJA. (2) Wire feed courier DHL + Ninja Van, perlu PDF sampel dari Adi. (3) Adi kumpul SEMUA bil COD J&T cover period untuk recon penuh. Export Fasa B + komisen enrich = HOLD tunggu keputusan owner.
+- seterusnya: (1) Rotate kredential Neon = GATE terakhir sebelum jemput finance upload data BETUL, runbook siap (runbookRotateNeon.md), bila rotate update env Vercel SAHAJA, tiada blocker. (2) Owner sahkan takrif kempen botol KJS-3-1 & KJS-4-2 (audit tunjuk "botol free hantu" TAK sahih, artifak order belum selesai). (3) Clerk production (perlu domain custom dulu, runbook siap clerkProductionRunbook.md). (4) Wire feed DHL + Ninja Van (perlu PDF sampel Adi). (5) Upload statement CHIP untuk tally penuh (Batch D) = tangguh sampai finance nak. Export Fasa B + komisen enrich = HOLD.
 - nota (2026-07-09): peta Arkitektur (Understand-Anything) untuk projek ni DAH wujud di `.understand-anything/knowledge-graph.json` (221 node, 451 edge, 7 layer nama Melayu, tour 12 langkah, output BM), sudah di-gitignore jadi repo public selamat (52 fail data peribadi/secrets/build di-skip sengaja). HUD modul Arkitektur render terus (endpoint `/api/arch/ua` terima root). Refresh bila kod berubah: run `/understand` dalam projek ni (incremental, fingerprint baseline dah ada).
-- kemaskini: 2026-07-09
+- nota Jarvis (2026-07-19): KEPUTUSAN ARCHITECTURE DIKUNCI owner lepas 2x /timbang: multi syarikat = SATU database Neon dikongsi, company_id + RLS FORCE fail closed, BUKAN database per syarikat. Tangga kerja 0 sampai 7 (0 = rotate Neon, selaras dengan gate sedia ada; 2 = satukan enjin recon 3 salinan jadi 1 SEBELUM company label; WAJIB akaun app berkuasa rendah sebab RLS tak terpakai pada owner role). Detail penuh: knowledgeVault decisions/dicciFinanceSatuGudang20260718.md. PETA ARCHITECTURE interaktif kini dalam repo ni: `peta/` (buka: double click peta/buka.command, port 4100; ujian: node peta/ujian.mjs 176 pass; drift: node peta/driftCheck.mjs; refresh: skill /petaDicci). Peta v10: drill L0 sampai L3, 4 flow, mod Semasa vs Sasaran, tangga hidup, pin owner. JANGAN edit renderer masa refresh, ganti blok PETA_DATA sahaja.
+- kemaskini: 2026-07-19
 
 ## Cara run
 
@@ -810,8 +811,75 @@ sepanjang sesi.
 **Peringatan kekal:** password Neon masih PENDING rotate (terdedah masa setup dulu) = gate
 sebelum finance upload data sebenar, masih belum dibuat.
 
+## Sesi 19 Jul: Honest breakdown baldi bayaran + accordion per-kurier + CHIP (LIVE)
+
+Bermula dari aduan finance "1 botol tak tally" (MANZ VENTURE, kes KAKYAH, 10 Jul).
+**Punca sebenar (owner sahkan):** order 6672624 (MANZ VENTURE, J&T Express, RM145)
+dibayar guna gateway **CHIP** (prepaid), jadi ia TAK masuk bil COD J&T, tersangkut
+"unconfirmed" selama lamanya dalam recon COD, botolnya tak masuk kiraan confirmed. Baldi
+kabur "unconfirmed" tu yang mengelirukan finance , dia campur "belum remit COD" dengan
+"dibayar prepaid, memang bukan COD".
+
+**Keputusan owner (terkunci):**
+- Untuk isu CHIP: pilih **"hilangkan kekeliruan sahaja"** (baldi jujur), BUKAN upload
+  statement CHIP. Tally penuh CHIP (Batch D, upload statement) DITANGGUH sampai finance nak.
+- **TOLAK pendekatan "percaya Fighter Payment Status = Paid"** , itu racun keupayaan
+  tangkap bocor. Jalan sah = padan lawan statement CHIP sebenar. CHIP kekal `active=False`.
+- Corak UI per-kurier = **accordion inline** (ditimbang panel 3 lensa, sepakat bulat),
+  BUKAN popup (elak modal-dalam-modal). Owner pilih variant "label CHIP + warna + paytag".
+
+**Deploy 1 , commit `d69489d` (Batch A/B/C, enjin + paparan):**
+- **(A) Honest breakdown baldi bayaran:** pecah baldi kabur "unconfirmed" jadi baldi jujur
+  , **Confirmed COD / Confirmed prepaid / Awaiting COD remittance / Awaiting prepaid
+  statement / No payment feed** , diturunkan dari `payment_method`. PAPARAN sahaja, logik
+  recon tak berubah.
+- **(B) Banner semak SKU** auto-added + flag harga/botol rendah (bantu finance semak SKU
+  yang di-auto-daftar masa ingest).
+- **(C) Tebalkan feed CHIP dorman** , betulkan 3 bug terpendam: `confirmed_paid_order_ids`
+  kini confirm prepaid HANYA bila status berjaya DAN `amount>0`; `ingest_chip` tapis baris
+  berjaya sahaja; `_num` tak lagi jatuh senyap ke RM0. CHIP kekal `active=False`.
+- **Sync salinan enjin `webApp/api/engine`** , sebelum ni salinan itu BASI (audit fix
+  ddd1f82 tak pernah di-sync). Ingat: sync selepas ubah enjin root.
+
+**Deploy 2 , commit `45838e5` (UI):**
+- **Accordion pecahan per-kurier** untuk baldi COD (confirmed_cod, awaiting_cod) , buka
+  inline tunjuk J&T / DHL / Ninja Van (BUKAN popup).
+- Label CHIP jelas: "Awaiting prepaid statement" -> **"Awaiting CHIP statement"** + warna
+  indigo (token `--info`).
+- **Paytag pill** (COD / CHIP / Bank Transfer) sentiasa on.
+- Fail baru: `components/CourierBreakdown.tsx`, `scripts/checkBuckets.ts` (guardrail
+  `sum(byCourier)==total`). Buang `lib/useShowTags.ts`.
+
+**Verify (kedua dua deploy):** baseline COD **RM63,912 / 369 order IDENTIK**, parity harness
+LULUS, data Neon TAK disentuh, CHIP tak diaktifkan.
+
+**PENEMUAN PENTING (rekod, banyak perlu owner/finance):**
+1. **KJS-3-1 "botol free hantu" TAK sahih** , audit tunjuk amaran RM145 sebahagian artifak
+   order belum selesai; order lengkap (RM297) sokong 4 botol. Perlu owner sahkan definisi
+   kempen. KJS-4-2 pun perlu disahkan. KJS-1/KJS-2/MYS/MYSE ok. **Botol hantu TAK menular.**
+2. **Bank Transfer (6 order) takde feed langsung** , kekal "No payment feed, cannot verify"
+   sampai ada feed baru.
+3. **Gap data:** `payment_status` (Paid/Unpaid) dan nama pakej penuh (Product & Variations)
+   TAK disimpan , cuma kod SKU. Hadkan audit SKU. Nama pakej ada dalam fail Fighter mentah je.
+4. **Clerk masih "Development mode"** , production WAJIB domain custom (bukan .vercel.app)
+   + DNS; integrasi Marketplace boleh overwrite kunci manual. Runbook: `clerkProductionRunbook.md`.
+5. Salinan enjin `webApp/api/engine` pernah BASI , sentiasa sync selepas ubah enjin root.
+6. **Parity harness WAJIB `RECON_TODAY=2026-06-18`** (kalau tak, cutoff drift, parity gagal palsu).
+
+**Runbook (gitignored, TAK di-commit):** `clerkProductionRunbook.md` (baru),
+`runbookRotateNeon.md` (dah wujud, kemas nota). `.gitignore` ada +1 baris
+(clerkProductionRunbook.md) belum commit. Laporan audit SKU: scratchpad `auditSkuBotol.md`
+(ephemeral).
+
+**Pending (semua perlu owner/finance):** sahkan botol KJS-3-1 & KJS-4-2; rotate Neon
+(runbook siap, tiada blocker); Clerk production (perlu domain dulu); upload statement CHIP
+(finance, bila mereka nak tally penuh).
+
 ## Status sekarang
 
+- [x] Honest breakdown baldi bayaran + accordion per-kurier + label CHIP + paytag LIVE
+  (19 Jul, commit d69489d + 45838e5). Punca aduan "botol tak tally" = order dibayar CHIP,
+  bukan bug. Baseline COD RM63,912/369 identik, parity LULUS (seksyen "Sesi 19 Jul").
 - [x] Borak, kunci skop + keputusan Fasa 1.
 - [x] Sampel sebenar diproses, logik TERVALIDASI: 186/186 padan tepat, 0 exception integriti.
 - [x] Milestone 1 sistem siap: DB SQLite + ingest idempotent + reconcile DB-backed. Baseline reproduce 186/RM32,919, idempotency lulus.

@@ -24,6 +24,7 @@ CLAUDE.md
 # Runbook ops (langkah rotate, dll) , simpan tempatan, jangan masuk repo public
 rotateNeonRunbook.md
 runbookRotateNeon.md
+clerkProductionRunbook.md
 
 # OS
 .DS_Store
@@ -34,3 +35,6 @@ runbookRotateNeon.md
 
 # Output graphify (local sahaja)
 graphify-out/
+
+# peta architecture, alat lokal sahaja, ada info dalaman bisnes
+peta/
