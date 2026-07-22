@@ -66,9 +66,17 @@ export default function UploadsManager({ files }: { files: UploadedFile[] }) {
       if (!res.ok) {
         setMsg({ kind: "err", text: j.error ?? "delete failed" });
       } else {
+        const r = j.removed;
+        const kept: string[] = [];
+        if (r.ordersKeptShared > 0)
+          kept.push(`${fmtInt(r.ordersKeptShared)} order${r.ordersKeptShared === 1 ? "" : "s"} kept (also in another upload)`);
+        if (r.ordersKeptLegacy > 0)
+          kept.push(`${fmtInt(r.ordersKeptLegacy)} older order${r.ordersKeptLegacy === 1 ? "" : "s"} kept (uploaded before file tracking , re-upload to clear)`);
         setMsg({
           kind: "ok",
-          text: `Removed ${fmtInt(j.removed.total)} rows from "${target.file}". Re-upload the corrected file when ready.`,
+          text: `Removed ${fmtInt(r.total)} rows from "${target.file}".`
+            + (kept.length ? ` ${kept.join("; ")}.` : "")
+            + ` Re-upload the corrected file when ready.`,
         });
         setTarget(null); setAck(false);
         router.refresh();
@@ -152,8 +160,8 @@ export default function UploadsManager({ files }: { files: UploadedFile[] }) {
               <b>Delete all data from &quot;{target.file}&quot;?</b>
               <p>This permanently removes the {fmtInt(target.rows)} row{target.rows === 1 ? "" : "s"} that
                 came from this file ({KIND_LABEL[target.kind] ?? target.kind}). Dashboards update
-                immediately. If the file was only wrong, re-upload the corrected version after ,
-                uploads are safe to repeat. This cannot be undone.</p>
+                immediately.{target.kind === "orders" ? " Orders that also appear in another upload are kept, not deleted." : ""} If the file was only wrong, re-upload the corrected
+                version after , uploads are safe to repeat. This cannot be undone.</p>
             </div>
           </div>
           <label className="confirmRow">

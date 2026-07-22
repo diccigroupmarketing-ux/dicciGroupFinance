@@ -250,6 +250,17 @@ ORDERS_UPSERT = text("""
         source_file=excluded.source_file, ingested_at=excluded.ingested_at
 """)
 
+# Rakam pasangan (order_id, fail) untuk jejak many-to-many (fix bug B1). Setiap
+# kali fail sebut order, pasangan direkod; PK (order_id, source_file) buat ia
+# idempotent (re-upload fail sama = update ingested_at, bukan baris baru). Delete
+# guna jadual ni untuk kekalkan order yang masih ada fail lain vouch untuknya.
+ORDER_UPLOADS_UPSERT = text("""
+    INSERT INTO order_uploads (order_id, source_file, ingested_at)
+    VALUES (:order_id, :source_file, :ingested_at)
+    ON CONFLICT(order_id, source_file) DO UPDATE SET
+        ingested_at=excluded.ingested_at
+""")
+
 
 def ingest_fighter(df, source_file, conn):
     # Buang baris tanpa Order ID (baris total/blank export). Satu sel kosong buat
@@ -274,6 +285,12 @@ def ingest_fighter(df, source_file, conn):
     rows = db.to_records(o)
     if rows:  # fail sah tapi kosong (header sahaja) tak patut crash executemany
         conn.execute(ORDERS_UPSERT, rows)
+        # Rakam pasangan (order_id, fail) ni untuk jejak vouch many-to-many.
+        # ingested_at sama dengan orders supaya delete boleh pilih fail vouch
+        # TERKINI bila re-point source_file order yang dikongsi.
+        ou_rows = [{"order_id": r["order_id"], "source_file": r["source_file"],
+                    "ingested_at": r["ingested_at"]} for r in rows]
+        conn.execute(ORDER_UPLOADS_UPSERT, ou_rows)
     # Bentuk normalized SKU (order_skus) untuk recon/botol SQL-side; hanya
     # order dalam fail ni yang dibina semula (idempotent macam upsert di atas).
     pairs = list(zip(o["order_id"], o["skus"]))

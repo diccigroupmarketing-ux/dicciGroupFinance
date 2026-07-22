@@ -35,7 +35,8 @@ export async function POST(req: Request) {
     const removed = await deleteUpload(file);
     revalidateTag("recon", { expire: 0 });
     await logEvent(actor, "upload_delete",
-      `${file}: ${removed.total} rows removed (orders ${removed.orders}, bill lines ${removed.billLines}, prepaid ${removed.prepaid}, wallet ${removed.wallet})`);
+      `${file}: ${removed.total} rows removed (orders ${removed.orders}, bill lines ${removed.billLines}, prepaid ${removed.prepaid}, wallet ${removed.wallet}); ` +
+      `orders kept ${removed.ordersKeptShared} shared, ${removed.ordersKeptLegacy} legacy`);
     return NextResponse.json({ ok: true, removed });
   } catch (e) {
     return NextResponse.json(

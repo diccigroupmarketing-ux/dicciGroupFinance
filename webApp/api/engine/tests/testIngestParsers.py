@@ -427,5 +427,72 @@ class TestParseSkus(unittest.TestCase):
         self.assertEqual(db.parse_skus(None), [])
 
 
+# =====================================================================
+# 6. FIX B1: ingest_fighter mengisi jejak many-to-many order_uploads.
+#    Ini SATU-SATUNYA ujian ber-DB dalam fail ni (selebihnya murni), sebab
+#    tingkah laku yang diuji ialah TULISAN DB (rakam pasangan order<->fail) yang
+#    jadi teras fix bug B1. Guna SQLite DALAM-INGATAN (tiada rangkaian, tiada
+#    fail), jadi ia kekal deterministik dan pantas. Data sintetik sepenuhnya.
+# =====================================================================
+from sqlalchemy import create_engine, text  # noqa: E402
+
+
+def _fighter_df(order_ids):
+    """DataFrame Fighter minimum untuk ingest_fighter (nilai rekaan)."""
+    n = len(order_ids)
+    return pd.DataFrame({
+        ingest.F_ORDER: order_ids,
+        ingest.F_DATE: ["2026-06-18"] * n,
+        ingest.F_STATUS: ["Completed"] * n,
+        ingest.F_SELLER: ["Rekaan Stockist"] * n,
+        ingest.F_PAYMENT: ["COD"] * n,
+        ingest.F_PROVIDER: ["J&T Express"] * n,
+        ingest.F_TRACK: ["1234567890%d" % i for i in range(n)],
+        ingest.F_AMOUNT: ["100.00"] * n,
+        ingest.F_COMM: ["10.00"] * n,
+        ingest.F_SKUS: ["JAG-MY-1"] * n,
+        ingest.F_ITEMCOUNT: ["1"] * n,
+    })
+
+
+class TestOrderUploadsTracking(unittest.TestCase):
+    def setUp(self):
+        self.eng = create_engine("sqlite://")   # dalam-ingatan, satu sambungan
+        self.conn = self.eng.connect()
+        db.init_db(self.conn)
+
+    def tearDown(self):
+        self.conn.close()
+
+    def _pairs(self):
+        rows = self.conn.execute(
+            text("SELECT order_id, source_file FROM order_uploads "
+                 "ORDER BY order_id, source_file")).fetchall()
+        return [(r[0], r[1]) for r in rows]
+
+    def test_ingest_records_order_file_pairs(self):
+        ingest.ingest_fighter(_fighter_df(["O1", "O2"]), "fileA.xlsx", self.conn)
+        self.assertEqual(self._pairs(), [("O1", "fileA.xlsx"), ("O2", "fileA.xlsx")])
+
+    def test_overlapping_files_keep_both_vouches(self):
+        # fileA sebut O1,O2 ; fileB sebut O2,O3 (O2 bertindih). order_uploads
+        # mesti simpan KEDUA vouch O2, walaupun orders.source_file cuma satu.
+        ingest.ingest_fighter(_fighter_df(["O1", "O2"]), "fileA.xlsx", self.conn)
+        ingest.ingest_fighter(_fighter_df(["O2", "O3"]), "fileB.xlsx", self.conn)
+        self.assertEqual(self._pairs(), [
+            ("O1", "fileA.xlsx"), ("O2", "fileA.xlsx"),
+            ("O2", "fileB.xlsx"), ("O3", "fileB.xlsx")])
+        # orders.source_file = penulis TERAKHIR (last-writer-wins) = fileB.
+        sf = self.conn.execute(
+            text("SELECT source_file FROM orders WHERE order_id = 'O2'")).scalar()
+        self.assertEqual(sf, "fileB.xlsx")
+
+    def test_reingest_same_file_idempotent(self):
+        ingest.ingest_fighter(_fighter_df(["O1", "O2"]), "fileA.xlsx", self.conn)
+        ingest.ingest_fighter(_fighter_df(["O1", "O2"]), "fileA.xlsx", self.conn)
+        # Re-upload fail sama TAK gandakan pasangan (PK order_id, source_file).
+        self.assertEqual(self._pairs(), [("O1", "fileA.xlsx"), ("O2", "fileA.xlsx")])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

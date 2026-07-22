@@ -5,6 +5,7 @@
 // cermin murni reconSql.py.
 import { getPool } from "./db";
 import { ensureGiftTable } from "./giftsSchema";
+import { ensureOrderUploadsTable } from "./orderUploadsSchema";
 
 export interface SkuInput {
   sku: string;
@@ -185,22 +186,79 @@ export async function resetStore(): Promise<void> {
 // (parser idempotent). SATU transaksi supaya tak separuh padam. order_skus
 // tiada source_file, jadi ikut order_id fail tu. Bil courier tanpa baris
 // tinggal (orphan) turut dibersih supaya tak jadi baki mati.
+//
+// FIX B1 (orders): orders.source_file cuma tuding SATU fail (upsert last-writer-
+// wins), tapi export Fighter bertindih berat. Padam ikut source_file sahaja
+// boleh buang order sah yang turut wujud dalam fail lain. Jadi delete guna jejak
+// many-to-many order_uploads:
+//   - EXCLUSIVE (order divouch HANYA oleh fail ni)      -> padam.
+//   - SHARED    (order masih divouch fail lain)         -> KEKAL, re-point
+//                                                          source_file ke fail
+//                                                          vouch terkini.
+//   - LEGACY    (order tuding fail ni tapi TIADA langsung
+//                baris order_uploads, iaitu dari sebelum
+//                fix ni wujud)                           -> KEKAL, dilaporkan.
+//                Tiada jejak untuk sahkan ia eksklusif, jadi padam senyap =
+//                bahaya (boleh buang duit sah). Kekal + beritahu finance.
 export interface DeleteUploadResult {
   orders: number; orderSkus: number; billLines: number; bills: number;
   prepaid: number; wallet: number; total: number;
+  ordersKeptShared: number;  // order dikekalkan sebab fail lain masih vouch
+  ordersKeptLegacy: number;  // order dikekalkan sebab tiada jejak (pra-fix B1)
 }
 
 export async function deleteUpload(file: string): Promise<DeleteUploadResult> {
   const f = String(file ?? "").trim();
   if (!f) throw new Error("nama fail kosong");
+  // Jamin jadual jejak wujud (prod: dicipta malas kalau ingest belum jalan).
+  await ensureOrderUploadsTable();
   const client = await getPool().connect();
   try {
     await client.query("BEGIN");
+    // --- Orders (fix B1: hormati vouch many-to-many order_uploads) ---
+    // Predikat EXCLUSIVE: order tuding fail ni, ADA baris vouch untuk fail ni,
+    // dan TIADA baris vouch untuk fail LAIN. "ADA vouch fail ni" penting: ia
+    // menolak order LEGACY (langsung tiada baris order_uploads) supaya legacy
+    // tak jatuh ke sini dan terpadam senyap. Dikira SEBELUM pasangan fail ni
+    // dibuang dari order_uploads (kalau tidak, maklumat vouch hilang).
+    const EXCLUSIVE = `
+      o.source_file = $1
+      AND EXISTS (SELECT 1 FROM order_uploads u
+                  WHERE u.order_id = o.order_id AND u.source_file = $1)
+      AND NOT EXISTS (SELECT 1 FROM order_uploads u
+                      WHERE u.order_id = o.order_id AND u.source_file <> $1)`;
+    // order_skus untuk order EXCLUSIVE sahaja (order SHARED kekal, botolnya juga).
     const orderSkus = await client.query(
       `DELETE FROM order_skus WHERE order_id IN
-         (SELECT order_id FROM orders WHERE source_file = $1)`, [f]);
+         (SELECT o.order_id FROM orders o WHERE ${EXCLUSIVE})`, [f]);
     const orders = await client.query(
-      "DELETE FROM orders WHERE source_file = $1", [f]);
+      `DELETE FROM orders o WHERE ${EXCLUSIVE}`, [f]);
+    // LEGACY: tuding fail ni tapi TIADA langsung baris order_uploads. Dikekalkan
+    // (tak dipadam) , dikira untuk dilapor. Kira sebelum re-point/DELETE pairs
+    // (re-point tak sentuh legacy sebab legacy tiada baris di order_uploads).
+    const legacy = await client.query(
+      `SELECT COUNT(*)::int AS n FROM orders o
+         WHERE o.source_file = $1
+           AND NOT EXISTS (SELECT 1 FROM order_uploads u WHERE u.order_id = o.order_id)`,
+      [f]);
+    const ordersKeptLegacy = (legacy.rows[0]?.n as number) ?? 0;
+    // Buang pasangan fail ni dari jejak. Selepas ni, order SHARED yang tadinya
+    // tuding fail ni masih ada baris order_uploads (fail lain).
+    await client.query("DELETE FROM order_uploads WHERE source_file = $1", [f]);
+    // Re-point order SHARED: source_file masih tuding fail (dah dipadam) ni,
+    // tapi masih ada vouch lain. Alih ke fail vouch TERKINI (ingested_at) supaya
+    // paparan Uploads konsisten (order tak lagi tergantung pada fail terpadam).
+    // Order EXCLUSIVE dah dipadam; order LEGACY tiada baris order_uploads jadi
+    // tak disentuh (kekal tuding fail ni , sengaja, itu isyarat jujur).
+    const repointed = await client.query(
+      `UPDATE orders o SET source_file = sub.sf
+         FROM (
+           SELECT DISTINCT ON (order_id) order_id, source_file AS sf
+           FROM order_uploads
+           ORDER BY order_id, ingested_at DESC, source_file DESC
+         ) sub
+        WHERE o.order_id = sub.order_id AND o.source_file = $1`, [f]);
+    const ordersKeptShared = repointed.rowCount ?? 0;
     // Padam baris bil fail ni, kutip bill_id terkesan (RETURNING) supaya lepas
     // ni kita boleh skop pembersihan header pada bil yang betul betul terjejas.
     const billLines = await client.query(
@@ -248,6 +306,7 @@ export async function deleteUpload(file: string): Promise<DeleteUploadResult> {
     const out = {
       orders: n(orders), orderSkus: n(orderSkus), billLines: n(billLines),
       bills: n(bills), prepaid: n(prepaid), wallet: n(wallet), total: 0,
+      ordersKeptShared, ordersKeptLegacy,
     };
     out.total = out.orders + out.billLines + out.prepaid + out.wallet;
     return out;

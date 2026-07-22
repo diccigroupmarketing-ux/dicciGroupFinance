@@ -155,6 +155,22 @@ CREATE TABLE IF NOT EXISTS orders (
 );
 CREATE INDEX IF NOT EXISTS idx_orders_tracking ON orders(tracking);
 
+-- Jejak MANY-TO-MANY order <-> fail upload (fix bug B1). orders.source_file cuma
+-- muat SATU fail (last-writer-wins upsert), jadi bila banyak export Fighter
+-- bertindih, satu order kelihatan datang dari fail TERAKHIR sahaja. Delete ikut
+-- source_file boleh buang order sah yang sebenarnya turut wujud dalam fail lain.
+-- Jadual ni rakam SETIAP (order_id, fail) yang pernah sebut order, supaya delete
+-- boleh kekalkan order yang masih ada fail lain "vouch" untuknya. Additive,
+-- diisi masa ingest Fighter (idempotent). Tiada kesan pada logik recon.
+CREATE TABLE IF NOT EXISTS order_uploads (
+    order_id    TEXT,
+    source_file TEXT,
+    ingested_at TEXT,
+    PRIMARY KEY (order_id, source_file)
+);
+CREATE INDEX IF NOT EXISTS idx_order_uploads_file ON order_uploads(source_file);
+CREATE INDEX IF NOT EXISTS idx_order_uploads_order ON order_uploads(order_id);
+
 CREATE TABLE IF NOT EXISTS sku_bottles (
     sku          TEXT PRIMARY KEY,
     product_name TEXT,
