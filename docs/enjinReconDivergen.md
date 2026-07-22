@@ -148,7 +148,12 @@ Status: kerja selari sesi 2026-07-23 sedang nyahbeku `recon.ts` supaya baca env
 `RECON_TODAY` (fallback hari sebenar), selari dengan `db.py:40`. Selepas siap, D1 patut
 jadi SAMA.
 
-### D2. Guard AWB dikongsi tiada dalam reconSql.py (LARI, PALING BAHAYA)
+### D2. Guard AWB dikongsi tiada dalam reconSql.py (DIBAIKI 2026-07-23, kini SAMA)
+
+> Status: guard telah diport ke reconSql.py pada 2026-07-23 (Langkah 1 urutan
+> penyatuan selesai). Verify: baseline suci kekal, parity harness lulus, kes
+> sintetik shared AWB bagi hasil sama pada ketiga tiga enjin. Butiran asal
+> dikekalkan di bawah sebagai rekod.
 
 - reconcile.py: KIRA `awb_shared` (`reconcile.py:122`), bila >1 order COD dalam skop
   padan baris bil YANG SAMA, tandakan `amount_mismatch` (`reconcile.py:134`) supaya

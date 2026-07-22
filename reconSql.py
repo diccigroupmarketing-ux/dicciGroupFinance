@@ -140,8 +140,19 @@ def _m_sql_courier(conn, courier):
                  WHEN l.awb IS NOT NULL THEN
                    CASE
                      WHEN s.status = 'Completed' THEN
-                       CASE WHEN {r2('s.selling_price')} = {r2('l.cod_amount')}
-                            THEN 'tally' ELSE 'amount_mismatch' END
+                       -- Guard AWB dikongsi (port setia reconcile.py:134 /
+                       -- recon.ts:135): bila >1 order dalam skop kongsi tracking
+                       -- YANG SAMA padan baris bil sama, duit satu parcel tak boleh
+                       -- dikira tally untuk setiap order (double count). Jatuh ke
+                       -- amount_mismatch supaya disiasat, bukan disorok jadi tally.
+                       CASE
+                         WHEN (SELECT COUNT(*) FROM orders o2
+                               WHERE o2.tracking = s.tracking
+                                 AND o2.payment_method IN :cods
+                                 AND o2.shipping_provider IN :prov) > 1
+                              THEN 'amount_mismatch'
+                         WHEN {r2('s.selling_price')} = {r2('l.cod_amount')}
+                              THEN 'tally' ELSE 'amount_mismatch' END
                      WHEN s.status = 'Returned' THEN 'duit_masuk_order_returned'
                      WHEN s.status = 'Rejected' THEN 'duit_masuk_order_rejected'
                      ELSE 'in_bil_tapi_intransit'
