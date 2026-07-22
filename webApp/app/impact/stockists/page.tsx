@@ -1,8 +1,8 @@
-import Link from "next/link";
 import { stockistBottles, stockistGifts, storeCounts, paymentBuckets } from "@/lib/recon";
 import { fmtInt, fmtRM } from "@/lib/format";
 import ExportCsv from "@/components/ExportCsv";
 import StockistModal from "@/components/StockistModal";
+import StockistTable, { StockistTableRow } from "@/components/StockistTable";
 import PaymentBuckets from "@/components/PaymentBuckets";
 
 const BOTTLE_COLS = [
@@ -56,6 +56,21 @@ export default async function StockistsPage(
 
   const picked = s && rows.some((r) => r.stockist === s) ? s : null;
 
+  // Baris berbentuk serializable untuk komponen client (gift digabung di sini).
+  const tableRows: StockistTableRow[] = rows.map((r) => {
+    const g = giftMap.get(r.stockist);
+    return {
+      stockist: r.stockist,
+      confirmed_orders: r.confirmed_orders,
+      paid_bottles: r.paid_bottles,
+      free_bottles: r.free_bottles,
+      total_bottles: r.total_bottles,
+      unconfirmed_bottles: r.unconfirmed_bottles,
+      gifts: g?.gifts ?? [],
+      giftCost: g?.cost ?? 0,
+    };
+  });
+
   return (
     <>
       <Header />
@@ -76,61 +91,7 @@ export default async function StockistsPage(
           Giveaway cost (confirmed): <b>{fmtRM(totGiftCost)}</b>. Bottles &amp; gift cost count
           across all couriers, only for Completed orders whose money is confirmed.
         </p>
-        <div className="tableWrap">
-          <table>
-            <thead>
-              <tr>
-                <th>Stockist</th>
-                <th className="num">Confirmed orders</th>
-                <th className="num">Paid bottles</th>
-                <th className="num">Free bottles</th>
-                <th className="num">Total bottles</th>
-                <th className="num">Unconfirmed</th>
-                <th>Free gifts</th>
-                <th className="num">Giveaway cost</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((r) => {
-                const g = giftMap.get(r.stockist);
-                const gifts = g?.gifts ?? [];
-                return (
-                  <tr key={r.stockist}
-                    style={picked === r.stockist ? { background: "#FAF7EF" } : undefined}>
-                    <td>
-                      <Link href={`/impact/stockists?s=${encodeURIComponent(r.stockist)}`}
-                        className="cellMain" style={{ color: "var(--goldDark)" }}>
-                        {r.stockist}
-                      </Link>
-                    </td>
-                    <td className="num">{fmtInt(r.confirmed_orders)}</td>
-                    <td className="num">{fmtInt(r.paid_bottles)}</td>
-                    <td className="num">{fmtInt(r.free_bottles)}</td>
-                    <td className="num"><b>{fmtInt(r.total_bottles)}</b></td>
-                    <td className="num">{fmtInt(r.unconfirmed_bottles)}</td>
-                    <td>
-                      {gifts.length === 0
-                        ? <span style={{ color: "var(--faint)" }}>—</span>
-                        : (
-                          <div className="giftChips">
-                            {gifts.slice(0, 4).map((x) => (
-                              <span className="giftChip" key={x.name}>{x.name} <b>×{fmtInt(x.qty)}</b></span>
-                            ))}
-                            {gifts.length > 4 && (
-                              <span className="giftChip">+{gifts.length - 4}</span>
-                            )}
-                          </div>
-                        )}
-                    </td>
-                    <td className="num" style={{ color: "var(--goldDark)" }}>
-                      {g && g.cost > 0 ? <b>{fmtRM(g.cost)}</b> : <span style={{ color: "var(--faint)" }}>—</span>}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
+        <StockistTable rows={tableRows} picked={picked} />
       </div>
 
       <PaymentBuckets buckets={buckets}

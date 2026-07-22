@@ -3,10 +3,11 @@
 // Urus fail upload: senarai fail (dari source_file) + padam per fail.
 // Sengaja TIADA padam sekali klik: klik Delete buka panel confirm (checkbox +
 // butang akhir), satu fail pada satu masa. Lepas berjaya, refresh data server.
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { UploadedFile } from "@/lib/recon";
 import { fmtInt } from "@/lib/format";
+import TableFilter from "@/components/TableFilter";
 
 const KIND_LABEL: Record<string, string> = {
   orders: "Fighter orders", cod: "Courier bill",
@@ -31,6 +32,21 @@ export default function UploadsManager({ files }: { files: UploadedFile[] }) {
   const [ack, setAck] = useState(false);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
+  const [q, setQ] = useState("");
+
+  // Tapis PAPARAN sahaja: padan nama fail, jenis feed/courier (kunci + label),
+  // dan tarikh upload (rentetan mentah + versi terformat). Delete tak tersentuh.
+  const visible = useMemo(() => {
+    const needle = q.trim().toLowerCase();
+    if (!needle) return files;
+    return files.filter((f) => {
+      const hay = [
+        f.file, f.kind, KIND_LABEL[f.kind] ?? "",
+        f.lastAt ?? "", fmtStamp(f.lastAt),
+      ].join(" ").toLowerCase();
+      return hay.includes(needle);
+    });
+  }, [files, q]);
 
   const openConfirm = (f: UploadedFile) => {
     setTarget(f); setAck(false); setMsg(null);
@@ -67,7 +83,14 @@ export default function UploadsManager({ files }: { files: UploadedFile[] }) {
     <div className="card">
       <div className="cardHead">
         <div className="cardTitle">Uploaded files</div>
-        <div className="cardHint">{fmtInt(files.length)} file{files.length === 1 ? "" : "s"} in store</div>
+        <div className="cardHint">
+          {q.trim()
+            ? `${fmtInt(visible.length)} of ${fmtInt(files.length)} file${files.length === 1 ? "" : "s"}`
+            : `${fmtInt(files.length)} file${files.length === 1 ? "" : "s"} in store`}
+        </div>
+        {files.length > 0 && (
+          <TableFilter placeholder="Filter uploaded files…" value={q} onChange={setQ} />
+        )}
         {msg && (
           <span className={"chip " + (msg.kind === "ok" ? "chipPos" : "chipDan")}
                 style={{ marginLeft: "auto" }}>
@@ -87,7 +110,14 @@ export default function UploadsManager({ files }: { files: UploadedFile[] }) {
               <tr><th>File</th><th>Type</th><th className="num">Rows</th><th>Last upload</th><th /></tr>
             </thead>
             <tbody>
-              {files.map((f) => (
+              {visible.length === 0 && (
+                <tr>
+                  <td colSpan={5} className="cellMuted">
+                    No uploaded file matches &quot;{q}&quot;.
+                  </td>
+                </tr>
+              )}
+              {visible.map((f) => (
                 <tr key={`${f.file}·${f.kind}`}>
                   <td className="cellMain" style={{ maxWidth: 380, overflow: "hidden", textOverflow: "ellipsis" }}
                       title={f.file}>{f.file}</td>

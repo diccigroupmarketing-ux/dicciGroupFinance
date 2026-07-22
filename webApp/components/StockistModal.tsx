@@ -9,6 +9,7 @@ import type { StockistDetail } from "@/lib/recon";
 import { fmtDate, fmtInt, fmtRM } from "@/lib/format";
 import ExportCsv from "@/components/ExportCsv";
 import CourierBreakdown, { canBreakdown } from "@/components/CourierBreakdown";
+import TableFilter from "@/components/TableFilter";
 
 const ORDER_COLS = [
   { key: "order_id", header: "Order" }, { key: "order_date", header: "Date" },
@@ -77,12 +78,25 @@ export default function StockistModal({ stockist }: { stockist: string }) {
   const [err, setErr] = useState<string | null>(null);
   // Accordion baldi COD: buka satu pada satu masa (default tutup).
   const [openBucket, setOpenBucket] = useState<string | null>(null);
+  // Tapisan teks senarai order (order id / tracking), atas hasil penapis tarikh.
+  const [orderQ, setOrderQ] = useState("");
 
   useEffect(() => setMounted(true), []);
 
   const range = useMemo(() => (
     preset === "custom" ? { from: cf || WIDE.from, to: ct || WIDE.to } : presetRange(preset)
   ), [preset, cf, ct]);
+
+  // Tapis LIVE senarai order yang dah dimuat (order id + tracking), berlapis atas
+  // hasil penapis tarikh, corak sama macam StockistTable. TIADA fetch baru.
+  const orderRows = useMemo(() => {
+    const rows = data?.orders.rows ?? [];
+    const needle = orderQ.trim().toLowerCase();
+    if (!needle) return rows;
+    return rows.filter((o) =>
+      o.order_id.toLowerCase().includes(needle) ||
+      (o.tracking ?? "").toLowerCase().includes(needle));
+  }, [data, orderQ]);
 
   const disp = preset === "custom"
     ? { from: cf, to: ct }
@@ -355,39 +369,49 @@ export default function StockistModal({ stockist }: { stockist: string }) {
               {/* ORDERS */}
               <section>
                 <div className="stkSecTitle">Orders
-                  <span className="h">latest first · showing {fmtInt(Math.min(60, data.orders.rows.length))} of {fmtInt(data.orders.total)}</span>
+                  <span className="h">latest first · showing {fmtInt(Math.min(60, orderRows.length))} of {fmtInt(data.orders.total)}</span>
                   <ExportCsv rows={data.orders.rows} columns={ORDER_COLS} total={data.orders.total}
                     filename={`stockist-${stockist}-orders.csv`} /></div>
-                <div className="tableWrap">
-                  <table>
-                    <thead>
-                      <tr>
-                        <th>Order</th><th>Date</th><th>Status</th><th>Courier</th>
-                        <th className="num">Expected</th><th className="num">Net remit</th>
-                        <th className="num">Bottles</th><th>Money</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {data.orders.rows.slice(0, 60).map((o) => (
-                        <tr key={o.order_id}>
-                          <td className="cellMain">{o.order_id}</td>
-                          <td>{fmtDate(o.order_date)}</td>
-                          <td>{o.status ?? "—"}</td>
-                          <td>{o.shipping_provider ?? "—"}</td>
-                          <td className="num">{o.expected == null ? "—" : rmv(o.expected)}</td>
-                          <td className="num" style={{ color: o.net_remit == null ? "var(--faint)" : "var(--posText)" }}>
-                            {o.net_remit == null ? "—" : rmv(o.net_remit)}</td>
-                          <td className="num">{fmtInt(o.botol_total)}</td>
-                          <td>{o.duit === "confirmed"
-                            ? <span className="chip chipPos"><span className="cdot" />Confirmed</span>
-                            : <span className="chip chipMut"><span className="cdot" />Unconfirmed</span>}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                <div className="cardHead" style={{ marginTop: 4, marginBottom: 6 }}>
+                  <TableFilter placeholder="Filter orders…" value={orderQ} onChange={setOrderQ} />
+                  {orderQ.trim() && (
+                    <div className="cardHint">{fmtInt(orderRows.length)} of {fmtInt(data.orders.rows.length)} loaded</div>
+                  )}
                 </div>
-                {data.orders.rows.length > 60 && (
-                  <div className="stkNote" style={{ marginTop: 8 }}>Showing first 60 rows of {fmtInt(data.orders.rows.length)} loaded. Export or narrow the period for the rest.</div>
+                {orderRows.length === 0 ? (
+                  <div className="stkEmpty">No orders match this filter.</div>
+                ) : (
+                  <div className="tableWrap">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Order</th><th>Date</th><th>Status</th><th>Courier</th>
+                          <th className="num">Expected</th><th className="num">Net remit</th>
+                          <th className="num">Bottles</th><th>Money</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {orderRows.slice(0, 60).map((o) => (
+                          <tr key={o.order_id}>
+                            <td className="cellMain">{o.order_id}</td>
+                            <td>{fmtDate(o.order_date)}</td>
+                            <td>{o.status ?? "—"}</td>
+                            <td>{o.shipping_provider ?? "—"}</td>
+                            <td className="num">{o.expected == null ? "—" : rmv(o.expected)}</td>
+                            <td className="num" style={{ color: o.net_remit == null ? "var(--faint)" : "var(--posText)" }}>
+                              {o.net_remit == null ? "—" : rmv(o.net_remit)}</td>
+                            <td className="num">{fmtInt(o.botol_total)}</td>
+                            <td>{o.duit === "confirmed"
+                              ? <span className="chip chipPos"><span className="cdot" />Confirmed</span>
+                              : <span className="chip chipMut"><span className="cdot" />Unconfirmed</span>}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+                {orderRows.length > 60 && (
+                  <div className="stkNote" style={{ marginTop: 8 }}>Showing first 60 rows of {fmtInt(orderRows.length)} loaded. Export or narrow the period for the rest.</div>
                 )}
               </section>
             </>

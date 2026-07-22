@@ -148,9 +148,6 @@ export default function Sidebar() {
         <Link href="/impact" className={cls(path === "/impact")} title={tip("Dashboard")}>
           {ICONS.dashboard} <span className="navText">Dashboard</span>
         </Link>
-        <Link href="/impact/search" className={cls(path === "/impact/search")} title={tip("Find order")}>
-          {ICONS.search} <span className="navText">Find order</span>
-        </Link>
         <Link href="/impact/export" className={cls(path === "/impact/export")} title={tip("Export")}>
           {ICONS.export} <span className="navText">Export</span>
         </Link>
