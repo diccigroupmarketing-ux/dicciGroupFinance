@@ -379,7 +379,8 @@ export default function StockistModal({ stockist }: { stockist: string }) {
               <section>
                 <div className="stkSecTitle">Orders
                   <span className="h">latest first · showing {fmtInt(Math.min(60, orderRows.length))} of {fmtInt(data.orders.total)}</span>
-                  <ExportCsv rows={data.orders.rows} columns={ORDER_COLS} total={data.orders.total}
+                  <ExportCsv rows={orderRows} columns={ORDER_COLS}
+                    total={orderQ.trim() ? data.orders.rows.length : data.orders.total}
                     filename={`stockist-${stockist}-orders.csv`} /></div>
                 <div className="cardHead" style={{ marginTop: 4, marginBottom: 6 }}>
                   <TableFilter placeholder="Filter orders…" value={orderQ} onChange={setOrderQ} />

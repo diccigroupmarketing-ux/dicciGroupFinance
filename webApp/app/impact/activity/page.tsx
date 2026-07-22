@@ -14,13 +14,20 @@ const ACTION_TONE: Record<string, string> = {
   upload_delete: "chipDan",
 };
 
-// "2026-07-05T12:34:56.000Z" -> "5 Jul, 12:34"
+// ts disimpan dalam UTC (new Date().toISOString()). Papar dalam waktu Malaysia
+// secara EKSPLISIT (timeZone Asia/Kuala_Lumpur) supaya konsisten di dev dan di
+// prod (server prod = UTC). Contoh: "2026-07-23T12:34:56Z" -> "23 Jul, 20:34".
+const KL_FMT = new Intl.DateTimeFormat("en-GB", {
+  timeZone: "Asia/Kuala_Lumpur",
+  day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", hour12: false,
+});
 function fmtStamp(ts: string | null): string {
   if (!ts) return "—";
-  const m = ts.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/);
-  if (!m) return ts;
-  const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-  return `${Number(m[3])} ${months[Number(m[2]) - 1]}, ${m[4]}:${m[5]}`;
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return ts;
+  const p = KL_FMT.formatToParts(d).reduce<Record<string, string>>(
+    (a, x) => { a[x.type] = x.value; return a; }, {});
+  return `${p.day} ${p.month}, ${p.hour}:${p.minute}`;
 }
 
 export default async function ActivityPage() {
