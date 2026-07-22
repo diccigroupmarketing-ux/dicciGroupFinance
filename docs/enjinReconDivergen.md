@@ -212,30 +212,48 @@ Nota data dev: `prepaid_payments` kosong tapi ada 120 order `payment_method='CHI
 jadi laluan prepaid diuji pada cabang `belum_bayar` (120 order, 9 stokis); parity padan
 dua belah walaupun sisi statement kosong.
 
-### D4. Layanan sentinel tracking NONE tak selari (LARI, laten, kepercayaan rendah)
+### D4. Layanan sentinel tracking NONE tak selari (DIBAIKI 2026-07-23, kini SAMA)
 
-- reconcile.py: SENTINEL_TRK = `{"NAN", "NONE", ""}` (`reconcile.py:36`). Digunakan dua
-  tempat: kunci merge (`reconcile.py:45` `_no_match_keys`) supaya tracking sentinel tak
-  padan sesama sendiri, dan `all_trk` (`reconcile.py:94`) untuk beza
-  `match_luar_skop` lawan `duit_hantu`.
-- reconSql.py + recon.ts: hanya guard kosong + `'NAN'` dalam semakan awb sah
-  (`reconSql.py:55` `present_ok`, `recon.ts:120`), dan bergantung pada persamaan JOIN
-  `l.awb = s.tracking` untuk padanan. Nilai literal `'NONE'` TIDAK disekat.
+> Status: DISAHKAN divergen SEBENAR (bukan palsu) lewat kes ujian sintetik, kemudian
+> diport. Bukti sintetik: satu order COD J&T tracking literal `'NONE'` (Completed, RM100)
+> + satu baris bil AWB `'NONE'` (RM100, sepadan amaun). SEBELUM baik: `reconcile.py`
+> keluar `takde_awb_jnt`+1 dan `duit_hantu`+1 (order & bil tak padan), tapi `reconSql.py`
+> JOIN `'NONE'='NONE'` jadi satu padanan `tally`+1 (369->370). Divergen mengembang nilai
+> tally palsu DAN sorok duit hantu + AWB hilang. SELEPAS baik: ketiga tiga enjin keluar
+> `takde_awb_jnt`+1, `duit_hantu`+1, `tally` KEKAL. Butiran asal dikekalkan di bawah.
 
-Kesan finance: kalau ingest pernah simpan nilai tracking literal `'NONE'` (contoh dari
-sel kosong yang di-stringify), `reconcile.py` halang ia padan (jadi order left_only,
-baris bil right_only), tapi SQL/TS boleh JOIN dua `'NONE'` jadi satu padanan palsu,
-tukar kategori. Kepercayaan rendah: bergantung sama ada data sebenar ada literal
-`'NONE'`. Parity lulus sekarang bermakna data dev tiada kes ni. Perlu sahkan dengan
-tinjau nilai tracking sebenar sebelum satukan.
+- reconcile.py (rujukan, TIDAK disentuh): SENTINEL_TRK = `{"NAN", "NONE", ""}`
+  (`reconcile.py:36`). Digunakan dua tempat: kunci merge (`reconcile.py:45`
+  `_no_match_keys`) supaya tracking sentinel tak padan sesama sendiri, dan `all_trk`
+  (`reconcile.py:94`) untuk beza `match_luar_skop` lawan `duit_hantu`.
+- reconSql.py + recon.ts (sebelum baik): hanya guard kosong + `'NAN'` dalam semakan awb
+  sah (`reconSql.py:55` `present_ok`, `recon.ts:120`), dan bergantung pada persamaan JOIN
+  `l.awb = s.tracking` untuk padanan. Nilai literal `'NONE'` TIDAK disekat, jadi dua
+  `'NONE'` JOIN jadi padanan palsu.
+
+Baik (2026-07-23): fragmen dialek `not_sentinel(col)` ditambah ke `reconSql._frags`
+(port setia SENTINEL_TRK), dipakai tiga tempat dalam `_m_sql_courier`: (1) JOIN
+`l.awb = s.tracking AND not_sentinel(s.tracking)` halang order sentinel padan baris bil
+sentinel, (2) `known_trk` (match_luar_skop vs duit_hantu) keluarkan sentinel dari set
+tracking dikenali, (3) `anti` (keahlian right_only) keluarkan sentinel dari set scoped
+tracking supaya baris bil AWB sentinel jatuh `duit_hantu`. Helper `NOT_SENTINEL(col)`
+yang sama diport ke `recon.ts` (JOIN + known + anti), padan cabang postgresql reconSql.
+
+Kesan finance (asal): kalau ingest pernah simpan nilai tracking literal `'NONE'` (contoh
+dari sel kosong yang di-stringify oleh `norm_trk`), `reconcile.py` halang ia padan (jadi
+order left_only, baris bil right_only), tapi SQL/TS boleh JOIN dua `'NONE'` jadi satu
+padanan palsu (`tally`), mengembang nilai tally dan sorok duit hantu. Data dev sebenar
+tiada kes ni (parity lulus tanpa perubahan `parityPython.json`), jadi ia bug laten, kini
+ditutup sebelum penyatuan.
 
 ### Ringkasan kiraan
 
 - Konstan/takrif dibanding: 10 baris.
 - SAMA: 6 (REMIT_PENDING_DAYS, COD_VALUES, INTEGRITY_EXC, AGED,
   PREPAID_SUCCESS_STATUS, awb_valid), tambah botol + confirmed-paid yang selari.
-- LARI asal: 4. DITUTUP: D2 (guard AWB), D3 (skop prepaid). BAKI LARI: 1 aktif
-  (D4 sentinel NONE) + D1 TODAY (sedang dibaiki sesi 2026-07-23).
+- LARI asal: 4. DITUTUP: D2 (guard AWB), D3 (skop prepaid), D4 (sentinel NONE,
+  disahkan divergen sebenar lalu diport 2026-07-23). BAKI: D1 TODAY (sedang dibaiki
+  sesi 2026-07-23).
 
 ---
 
@@ -287,15 +305,20 @@ Verify (DIBUAT): `npx tsc --noEmit` LULUS; `parityDump.py > parityPython.json` +
 SEMUA LULUS; baseline suci kekal `RM 63,912.00 (369 order)`; route `/impact/streams/chip`
 respond (307 Clerk gate = route wujud).
 
-### Langkah 4. Sahkan atau tutup D4 (sentinel NONE)
+### Langkah 4. Sahkan atau tutup D4 (sentinel NONE) , SELESAI 2026-07-23
 
-Tinjau nilai tracking sebenar dalam DB dev/prod. Kalau ada literal `'NONE'`, selaraskan:
-tambah `'NONE'` ke guard SQL/TS (`reconSql.py:55`, `recon.ts:120`) ATAU normalkan
-`'NONE'` jadi NULL masa ingest. Kalau tiada, dokumen sebagai "tidak berlaku pada data
-sebenar" dan teruskan.
+DISAHKAN divergen SEBENAR lewat kes sintetik, lalu diport (bukan sekadar dinormalkan
+masa ingest, supaya semantik sepadan `reconcile.py` walau data lama sudah tersimpan).
+Fragmen `not_sentinel` / `NOT_SENTINEL` menyekat JOIN sentinel-ke-sentinel dan
+mengeluarkan sentinel dari set tracking dikenali di `reconSql._m_sql_courier` DAN
+`recon.mSqlCourier`. Lihat D4 di atas untuk butiran + bukti.
 
-Verify: parity LULUS. Tambah baris tracking `'NONE'` ke fixture, sahkan ketiga enjin
-layan sama.
+Verify (DIBUAT): baseline suci kekal `RM 63,912.00 (369 order)`; kes sintetik SQLite
+`reconcile.py` == `reconSql.py` (takde_awb_jnt+1, duit_hantu+1, tally kekal); suntikan
+sentinel ke dev PG, `reconSql`(postgres) == `recon.ts` PADAN via parityCheck, baris
+sintetik dibuang dan dev PG disahkan bersih; parity penuh LULUS pada data dev bersih
+(`parityPython.json` tak berubah = sifar regres); `npx tsc --noEmit` bersih untuk
+`recon.ts`.
 
 ### Langkah 5. Gabung jadi satu enjin
 

@@ -54,12 +54,20 @@ def _frags(conn):
         # _awb_present: bukan kosong dan bukan 'nan'
         return f"(TRIM(COALESCE({col}, '')) <> '' AND UPPER(TRIM({col})) <> 'NAN')"
 
+    def not_sentinel(col):
+        # Port setia SENTINEL_TRK reconcile.py {"NAN","NONE",""} + isna: nilai
+        # sentinel (sel tracking/AWB kosong yang di-stringify jadi 'NAN'/'NONE')
+        # TIDAK boleh jadi kunci padanan. reconcile.py ganti sentinel dengan kunci
+        # unik masa merge (_no_match_keys); di SQL kita halang JOIN sentinel-ke-
+        # sentinel dan keluarkan sentinel dari set tracking dikenali (all_trk).
+        return f"({col} IS NOT NULL AND UPPER(TRIM({col})) NOT IN ('NAN', 'NONE', ''))"
+
     def r2(x):
         if d == "postgresql":
             return f"ROUND(CAST({x} AS numeric), 2)"
         return f"ROUND({x}, 2)"
 
-    return digit_ok, present_ok, r2
+    return digit_ok, present_ok, r2, not_sentinel
 
 
 def _cutoff(pending_days):
@@ -111,7 +119,7 @@ TMP_DDL = """
 
 def _m_sql_courier(conn, courier):
     cfg = db.COURIERS[courier]
-    digit_ok, present_ok, r2 = _frags(conn)
+    digit_ok, present_ok, r2, not_sentinel = _frags(conn)
     awb_ok = digit_ok if cfg["awb_valid"] is db.is_real_awb else present_ok
     # Anti-join ikut dialek. SQLite: NOT EXISTS berkorelasi buat planner pilih
     # idx_orders_scope = scan ratusan ribu baris SETIAP baris bil (terbukti
@@ -119,16 +127,21 @@ def _m_sql_courier(conn, courier):
     # Postgres: TERBALIK, NOT IN senarai besar tak muat work_mem = linear scan
     # per row; NOT EXISTS dirancang sebagai hash anti-join. Semantik sama
     # (`tracking IS NOT NULL` wajib di sisi NOT IN: satu NULL = hasil kosong).
+    # Sentinel-safe (port setia reconcile.py all_trk, _no_match_keys): baris bil
+    # dengan AWB sentinel ('NAN'/'NONE'/kosong) TAK boleh padan order sentinel dan
+    # TAK dikira "dikenali", supaya jatuh duit_hantu sama macam rujukan kebenaran.
     if conn.engine.dialect.name == "postgresql":
-        known_trk = "EXISTS (SELECT 1 FROM orders ao WHERE ao.tracking = l.awb)"
-        anti = """NOT EXISTS (SELECT 1 FROM orders s WHERE s.tracking = l.awb
+        known_trk = ("EXISTS (SELECT 1 FROM orders ao WHERE ao.tracking = l.awb "
+                     f"AND {not_sentinel('ao.tracking')})")
+        anti = f"""NOT EXISTS (SELECT 1 FROM orders s WHERE s.tracking = l.awb
+                              AND {not_sentinel('s.tracking')}
                               AND s.payment_method IN :cods
                               AND s.shipping_provider IN :prov)"""
     else:
         known_trk = ("l.awb IN (SELECT tracking FROM orders "
-                     "WHERE tracking IS NOT NULL)")
-        anti = """l.awb NOT IN (SELECT tracking FROM orders
-                                WHERE tracking IS NOT NULL
+                     f"WHERE {not_sentinel('tracking')})")
+        anti = f"""l.awb NOT IN (SELECT tracking FROM orders
+                                WHERE {not_sentinel('tracking')}
                                   AND payment_method IN :cods
                                   AND shipping_provider IN :prov)"""
     return f"""
@@ -172,7 +185,7 @@ def _m_sql_courier(conn, courier):
                    END
                END AS kategori
         FROM orders s
-        LEFT JOIN tmp_lines l ON l.awb = s.tracking
+        LEFT JOIN tmp_lines l ON l.awb = s.tracking AND {not_sentinel('s.tracking')}
         WHERE s.payment_method IN :cods AND s.shipping_provider IN :prov
 
         UNION ALL
@@ -189,7 +202,7 @@ def _m_sql_courier(conn, courier):
 
 def _m_sql_prepaid(conn, gateway):
     cfg = db.PREPAID[gateway]
-    _, _, r2 = _frags(conn)
+    _, _, r2, _ = _frags(conn)
     assert cfg  # methods dibind sebagai param
     # Fork anti-join sama seperti _m_sql_courier (lihat nota di situ).
     if conn.engine.dialect.name == "postgresql":

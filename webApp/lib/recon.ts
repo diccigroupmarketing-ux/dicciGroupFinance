@@ -135,6 +135,14 @@ function umurHari(orderDate: string | null): number | null {
 
 const R2 = (x: string) => `ROUND(CAST(${x} AS numeric), 2)`;
 
+// Port setia SENTINEL_TRK reconcile.py {"NAN","NONE",""} + isna: nilai sentinel
+// (sel tracking/AWB kosong yang di-stringify) TAK boleh jadi kunci padanan.
+// reconcile.py ganti sentinel dengan kunci unik masa merge (_no_match_keys); di
+// SQL kita halang JOIN sentinel-ke-sentinel dan keluarkan sentinel dari set
+// tracking dikenali (all_trk), supaya baris bil AWB sentinel jatuh duit_hantu.
+const NOT_SENTINEL = (col: string) =>
+  `(${col} IS NOT NULL AND UPPER(TRIM(${col})) NOT IN ('NAN', 'NONE', ''))`;
+
 // Salinan setia _m_sql_courier (cabang postgresql) dari reconSql.py.
 function mSqlCourier(key: StreamKey): string {
   const cfg = COURIERS[key];
@@ -181,7 +189,7 @@ function mSqlCourier(key: StreamKey): string {
                END
            END AS kategori
     FROM orders s
-    LEFT JOIN tmp_lines l ON l.awb = s.tracking
+    LEFT JOIN tmp_lines l ON l.awb = s.tracking AND ${NOT_SENTINEL("s.tracking")}
     WHERE s.payment_method = ANY($3) AND s.shipping_provider = ANY($4)
 
     UNION ALL
@@ -189,10 +197,12 @@ function mSqlCourier(key: StreamKey): string {
     SELECT NULL, NULL, NULL, NULL, NULL, NULL,
            l.awb, l.bill_id, l.cod_amount, l.fee, l.delivered_date,
            l.cod_amount - l.fee,
-           CASE WHEN EXISTS (SELECT 1 FROM orders ao WHERE ao.tracking = l.awb)
+           CASE WHEN EXISTS (SELECT 1 FROM orders ao WHERE ao.tracking = l.awb
+                             AND ${NOT_SENTINEL("ao.tracking")})
                 THEN 'match_luar_skop' ELSE 'duit_hantu' END
     FROM tmp_lines l
     WHERE NOT EXISTS (SELECT 1 FROM orders s WHERE s.tracking = l.awb
+                      AND ${NOT_SENTINEL("s.tracking")}
                       AND s.payment_method = ANY($3)
                       AND s.shipping_provider = ANY($4))
   `;
