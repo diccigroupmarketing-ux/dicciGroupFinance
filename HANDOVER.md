@@ -59,10 +59,15 @@ Tangga murah dulu (semua gate automatik hijau), lepas tu 4 subagent pemburu sasa
 - **A1 variance Close Pack** (f38cb0c): variance kira atas bil CONFIRMED sahaja
   (selaras BillsTable), tiada lagi isyarat bocor palsu period separa confirm.
 
-Belum dibaiki (keputusan/tangguh): D3 PK awb global (KNOWN, tunggu keputusan owner,
-migrasi schema), C1+C2 TODAY drift UTC/cold-start (severity RENDAH, aging kabur 8 jam
-sehari, bukan duit, housekeeping nanti: TODAY per-request + zon Asia/Kuala_Lumpur),
-baki 8 calon kosmetik/laten (rekod dalam log sesi, tak prioriti).
+Susulan lewat malam (semua siap juga): C1+C2 DITUTUP (reconToday() per-request, zon
+Asia/Kuala_Lumpur eksplisit, 1840e30), 2 kosmetik dibaiki (Activity waktu Malaysia +
+export StockistModal ikut penapis, d7e7754), dan D3 diselesai ikut keputusan owner
+(b959397): BUKAN migrasi PK, tapi kuarantin, parcel sama disebut dalam 2 bil berbeza
+= baris baru diparkir jadual `bill_line_conflicts` (additive), seksyen "Needs
+attention" di page Uploads papar Order ID + dua dua bil + amaun; re-upload bil sama
+kekal senyap idempotent. Bonus: perubahan selling_price antara upload dilog Activity
+sebagai "Price change" (log sahaja, tak menahan). Kiraan akhir pemburuan: 10 daripada
+14 calon dibaiki, baki 4 kosmetik/laten direkod sahaja.
 
 ## Cara run
 
