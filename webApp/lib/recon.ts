@@ -13,9 +13,22 @@ import { getPool } from "./db";
 import { ensureGiftTable } from "./giftsSchema";
 
 export const REMIT_PENDING_DAYS = 14;
-// Tarikh rujukan aging (baseline enjin Python; nanti jadi "hari ini" bila
-// keputusan baseline dibuka semula bersama Adi).
-export const TODAY = new Date("2026-06-18T00:00:00");
+// Tarikh rujukan aging. Cermin logik db.py: baca env RECON_TODAY kalau ada
+// (run baseline deterministik, cth "2026-06-18"), kalau tak fallback tarikh
+// SEBENAR hari ini dinormalkan ke tengah malam TEMPATAN , supaya pengesan
+// aging (belum_remit -> hilang_lewat) bergerak dengan masa pada dashboard LIVE.
+// NOTA zon waktu: tarikh-sahaja diparse sebagai tengah malam TEMPATAN (tambah
+// "T00:00:00") mengekalkan perilaku literal lama; new Date("2026-06-18") tanpa
+// masa akan diparse UTC dan boleh anjak sehari di MYT (+08).
+function computeToday(): Date {
+  const env = process.env.RECON_TODAY;
+  if (env) {
+    return new Date(env.includes("T") ? env : `${env}T00:00:00`);
+  }
+  const n = new Date();
+  return new Date(n.getFullYear(), n.getMonth(), n.getDate());
+}
+export const TODAY = computeToday();
 
 const COD_VALUES = ["COD"];
 const EXC_CAP = 5000;

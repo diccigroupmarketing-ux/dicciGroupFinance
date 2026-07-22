@@ -12,6 +12,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 os.environ["DATABASE_URL"] = "postgresql://dev:dev@localhost:5433/dicci"
+# Kunci tarikh aging deterministik SEBELUM import db (db.py hitung TODAY pada
+# masa import). setdefault hormat env sedia ada (cth testAll.mjs inject
+# RECON_TODAY=2026-06-18). Selari dengan recon.ts/reconEnv.ts.
+os.environ.setdefault("RECON_TODAY", "2026-06-18")
 
 import db
 import reconSql

@@ -7,6 +7,10 @@ import { fileURLToPath } from "node:url";
 
 process.env.DATABASE_URL = "postgresql://dev:dev@localhost:5433/dicci";
 
+// Kunci RECON_TODAY SEBELUM recon dinilai (import dihoist; lihat reconEnv.ts).
+// Import side-effect ini MESTI kekal di atas import ../lib/recon.
+import "./reconEnv";
+
 // Guna versi *Impl (tanpa cache) , unstable_cache perlukan konteks request Next.
 import {
   streamSummaryImpl as streamSummary,
