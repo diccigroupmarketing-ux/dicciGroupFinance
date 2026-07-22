@@ -42,6 +42,28 @@ Sesi paling produktif setakat ini, semua kerja via subagent Opus, semua lulus ga
   mekanisme lain, fasa akan datang). Duplicate upload = bukan isu (upsert ikut order_id,
   sedia idempotent); yang perlu perhalusi nanti ialah dedup sisi feed bayaran.
 
+## Sesi 23 Jul malam (pemburuan bug: 4 pemburu + 1 penyangkal, 4 fix LOKAL belum push)
+
+Tangga murah dulu (semua gate automatik hijau), lepas tu 4 subagent pemburu sasaran
+(upload/API, UI, tarikh/timezone, enjin) + 1 penyangkal sahkan. 14 calon, 4 dibaiki:
+
+- **B1 delete upload selamat** (b90dbc7, severity TINGGI): jadual jejak baru
+  `order_uploads` (additive), delete hanya buang order EKSKLUSIF fail itu; order kongsi
+  dikekalkan + source_file di-re-point; order legacy (tanpa jejak) TAK dipadam senyap,
+  dilapor "kept". PENTING prod: jadual mula kosong, semua order sedia ada = legacy,
+  padam-selamat penuh hanya lepas finance re-upload fail Orders (idempotent).
+- **D1 to_num kurungan** (15813c8): "(30.00)" kini -30 (dulu +30). Ninja net negatif
+  selamat.
+- **D2 CHIP dup** (15813c8): 2 bayaran berjaya order sama dalam 1 statement dijumlah
+  (bukan last-wins), lebihan naik amount_mismatch untuk siasat.
+- **A1 variance Close Pack** (f38cb0c): variance kira atas bil CONFIRMED sahaja
+  (selaras BillsTable), tiada lagi isyarat bocor palsu period separa confirm.
+
+Belum dibaiki (keputusan/tangguh): D3 PK awb global (KNOWN, tunggu keputusan owner,
+migrasi schema), C1+C2 TODAY drift UTC/cold-start (severity RENDAH, aging kabur 8 jam
+sehari, bukan duit, housekeeping nanti: TODAY per-request + zon Asia/Kuala_Lumpur),
+baki 8 calon kosmetik/laten (rekod dalam log sesi, tak prioriti).
+
 ## Cara run
 
 ```
