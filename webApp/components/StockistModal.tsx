@@ -5,6 +5,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
+import { useHydrated } from "./useHydrated";
 import type { StockistDetail } from "@/lib/recon";
 import { fmtDate, fmtInt, fmtRM } from "@/lib/format";
 import ExportCsv from "@/components/ExportCsv";
@@ -70,7 +71,7 @@ const PAY_TAG: Record<string, { text: string; cls: string }> = {
 
 export default function StockistModal({ stockist }: { stockist: string }) {
   const router = useRouter();
-  const [mounted, setMounted] = useState(false);
+  const mounted = useHydrated();
   const [preset, setPreset] = useState<Preset>("all");
   const [cf, setCf] = useState(""); const [ct, setCt] = useState("");
   const [data, setData] = useState<StockistDetail | null>(null);
@@ -81,11 +82,20 @@ export default function StockistModal({ stockist }: { stockist: string }) {
   // Tapisan teks senarai order (order id / tracking), atas hasil penapis tarikh.
   const [orderQ, setOrderQ] = useState("");
 
-  useEffect(() => setMounted(true), []);
-
   const range = useMemo(() => (
     preset === "custom" ? { from: cf || WIDE.from, to: ct || WIDE.to } : presetRange(preset)
   ), [preset, cf, ct]);
+
+  // Reset loading/err masa render bila kunci permintaan (stokis + tempoh) tukar,
+  // corak "adjusting state on prop change" supaya tiada setState segerak dalam
+  // effect. Effect fetch di bawah cuma set state dalam callback async (dibenarkan).
+  const reqKey = `${stockist}|${range.from}|${range.to}`;
+  const [curKey, setCurKey] = useState(reqKey);
+  if (curKey !== reqKey) {
+    setCurKey(reqKey);
+    setLoading(true);
+    setErr(null);
+  }
 
   // Tapis LIVE senarai order yang dah dimuat (order id + tracking), berlapis atas
   // hasil penapis tarikh, corak sama macam StockistTable. TIADA fetch baru.
@@ -122,7 +132,6 @@ export default function StockistModal({ stockist }: { stockist: string }) {
 
   useEffect(() => {
     let alive = true;
-    setLoading(true); setErr(null);
     const q = `s=${encodeURIComponent(stockist)}&from=${range.from}&to=${range.to}`;
     fetch(`/api/stockist?${q}`)
       .then((r) => (r.ok ? r.json() : r.json().then((j) => Promise.reject(j.error || "gagal muat"))))

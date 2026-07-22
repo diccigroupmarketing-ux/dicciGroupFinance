@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
+import { useHydrated } from "./useHydrated";
 import type { SkuGifts, SkuGiftItem } from "@/lib/recon";
 
 type Draft = { gift_name: string; unit_cost: number; qty: number };
@@ -21,16 +22,22 @@ export default function GiftEditor({ initial }: { initial: SkuGifts[] }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [flash, setFlash] = useState<string | null>(null);
-  const [mounted, setMounted] = useState(false);
   const [isNew, setIsNew] = useState(false);
   const [nsku, setNsku] = useState("");
   const [nname, setNname] = useState("");
   const [npaid, setNpaid] = useState(0);
   const [nfree, setNfree] = useState(0);
 
-  useEffect(() => setMounted(true), []);
-  // Segerak semula bila data server berubah (lepas router.refresh).
-  useEffect(() => setRows(initial), [initial]);
+  const mounted = useHydrated();
+
+  // Segerak semula bila data server berubah (lepas router.refresh). Reset masa
+  // render bila prop `initial` tukar rujukan, corak "adjusting state on prop
+  // change" (bukan dalam effect) supaya tiada cascading render.
+  const [prevInitial, setPrevInitial] = useState(initial);
+  if (initial !== prevInitial) {
+    setPrevInitial(initial);
+    setRows(initial);
+  }
 
   const openEdit = (s: SkuGifts) => {
     setIsNew(false);

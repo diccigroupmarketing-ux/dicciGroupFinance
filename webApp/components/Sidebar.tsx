@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { SignOutButton, useUser } from "@clerk/nextjs";
@@ -102,6 +102,7 @@ const GROUPS: NavGroupDef[] = [
       { key: "dhl", name: "DHL", icon: "dhl", href: "/impact/streams/dhl" },
       { key: "ninja", name: "Ninja Van", icon: "ninja", href: "/impact/streams/ninja" },
       { key: "chip", name: "CHIP", icon: "chip", href: "/impact/streams/chip" },
+      { key: "bankTransfer", name: "Bank Transfer", icon: "bank", disabled: true, badge: "Soon" },
     ],
   },
   {
@@ -146,6 +147,49 @@ const COMPANIES = [
 
 const GROUP_LS = (id: string) => `dicci.nav.${id}`;
 
+// Rail collapse: keadaan sebenar dipegang class `sideRailed` pada <html> (diset
+// pra-paint oleh script dalam layout supaya tiada flash). useSyncExternalStore
+// baca terus dari DOM: server snapshot (false) padan HTML server + paint
+// hydration pertama, lepas tu tukar ke nilai sebenar. MutationObserver notify
+// bila class berubah (toggleRail).
+function subscribeRail(cb: () => void) {
+  const obs = new MutationObserver(cb);
+  obs.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
+  return () => obs.disconnect();
+}
+const railSnapshot = () => document.documentElement.classList.contains("sideRailed");
+const railServerSnapshot = () => false;
+
+// Buka/tutup tiap kumpulan, keadaan sebenar dalam localStorage (default: semua
+// buka). Store luaran + useSyncExternalStore supaya nilai LS hanya masuk selepas
+// hydration (elak mismatch), tanpa setState dalam effect. Snapshot di-cache ikut
+// signature supaya rujukan stabil (elak amaran getSnapshot React).
+const SERVER_GROUPS: Record<string, boolean> = Object.fromEntries(GROUPS.map((g) => [g.id, true]));
+let groupCache: Record<string, boolean> = SERVER_GROUPS;
+let groupSig = "";
+function readGroups(): Record<string, boolean> {
+  let sig = "";
+  const next: Record<string, boolean> = {};
+  for (const g of GROUPS) {
+    let v = true;
+    try {
+      if (localStorage.getItem(GROUP_LS(g.id)) === "0") v = false;
+    } catch {}
+    next[g.id] = v;
+    sig += v ? "1" : "0";
+  }
+  if (sig !== groupSig) { groupSig = sig; groupCache = next; }
+  return groupCache;
+}
+const readServerGroups = () => SERVER_GROUPS;
+const groupListeners = new Set<() => void>();
+function notifyGroups() { for (const l of groupListeners) l(); }
+function subscribeGroups(cb: () => void) {
+  groupListeners.add(cb);
+  window.addEventListener("storage", cb);
+  return () => { groupListeners.delete(cb); window.removeEventListener("storage", cb); };
+}
+
 export default function Sidebar() {
   const path = usePathname();
   const { user } = useUser();
@@ -155,44 +199,21 @@ export default function Sidebar() {
 
   // Collapse jadi icon rail. Keadaan sebenar dipegang class `sideRailed` pada
   // <html> (diset pra-paint oleh script kecil dalam layout supaya tiada flash).
-  // State di sini cuma cermin dia untuk aria + tooltip.
-  const [collapsed, setCollapsed] = useState(false);
-  useEffect(() => {
-    setCollapsed(document.documentElement.classList.contains("sideRailed"));
-  }, []);
+  // Baca terus dari DOM (store luaran), cuma cermin untuk aria + tooltip.
+  const collapsed = useSyncExternalStore(subscribeRail, railSnapshot, railServerSnapshot);
   const toggleRail = () => {
-    setCollapsed((prev) => {
-      const next = !prev;
-      document.documentElement.classList.toggle("sideRailed", next);
-      try { localStorage.setItem("dicci.sideRailed", next ? "1" : "0"); } catch {}
-      return next;
-    });
+    const next = !collapsed;
+    document.documentElement.classList.toggle("sideRailed", next);
+    try { localStorage.setItem("dicci.sideRailed", next ? "1" : "0"); } catch {}
   };
   const tip = (label: string) => (collapsed ? label : undefined);
 
   // Buka/tutup tiap kumpulan, diingat dalam localStorage (default: semua buka).
-  const [open, setOpen] = useState<Record<string, boolean>>(
-    () => Object.fromEntries(GROUPS.map((g) => [g.id, true])),
-  );
-  useEffect(() => {
-    setOpen((prev) => {
-      const next = { ...prev };
-      for (const g of GROUPS) {
-        try {
-          const v = localStorage.getItem(GROUP_LS(g.id));
-          if (v === "0") next[g.id] = false;
-          else if (v === "1") next[g.id] = true;
-        } catch {}
-      }
-      return next;
-    });
-  }, []);
+  const open = useSyncExternalStore(subscribeGroups, readGroups, readServerGroups);
   const toggleGroup = (id: string) => {
-    setOpen((prev) => {
-      const next = { ...prev, [id]: !prev[id] };
-      try { localStorage.setItem(GROUP_LS(id), next[id] ? "1" : "0"); } catch {}
-      return next;
-    });
+    const next = !(open[id] ?? true);
+    try { localStorage.setItem(GROUP_LS(id), next ? "1" : "0"); } catch {}
+    notifyGroups();
   };
 
   // Company switcher dropdown.
