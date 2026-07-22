@@ -15,20 +15,36 @@ import { ensureGiftTable } from "./giftsSchema";
 export const REMIT_PENDING_DAYS = 14;
 // Tarikh rujukan aging. Cermin logik db.py: baca env RECON_TODAY kalau ada
 // (run baseline deterministik, cth "2026-06-18"), kalau tak fallback tarikh
-// SEBENAR hari ini dinormalkan ke tengah malam TEMPATAN , supaya pengesan
-// aging (belum_remit -> hilang_lewat) bergerak dengan masa pada dashboard LIVE.
-// NOTA zon waktu: tarikh-sahaja diparse sebagai tengah malam TEMPATAN (tambah
-// "T00:00:00") mengekalkan perilaku literal lama; new Date("2026-06-18") tanpa
-// masa akan diparse UTC dan boleh anjak sehari di MYT (+08).
+// SEBENAR hari ini di zon Asia/Kuala_Lumpur, dinormalkan ke tengah malam
+// TEMPATAN , supaya pengesan aging (belum_remit -> hilang_lewat) bergerak
+// dengan masa pada dashboard LIVE.
+// NOTA zon waktu: prod Vercel jalan UTC. Kalau kita ambil komponen tarikh dari
+// jam MESIN (new Date().getFullYear() dll), maka 00:00-08:00 waktu Malaysia
+// sistem masih ingat "semalam" (UTC belum tukar hari), jadi baldi hilang_lewat
+// under-report sehari dalam tetingkap itu. Sebab tu kita kira tarikh EKSPLISIT
+// dalam Asia/Kuala_Lumpur guna Intl (en-CA -> "YYYY-MM-DD"), lepas tu bina Date
+// tengah malam TEMPATAN (tambah "T00:00:00") supaya perilaku getter tempatan
+// (cutoff/umurHari) kekal identik dengan baseline literal lama.
 function computeToday(): Date {
   const env = process.env.RECON_TODAY;
   if (env) {
     return new Date(env.includes("T") ? env : `${env}T00:00:00`);
   }
-  const n = new Date();
-  return new Date(n.getFullYear(), n.getMonth(), n.getDate());
+  const ymd = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Kuala_Lumpur",
+    year: "numeric", month: "2-digit", day: "2-digit",
+  }).format(new Date());
+  return new Date(`${ymd}T00:00:00`);
 }
-export const TODAY = computeToday();
+
+// Tarikh rujukan aging, dikira PER-PANGGILAN (bukan const beku masa modul load).
+// Instance Vercel warm boleh hidup berjam jam merentas tengah malam; kalau ini
+// const yang dinilai sekali masa cold start, tarikh tak update selepas tengah
+// malam dan aging jadi basi. Fungsi memastikan setiap request kira semula.
+// RECON_TODAY diutamakan bila ada (harness parity bergantung padanya).
+export function reconToday(): Date {
+  return computeToday();
+}
 
 const COD_VALUES = ["COD"];
 const EXC_CAP = 5000;
@@ -117,12 +133,13 @@ function iso(d: Date): string {
 function cutoff(pendingDays: number): string {
   // Bina cutoff dari komponen wall-clock TODAY guna Date.UTC supaya hasil sama
   // tanpa kira zon waktu mesin (elak drift 8 jam lawan enjin Python di MYT).
-  // TODAY diparse waktu tempatan, jadi getter tempatan pulang jam dinding yang
-  // ditulis; Date.UTC bina semula sebagai UTC + tolak hari secara kalendar
+  // reconToday() diparse waktu tempatan, jadi getter tempatan pulang jam dinding
+  // yang ditulis; Date.UTC bina semula sebagai UTC + tolak hari secara kalendar
   // (underflow hari dinormalkan), padan _cutoff() reconSql.py yang naive.
+  const t = reconToday();
   const d = new Date(Date.UTC(
-    TODAY.getFullYear(), TODAY.getMonth(), TODAY.getDate() - (pendingDays + 1),
-    TODAY.getHours(), TODAY.getMinutes(), TODAY.getSeconds()));
+    t.getFullYear(), t.getMonth(), t.getDate() - (pendingDays + 1),
+    t.getHours(), t.getMinutes(), t.getSeconds()));
   return iso(d);
 }
 
@@ -130,7 +147,7 @@ function umurHari(orderDate: string | null): number | null {
   if (!orderDate) return null;
   const d = new Date(orderDate.replace(" ", "T"));
   if (isNaN(d.getTime())) return null;
-  return Math.floor((TODAY.getTime() - d.getTime()) / 86400_000);
+  return Math.floor((reconToday().getTime() - d.getTime()) / 86400_000);
 }
 
 const R2 = (x: string) => `ROUND(CAST(${x} AS numeric), 2)`;
@@ -717,7 +734,7 @@ const BOTTLES_SUBQ = `COALESCE((SELECT SUM(os.qty * (COALESCE(sb.paid, 0) + COAL
              FROM order_skus os LEFT JOIN sku_bottles sb ON UPPER(TRIM(sb.sku)) = os.sku
              WHERE os.order_id = o.order_id), 0)`;
 
-// Aging ikut TODAY (rujukan aging app, 18 Jun 2026); clamp negatif ke 0.
+// Aging ikut reconToday() (rujukan aging app, 18 Jun 2026); clamp negatif ke 0.
 function agingDays(oldest: string | null): number | null {
   return oldest ? Math.max(0, umurHari(oldest) ?? 0) : null;
 }

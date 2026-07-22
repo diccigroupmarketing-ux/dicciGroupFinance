@@ -1,9 +1,9 @@
-// Side-effect: kunci RECON_TODAY SEBELUM modul recon dinilai.
+// Side-effect: kunci RECON_TODAY SEBELUM recon dipakai (parity deterministik).
 //
-// recon.ts menetapkan `export const TODAY = computeToday()` pada masa modul
-// dimuatkan (eager). Import ES dihoist dan dinilai dahulu, jadi menetapkan
-// process.env.RECON_TODAY dalam BADAN parityCheck.ts terlambat (recon sudah
-// dinilai). Fail ini mesti diimport DULU (sebelum import ../lib/recon) supaya
-// env dikunci sebelum recon menghitung TODAY. `??=` hormat env sedia ada
-// (cth testAll.mjs yang sudah suntik RECON_TODAY=2026-06-18 ke child).
+// recon.ts kini kira tarikh secara lazy dalam reconToday() (bukan lagi const
+// eager masa modul load), jadi env cuma perlu ditetapkan sebelum panggilan
+// reconToday() PERTAMA. Import fail ini DULU (sebelum ../lib/recon) kekal cara
+// paling selamat supaya env terkunci sebelum sebarang query recon jalan.
+// `??=` hormat env sedia ada (cth testAll.mjs yang sudah suntik
+// RECON_TODAY=2026-06-18 ke child).
 process.env.RECON_TODAY ??= "2026-06-18";
