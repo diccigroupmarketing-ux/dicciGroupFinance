@@ -3,12 +3,44 @@
 Tarikh mula: 2026-06-18
 
 ## Status
-- progress: Fasa 1 pada dasarnya siap. WebApp Next.js LIVE di Vercel (diccigroupfinance.vercel.app), terkunci belakang Clerk auth (allowlist), cover 100% view Streamlit lama. Ciri terkini (22 Jul, LIVE): tapis client di Stockists + Uploads + tapis order dalam StockistModal (TableFilter kongsi; pintu carian Dashboard + link sidebar "Find order" DIBUANG atas arahan owner lepas test, page /impact/search kekal via URL terus), dan medan "Actual deposit date" dalam Bank Confirm + kolum Deposited dengan lag (+Nd) + masuk export (team TAK perlu adjust tarikh PDF J&T lagi). 3 feed disahkan dengan FAIL SEBENAR pertama kali (22 Jul, data/sampel/ gitignored): CHIP (112 paid masuk, 12 overdue ditolak, tekaan PREPAID_SUCCESS_STATUS SAH), DHL (UTF-16 .xls tepat jangkaan), Ninja (4 baris, nota: SOA campur baris caj bukan COD, akan nampak "pelik" dalam recon, bukan bug). Finance dah upload data sebenar (561 order, 2 bil J&T); 16 SKU live perlu masuk katalog di prod.
+- progress: (23 Jul) 4 divergen 3 enjin recon DITUTUP semua (TODAY dinamik, guard shared AWB, recon prepaid CHIP penuh + page /impact/streams/chip LIVE, sentinel NONE), sidebar 5 kumpulan + company switcher Dicci, npm test + check:engine + 33 ujian parser, panduan 5 baldi, barisan proposal agenticOs bersih. 12 commit LOKAL belum push, belum deploy (lihat seksyen Sesi 23 Jul). Sebelum tu: Fasa 1 pada dasarnya siap. WebApp Next.js LIVE di Vercel (diccigroupfinance.vercel.app), terkunci belakang Clerk auth (allowlist), cover 100% view Streamlit lama. Ciri terkini (22 Jul, LIVE): tapis client di Stockists + Uploads + tapis order dalam StockistModal (TableFilter kongsi; pintu carian Dashboard + link sidebar "Find order" DIBUANG atas arahan owner lepas test, page /impact/search kekal via URL terus), dan medan "Actual deposit date" dalam Bank Confirm + kolum Deposited dengan lag (+Nd) + masuk export (team TAK perlu adjust tarikh PDF J&T lagi). 3 feed disahkan dengan FAIL SEBENAR pertama kali (22 Jul, data/sampel/ gitignored): CHIP (112 paid masuk, 12 overdue ditolak, tekaan PREPAID_SUCCESS_STATUS SAH), DHL (UTF-16 .xls tepat jangkaan), Ninja (4 baris, nota: SOA campur baris caj bukan COD, akan nampak "pelik" dalam recon, bukan bug). Finance dah upload data sebenar (561 order, 2 bil J&T); 16 SKU live perlu masuk katalog di prod.
 - fasa: WebApp Next.js production LIVE, mod handoff data-safe (prod Neon suci, semua ubah suai diuji atas dev DB dulu). Streamlit lama kekal hidup sebagai backup pasif (soft-retire, tak jadi delete).
-- seterusnya: (1) Rotate kredential Neon = GATE terakhir sebelum jemput finance upload data BETUL, runbook siap (runbookRotateNeon.md), bila rotate update env Vercel SAHAJA, owner tangguh lagi 22 Jul. (2) Minta CSV export Google Sheet team finance, lepas tu Fasa 0 Sheet check (skrip gate luar app: sahkan ada order ID + semak lajur botol/komisen, design penuh dikunci, lihat seksyen "Sesi 22 Jul"). (3) Owner beritahu team: BERHENTI adjust tarikh PDF J&T, guna medan Actual deposit date masa Confirm. (4) Push 3 commit tertunggak ke GitHub (deploy dah jalan, decoupled). (5) Owner sahkan takrif kempen botol KJS-3-1 & KJS-4-2. (6) Clerk production (perlu domain custom, runbook siap). (7) Upload statement CHIP tally penuh (Batch D) tangguh sampai finance nak. Export Fasa B + komisen enrich = HOLD. Backlog baru: butang "Report mismatch" (lepas Sheet check terbukti).
+- seterusnya: (0) Push 12 commit + deploy Vercel (gate owner; WAJIB beritahu team dulu, angka aging akan berubah bila jam TODAY hidup di live). (1) Rotate kredential Neon = GATE terakhir sebelum jemput finance upload data BETUL, runbook siap (runbookRotateNeon.md), bila rotate update env Vercel SAHAJA, owner tangguh lagi 22 Jul. (2) Minta CSV export Google Sheet team finance, lepas tu Fasa 0 Sheet check (skrip gate luar app: sahkan ada order ID + semak lajur botol/komisen, design penuh dikunci, lihat seksyen "Sesi 22 Jul"). (3) Owner beritahu team: BERHENTI adjust tarikh PDF J&T, guna medan Actual deposit date masa Confirm. (4) Push 3 commit tertunggak ke GitHub (deploy dah jalan, decoupled). (5) Owner sahkan takrif kempen botol KJS-3-1 & KJS-4-2. (6) Clerk production (perlu domain custom, runbook siap). (7) Upload statement CHIP tally penuh (Batch D) tangguh sampai finance nak. Export Fasa B + komisen enrich = HOLD. Backlog baru: butang "Report mismatch" (lepas Sheet check terbukti).
 - nota (2026-07-09): peta Arkitektur (Understand-Anything) untuk projek ni DAH wujud di `.understand-anything/knowledge-graph.json` (221 node, 451 edge, 7 layer nama Melayu, tour 12 langkah, output BM), sudah di-gitignore jadi repo public selamat (52 fail data peribadi/secrets/build di-skip sengaja). HUD modul Arkitektur render terus (endpoint `/api/arch/ua` terima root). Refresh bila kod berubah: run `/understand` dalam projek ni (incremental, fingerprint baseline dah ada).
 - nota Jarvis (2026-07-19): KEPUTUSAN ARCHITECTURE DIKUNCI owner lepas 2x /timbang: multi syarikat = SATU database Neon dikongsi, company_id + RLS FORCE fail closed, BUKAN database per syarikat. Tangga kerja 0 sampai 7 (0 = rotate Neon, selaras dengan gate sedia ada; 2 = satukan enjin recon 3 salinan jadi 1 SEBELUM company label; WAJIB akaun app berkuasa rendah sebab RLS tak terpakai pada owner role). Detail penuh: knowledgeVault decisions/dicciFinanceSatuGudang20260718.md. PETA ARCHITECTURE interaktif: `peta/` kini LOKAL SAHAJA (22 Jul: di-gitignore + dikeluarkan dari git atas keputusan owner, repo public + peta ada info dalaman bisnes; backup rasmi = knowledgeVault/raw/petaDicciFinanceV*.html). Peta v1.4 (skema versi titik mulai 22 Jul): 8 flow (+ swimlane "Berlapis" 4 lorong), drill L0 sampai L3, mod Semasa vs Sasaran, ujian 190 pass. Buka: peta/buka.command port 4100; refresh: /petaDicci. JANGAN edit renderer masa refresh, ganti blok PETA_DATA sahaja, dan JANGAN commit/push peta.
-- kemaskini: 2026-07-22
+- kemaskini: 2026-07-23
+
+## Sesi 23 Jul (enjin selaras + sidebar baru, 12 commit LOKAL belum push/deploy)
+
+Sesi paling produktif setakat ini, semua kerja via subagent Opus, semua lulus gate:
+
+- **Barisan proposal agenticOs dibersihkan**: 13 proposal dicciGroupFinance semua terminal.
+  6 dilaksana sesi ini, 2 rejected (superseded/duplicate), worktree + branch proposal dibuang.
+- **Jaring keselamatan baru**: `npm test` (webApp/scripts/testAll.mjs, 5 suite + restore,
+  RECON_TODAY auto pin), `npm run check:engine` (checkEngineSync.mjs, gagal bila api/engine
+  lari dari root), 33 ujian regresi parser (webApp/api/engine/tests/testIngestParsers.py,
+  fixture sintetik, tanpa DB).
+- **4 divergen enjin DITUTUP dalam hari sama** (inventori: docs/enjinReconDivergen.md):
+  D1 jam TODAY recon.ts dinyahbeku (baca RECON_TODAY, fallback hari sebenar; harness pin
+  2026-06-18 dua belah via scripts/reconEnv.ts + parityDump setdefault). D2 guard shared
+  AWB diport ke reconSql.py (bug: laluan SQL boleh double count duit satu parcel). D3
+  laluan recon prepaid penuh dalam recon.ts (`streamPrepaidSummary`), page
+  /impact/streams/chip LIVE dengan nota "duit CHIP masuk bank Dicci Group bukan Impact";
+  CHIP SENGAJA tak masuk roll-up tunai Impact. D4 sentinel "NONE" disekat dalam JOIN
+  reconSql + recon.ts (bug sebenar: NONE=NONE boleh jadi tally palsu). Langkah 1 tangga 2
+  penyatuan enjin SELESAI.
+- **Sidebar webApp disusun semula**: company switcher Dicci (Group/Impact/Flux/Hub/Empyre,
+  4 page Coming soon jujur di /group /flux /hub /empyre), 5 kumpulan dropdown (Money in:
+  Dashboard/J&T/DHL/Ninja/CHIP/Bank Transfer(Soon), Money out: Soon, Operations, Tools,
+  Settings: Soon), state localStorage, collapse rail kekal. 6 lint error
+  set-state-in-effect dibaiki (useSyncExternalStore, sifar ubah behavior).
+- **Dokumen**: panduanFinance.md + seksyen 5 baldi bayaran jujur (label persis UI).
+  Peta lokal v1.5 (CHIP live), 190 ujian lulus, backup vault raw.
+- **AWAS deploy**: bila deploy Vercel, jam TODAY jadi dinamik di LIVE, order lama belum
+  remit akan naik hilang_lewat serentak. Beritahu team dulu sebelum deploy.
+- Keputusan owner sesi ini: Flux = syarikat kedua paling berat nanti (data TikTok,
+  mekanisme lain, fasa akan datang). Duplicate upload = bukan isu (upsert ikut order_id,
+  sedia idempotent); yang perlu perhalusi nanti ialah dedup sisi feed bayaran.
 
 ## Cara run
 
