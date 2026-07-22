@@ -1,10 +1,13 @@
-import { uploadedFiles } from "@/lib/recon";
+import { uploadedFiles, billLineConflicts } from "@/lib/recon";
 import UploadsManager from "@/components/UploadsManager";
+import BillConflicts from "@/components/BillConflicts";
 
 export const dynamic = "force-dynamic";
 
 export default async function UploadsPage() {
-  const files = await uploadedFiles();
+  const [files, conflicts] = await Promise.all([
+    uploadedFiles(), billLineConflicts(),
+  ]);
 
   return (
     <>
@@ -19,6 +22,8 @@ export default async function UploadsPage() {
           </div>
         </div>
       </div>
+
+      {conflicts.length > 0 && <BillConflicts rows={conflicts} />}
 
       <UploadsManager files={files} />
 

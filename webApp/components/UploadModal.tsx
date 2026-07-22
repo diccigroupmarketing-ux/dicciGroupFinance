@@ -67,9 +67,11 @@ export default function UploadModal() {
         } else if (!j.kind) {
           out[i] = { ...out[i], state: "unknown", detail: "format not recognised · nothing written" };
         } else {
+          const q = Number(j.quarantined ?? 0);
+          const qNote = q > 0 ? ` · ${q} quarantined (see Uploads)` : "";
           out[i] = {
             ...out[i], state: "done",
-            detail: `${KIND_LABEL[j.kind] ?? j.kind} · ${j.rows} rows`,
+            detail: `${KIND_LABEL[j.kind] ?? j.kind} · ${j.rows} rows${qNote}`,
           };
         }
       } catch {

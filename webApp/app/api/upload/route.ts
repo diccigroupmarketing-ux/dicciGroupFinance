@@ -54,7 +54,9 @@ export async function POST(req: Request) {
       try {
         const parsed = JSON.parse(line);
         if (parsed.kind) {
-          await logEvent(actor, "upload", `${filename}: ${parsed.kind} · ${parsed.rows} rows`);
+          const q = Number(parsed.quarantined ?? 0);
+          const qNote = q > 0 ? ` · ${q} quarantined` : "";
+          await logEvent(actor, "upload", `${filename}: ${parsed.kind} · ${parsed.rows} rows${qNote}`);
           revalidateTag("recon", { expire: 0 });
         }
         return NextResponse.json(parsed, { status: parsed.error ? 500 : 200 });
@@ -84,7 +86,9 @@ export async function POST(req: Request) {
   });
   const payload = await res.json().catch(() => ({ error: "respons tidak sah dari enjin ingest" }));
   if (res.ok && payload.kind) {
-    await logEvent(actor, "upload", `${filename}: ${payload.kind} · ${payload.rows} rows`);
+    const q = Number(payload.quarantined ?? 0);
+    const qNote = q > 0 ? ` · ${q} quarantined` : "";
+    await logEvent(actor, "upload", `${filename}: ${payload.kind} · ${payload.rows} rows${qNote}`);
     revalidateTag("recon", { expire: 0 });
   }
   return NextResponse.json(payload, { status: res.status });

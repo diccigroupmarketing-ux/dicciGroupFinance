@@ -63,7 +63,10 @@ class handler(BaseHTTPRequestHandler):
             if not kind:
                 # Format tak dikenali = TIADA apa ditulis (ingest_bytes tak sentuh DB).
                 return self._json(200, {"kind": None, "rows": 0})
-            return self._json(200, {"kind": kind, "rows": n})
+            # Bilangan baris bil dikuarantin (double-billed) untuk fail ni; 0
+            # untuk feed bukan-bil (fighter/wallet/chip tiada baris konflik).
+            q = ingest.conflicts_count(conn, filename)
+            return self._json(200, {"kind": kind, "rows": n, "quarantined": q})
         except Exception as e:  # rollback supaya fail rosak tak tinggalkan separuh tulis
             if conn is not None:
                 try:

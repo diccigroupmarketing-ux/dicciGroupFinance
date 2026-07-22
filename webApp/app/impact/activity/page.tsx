@@ -6,12 +6,12 @@ export const dynamic = "force-dynamic";
 const ACTION_LABEL: Record<string, string> = {
   upload: "Upload", sku_save: "SKU mapping", store_reset: "Store reset",
   bank_confirm: "Bank confirmed", bank_clear: "Bank cleared",
-  upload_delete: "Upload deleted",
+  upload_delete: "Upload deleted", price_change: "Price change",
 };
 const ACTION_TONE: Record<string, string> = {
   upload: "chipPos", sku_save: "chipMut", store_reset: "chipDan",
   bank_confirm: "chipPos", bank_clear: "chipCau",
-  upload_delete: "chipDan",
+  upload_delete: "chipDan", price_change: "chipCau",
 };
 
 // ts disimpan dalam UTC (new Date().toISOString()). Papar dalam waktu Malaysia

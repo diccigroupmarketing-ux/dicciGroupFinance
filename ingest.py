@@ -14,10 +14,11 @@ warnings.filterwarnings("ignore")
 import io
 import re
 import shutil
-from datetime import datetime
+import uuid
+from datetime import datetime, timezone
 
 import pandas as pd
-from sqlalchemy import text
+from sqlalchemy import bindparam, text
 
 import db
 
@@ -262,6 +263,54 @@ ORDER_UPLOADS_UPSERT = text("""
 """)
 
 
+# Jejak SENYAP perubahan harga order. Bila order SEDIA ADA datang semula dengan
+# selling_price BERBEZA (bukan status berubah, itu normal), catat ke app_events
+# (dibaca Activity page webApp). TAK menahan apa apa, log sahaja. Order baru atau
+# perubahan bukan-duit TIDAK dilog (elak bising). Idempotent secara praktikal:
+# re-upload fail SAMA = harga sama = tiada log baru.
+PRICE_EVENT_INSERT = text("""
+    INSERT INTO app_events (event_id, ts, actor, action, detail)
+    VALUES (:event_id, :ts, :actor, :action, :detail)
+""")
+
+
+def _log_price_changes(conn, order_ids, new_prices, source_file):
+    """order_ids/new_prices = Series selari (order_id string, selling_price num).
+    Bandingkan lawan harga tersimpan; log satu app_events per order yang harganya
+    berubah. Pulang bilangan perubahan dilog."""
+    ids = [str(x) for x in order_ids.tolist()]
+    if not ids:
+        return 0
+    old = {}
+    CHUNK = 500
+    for i in range(0, len(ids), CHUNK):
+        res = conn.execute(
+            text("SELECT order_id, selling_price FROM orders WHERE order_id IN :ids")
+            .bindparams(bindparam("ids", expanding=True)),
+            {"ids": ids[i:i + CHUNK]},
+        ).fetchall()
+        for oid, sp in res:
+            old[str(oid)] = sp
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    events = []
+    for oid, new_sp in zip(ids, new_prices.tolist()):
+        if oid not in old or old[oid] is None:
+            continue  # order baru atau harga lama tiada = bukan "perubahan"
+        old_v = round(float(old[oid]), 2)
+        new_v = round(float(new_sp or 0), 2)
+        if old_v == new_v:
+            continue  # tiada perubahan duit = senyap
+        events.append({
+            "event_id": str(uuid.uuid4()), "ts": ts, "actor": "ingest",
+            "action": "price_change",
+            "detail": (f"Order {oid}: RM {old_v:,.2f} -> RM {new_v:,.2f} "
+                       f"({source_file})")[:500],
+        })
+    if events:
+        conn.execute(PRICE_EVENT_INSERT, events)
+    return len(events)
+
+
 def ingest_fighter(df, source_file, conn):
     # Buang baris tanpa Order ID (baris total/blank export). Satu sel kosong buat
     # pandas baca lajur sebagai float, jadi buang juga suffix ".0" (macam wallet
@@ -284,6 +333,8 @@ def ingest_fighter(df, source_file, conn):
     })
     rows = db.to_records(o)
     if rows:  # fail sah tapi kosong (header sahaja) tak patut crash executemany
+        # Log perubahan harga SEBELUM upsert (harga lama masih dalam DB).
+        _log_price_changes(conn, o["order_id"], o["selling_price"], source_file)
         conn.execute(ORDERS_UPSERT, rows)
         # Rakam pasangan (order_id, fail) ni untuk jejak vouch many-to-many.
         # ingested_at sama dengan orders supaya delete boleh pilih fail vouch
@@ -384,6 +435,72 @@ LINES_UPSERT = text("""
 """)
 
 
+# Kuarantin baris bil bertindih (isu D3). AWB sedia ada + bill_id BERBEZA = kes
+# pelik (parcel sama disebut 2 bil), baris baru TIDAK ditimpa, diparkir di sini.
+CONFLICTS_UPSERT = text("""
+    INSERT INTO bill_line_conflicts (awb, bill_id_new, bill_id_existing, cod_new,
+                                     cod_existing, fee_new, delivered_date,
+                                     source_file, detected_at)
+    VALUES (:awb, :bill_id_new, :bill_id_existing, :cod_new, :cod_existing,
+            :fee_new, :delivered_date, :source_file, :detected_at)
+    ON CONFLICT(awb, bill_id_new) DO UPDATE SET
+        bill_id_existing=excluded.bill_id_existing, cod_new=excluded.cod_new,
+        cod_existing=excluded.cod_existing, fee_new=excluded.fee_new,
+        delivered_date=excluded.delivered_date, source_file=excluded.source_file,
+        detected_at=excluded.detected_at
+""")
+
+
+def _quarantine_conflicts(conn, rows, source_file):
+    """Pisah baris bil (records dari to_records) yang AWB-nya sudah wujud dalam
+    bil BERBEZA. Baris konflik TIDAK ditimpa; disimpan ke bill_line_conflicts
+    untuk semakan finance. AWB sama + bill_id SAMA = re-upload bil sama (biar
+    upsert idempotent, bukan konflik). Pulang (baris_selamat, bilangan_konflik).
+
+    Dipanggil oleh ingest_jnt/dhl/ninja (semua guna cod_bill_lines PK awb)."""
+    if not rows:
+        return rows, 0
+    awbs = [r["awb"] for r in rows if r.get("awb")]
+    existing = {}
+    CHUNK = 500
+    for i in range(0, len(awbs), CHUNK):
+        res = conn.execute(
+            text("SELECT awb, bill_id, cod_amount, fee FROM cod_bill_lines "
+                 "WHERE awb IN :awbs")
+            .bindparams(bindparam("awbs", expanding=True)),
+            {"awbs": awbs[i:i + CHUNK]},
+        ).fetchall()
+        for a, bid, cod, fee in res:
+            existing[a] = (bid, cod, fee)
+    detected = now_iso()
+    keep, conflicts = [], []
+    for r in rows:
+        ex = existing.get(r["awb"])
+        if ex and ex[0] != r["bill_id"]:
+            conflicts.append({
+                "awb": r["awb"], "bill_id_new": r["bill_id"],
+                "bill_id_existing": ex[0], "cod_new": r.get("cod_amount"),
+                "cod_existing": ex[1], "fee_new": r.get("fee"),
+                "delivered_date": r.get("delivered_date"),
+                "source_file": source_file, "detected_at": detected,
+            })
+        else:
+            keep.append(r)
+    if conflicts:
+        conn.execute(CONFLICTS_UPSERT, conflicts)
+    return keep, len(conflicts)
+
+
+def conflicts_count(conn, source_file):
+    """Bilangan baris bil dikuarantin (double-billed) untuk fail ini. Dipakai
+    laluan upload surface bilangan dalam mesej hasil (idempotent: re-upload fail
+    konflik sama kekal kira sama)."""
+    return conn.execute(
+        text("SELECT COUNT(*) FROM bill_line_conflicts WHERE source_file = :sf"),
+        {"sf": source_file},
+    ).scalar() or 0
+
+
 def ingest_jnt(df, source_file, conn):
     # Buang baris AWB kosong (baris total/blank hujung bil), macam guard Ninja/DHL.
     # Kalau tak, NaN jadi string "NAN" dan padan dengan semua order tanpa tracking.
@@ -407,7 +524,9 @@ def ingest_jnt(df, source_file, conn):
     })
     rows = db.to_records(l)
     if rows:  # fail sah tapi kosong (header sahaja) tak patut crash executemany
-        conn.execute(LINES_UPSERT, rows)
+        rows, _ = _quarantine_conflicts(conn, rows, source_file)
+        if rows:
+            conn.execute(LINES_UPSERT, rows)
     conn.commit()
     return len(rows)
 
@@ -472,7 +591,9 @@ def ingest_dhl(parsed, source_file, conn):
     })
     recs = db.to_records(l)
     if recs:
-        conn.execute(LINES_UPSERT, recs)
+        recs, _ = _quarantine_conflicts(conn, recs, source_file)
+        if recs:
+            conn.execute(LINES_UPSERT, recs)
     conn.commit()
     return len(recs)
 
@@ -508,7 +629,9 @@ def ingest_ninja(df, source_file, conn):
     })
     recs = db.to_records(l)
     if recs:
-        conn.execute(LINES_UPSERT, recs)
+        recs, _ = _quarantine_conflicts(conn, recs, source_file)
+        if recs:
+            conn.execute(LINES_UPSERT, recs)
     conn.commit()
     return len(recs)
 

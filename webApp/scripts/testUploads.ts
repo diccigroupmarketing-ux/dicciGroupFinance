@@ -2,7 +2,7 @@
 // restore selepas via loadDevDb.py + backfillAutoSkus.py.
 //   DATABASE_URL=postgresql://dev:dev@localhost:5433/dicci npx tsx scripts/testUploads.ts
 import { deleteUpload } from "../lib/mutations";
-import { uploadedFiles, stockistDetail } from "../lib/recon";
+import { uploadedFiles, stockistDetail, billLineConflicts } from "../lib/recon";
 import { getPool } from "../lib/db";
 
 if (!(process.env.DATABASE_URL ?? "").includes("localhost")) {
@@ -170,6 +170,47 @@ async function main() {
   ok(d3.orders === 0, `(iii) orders deleted = 0 (dapat ${d3.orders})`);
   ok(d3.ordersKeptLegacy === 1, `(iii) ordersKeptLegacy = 1 (dapat ${d3.ordersKeptLegacy})`);
   await cleanB1();
+
+  // =====================================================================
+  // 9) D3: billLineConflicts() baca bill_line_conflicts + join ke order ikut
+  //    tracking = awb. Data SINTETIK (prefix D3*), dibersih selepas. Enjin Python
+  //    yang MENGISI jadual ni (diuji dalam testIngestParsers); sini uji lapisan
+  //    baca webApp: baris keluar, join order betul, order tiada tetap dipapar.
+  // =====================================================================
+  const D3_AWBS = ["9990000001", "9990000002"];
+  const cleanD3 = async () => {
+    await pool.query("DELETE FROM bill_line_conflicts WHERE awb = ANY($1::text[])", [D3_AWBS]);
+    await pool.query("DELETE FROM orders WHERE order_id = 'D3ORDER'");
+  };
+  await cleanD3();
+  // Satu konflik ADA order padanan (tracking = awb), satu TIADA order.
+  await pool.query(
+    `INSERT INTO orders (order_id, tracking, seller_name, status, payment_method,
+                         shipping_provider, selling_price)
+     VALUES ('D3ORDER', '9990000001', 'Rekaan Stockist', 'Completed', 'COD',
+             'J&T Express', 100)`);
+  await pool.query(
+    `INSERT INTO bill_line_conflicts (awb, bill_id_new, bill_id_existing, cod_new,
+                                      cod_existing, fee_new, delivered_date,
+                                      source_file, detected_at)
+     VALUES ('9990000001', 'D3BILLB', 'D3BILLA', 200, 100, 7, '2026-06-18',
+             'd3FileB.csv', '2026-07-23T00:00:00Z'),
+            ('9990000002', 'D3BILLB', 'D3BILLA', 55, 50, 2, '2026-06-18',
+             'd3FileB.csv', '2026-07-23T00:00:01Z')`);
+  const conf = await billLineConflicts();
+  const withOrder = conf.find((c) => c.awb === "9990000001");
+  const noOrder = conf.find((c) => c.awb === "9990000002");
+  ok(!!withOrder && withOrder.order_id === "D3ORDER",
+    "(D3) konflik dengan order padanan bawa order_id");
+  ok(!!withOrder && withOrder.seller_name === "Rekaan Stockist",
+    "(D3) konflik bawa nama stokis dari order");
+  ok(!!withOrder && withOrder.cod_existing === 100 && withOrder.cod_new === 200,
+    "(D3) dua dua amaun bil dibawa untuk banding");
+  ok(!!withOrder && withOrder.bill_id_existing === "D3BILLA" && withOrder.bill_id_new === "D3BILLB",
+    "(D3) dua dua bill_id dibawa");
+  ok(!!noOrder && noOrder.order_id === null,
+    "(D3) konflik tanpa order tetap dipapar (order_id null)");
+  await cleanD3();
 
   console.log(fail ? `\n${fail} GAGAL` : "\nSEMUA PASS");
   console.log("NOTA: dev DB dah diubah. Restore: python3 scripts/loadDevDb.py + backfillAutoSkus.py");

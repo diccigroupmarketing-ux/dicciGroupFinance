@@ -11,6 +11,7 @@ import { PoolClient } from "pg";
 import { unstable_cache } from "next/cache";
 import { getPool } from "./db";
 import { ensureGiftTable } from "./giftsSchema";
+import { ensureBillConflictsTable } from "./billConflictsSchema";
 
 export const REMIT_PENDING_DAYS = 14;
 // Tarikh rujukan aging. Cermin logik db.py: baca env RECON_TODAY kalau ada
@@ -1417,6 +1418,47 @@ export async function uploadedFiles(): Promise<UploadedFile[]> {
     ORDER BY MAX(ingested_at) DESC, source_file`);
   return res.rows.map((r) => ({
     file: r.file, kind: r.kind, rows: toNum(r.n_rows), lastAt: r.last_at,
+  }));
+}
+
+// ====================================================================
+// Kes kuarantin bil bertindih (isu D3). AWB sama diminta dua bil BERBEZA =
+// kemungkinan bayar berganda / pembetulan bil; baris baru tak ditimpa, diparkir
+// dalam bill_line_conflicts (diisi masa ingest). Padan ke order ikut
+// orders.tracking = awb (LEFT JOIN: mungkin tiada order, tetap dipapar).
+// TAK di-cache: page Uploads force-dynamic, mesti segar sejurus lepas upload.
+// ====================================================================
+export interface BillLineConflict {
+  awb: string;
+  order_id: string | null;
+  seller_name: string | null;
+  bill_id_new: string;
+  bill_id_existing: string;
+  cod_new: number | null;
+  cod_existing: number | null;
+  fee_new: number | null;
+  delivered_date: string | null;
+  source_file: string | null;
+  detected_at: string | null;
+}
+
+export async function billLineConflicts(): Promise<BillLineConflict[]> {
+  await ensureBillConflictsTable();
+  const res = await getPool().query(`
+    SELECT c.awb, o.order_id, o.seller_name, c.bill_id_new, c.bill_id_existing,
+           c.cod_new, c.cod_existing, c.fee_new, c.delivered_date,
+           c.source_file, c.detected_at
+    FROM bill_line_conflicts c
+    LEFT JOIN orders o ON o.tracking = c.awb
+    ORDER BY c.detected_at DESC, c.awb`);
+  return res.rows.map((r) => ({
+    awb: r.awb, order_id: r.order_id, seller_name: r.seller_name,
+    bill_id_new: r.bill_id_new, bill_id_existing: r.bill_id_existing,
+    cod_new: r.cod_new == null ? null : Number(r.cod_new),
+    cod_existing: r.cod_existing == null ? null : Number(r.cod_existing),
+    fee_new: r.fee_new == null ? null : Number(r.fee_new),
+    delivered_date: r.delivered_date, source_file: r.source_file,
+    detected_at: r.detected_at,
   }));
 }
 

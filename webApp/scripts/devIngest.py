@@ -24,7 +24,8 @@ def main():
     conn = db.get_conn()
     try:
         kind, n = ingest.ingest_bytes(data, filename, conn)
-        print(json.dumps({"kind": kind, "rows": n}))
+        q = ingest.conflicts_count(conn, filename) if kind else 0
+        print(json.dumps({"kind": kind, "rows": n, "quarantined": q}))
     except Exception as e:
         conn.rollback()
         print(json.dumps({"error": str(e)[:300]}))

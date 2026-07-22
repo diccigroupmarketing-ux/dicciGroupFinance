@@ -494,5 +494,148 @@ class TestOrderUploadsTracking(unittest.TestCase):
         self.assertEqual(self._pairs(), [("O1", "fileA.xlsx"), ("O2", "fileA.xlsx")])
 
 
+# =====================================================================
+# 7. Kuarantin bil bertindih (isu D3, PK awb global). AWB sama dari BIL BERBEZA
+#    tak boleh timpa senyap; ia diparkir ke bill_line_conflicts. Guna SQLite
+#    dalam-ingatan (deterministik, tiada rangkaian). Data sintetik sepenuhnya.
+# =====================================================================
+def _jnt_df(rows):
+    """rows = senarai (awb, cod, fee). DataFrame bil J&T minimum (nilai rekaan)."""
+    return pd.DataFrame({
+        ingest.J_AWB: [r[0] for r in rows],
+        ingest.J_COD: [r[1] for r in rows],
+        ingest.J_FEE: [r[2] for r in rows],
+        ingest.J_DELIVERED: ["2026-06-18"] * len(rows),
+        ingest.J_PICKUP: ["2026-06-17"] * len(rows),
+    })
+
+
+class TestBillLineConflicts(unittest.TestCase):
+    def setUp(self):
+        self.eng = create_engine("sqlite://")
+        self.conn = self.eng.connect()
+        db.init_db(self.conn)
+
+    def tearDown(self):
+        self.conn.close()
+
+    def _lines(self):
+        return self.conn.execute(text(
+            "SELECT awb, bill_id, cod_amount FROM cod_bill_lines "
+            "ORDER BY awb")).fetchall()
+
+    def _conflicts(self):
+        return self.conn.execute(text(
+            "SELECT awb, bill_id_new, bill_id_existing, cod_new, cod_existing "
+            "FROM bill_line_conflicts ORDER BY awb, bill_id_new")).fetchall()
+
+    def test_reupload_same_bill_no_quarantine(self):
+        # (i) AWB sama + bill_id SAMA = re-upload bil sama, idempotent, TIADA konflik.
+        df = _jnt_df([("1234567890", "100.00", "5.00")])
+        ingest.ingest_jnt(df, "JTMYAAA-20260618.csv", self.conn)
+        ingest.ingest_jnt(df, "JTMYAAA-20260618.csv", self.conn)
+        self.assertEqual(len(self._conflicts()), 0)
+        lines = self._lines()
+        self.assertEqual(len(lines), 1)
+        self.assertEqual(lines[0][1], "JTMYAAA")          # bill_id kekal
+        self.assertEqual(lines[0][2], 100.0)              # cod kekal
+
+    def test_same_awb_different_bill_quarantined_and_idempotent(self):
+        # (ii) AWB sama dari bil BERBEZA = baris lama KEKAL + 1 baris kuarantin.
+        ingest.ingest_jnt(_jnt_df([("1234567890", "100.00", "5.00")]),
+                          "JTMYAAA-20260618.csv", self.conn)
+        ingest.ingest_jnt(_jnt_df([("1234567890", "200.00", "7.00")]),
+                          "JTMYBBB-20260619.csv", self.conn)
+        # Baris asal TAK ditimpa (bill_id + cod kekal billA).
+        lines = self._lines()
+        self.assertEqual(len(lines), 1)
+        self.assertEqual(lines[0][1], "JTMYAAA")
+        self.assertEqual(lines[0][2], 100.0)
+        # Tepat satu baris kuarantin dengan kedua bil + amaun untuk banding.
+        conf = self._conflicts()
+        self.assertEqual(len(conf), 1)
+        self.assertEqual(conf[0][0], "1234567890")        # awb
+        self.assertEqual(conf[0][1], "JTMYBBB")           # bill_id_new
+        self.assertEqual(conf[0][2], "JTMYAAA")           # bill_id_existing
+        self.assertEqual(conf[0][3], 200.0)               # cod_new
+        self.assertEqual(conf[0][4], 100.0)               # cod_existing
+        # Re-upload fail konflik SAMA tak gandakan baris kuarantin (PK awb+new).
+        ingest.ingest_jnt(_jnt_df([("1234567890", "200.00", "7.00")]),
+                          "JTMYBBB-20260619.csv", self.conn)
+        self.assertEqual(len(self._conflicts()), 1)
+        self.assertEqual(ingest.conflicts_count(self.conn, "JTMYBBB-20260619.csv"), 1)
+
+    def test_non_conflicting_awbs_ingest_normally(self):
+        # AWB baru (tiada dalam DB) tak diparkir; masuk cod_bill_lines biasa.
+        ingest.ingest_jnt(_jnt_df([("1111111111", "50.00", "2.00")]),
+                          "JTMYAAA-20260618.csv", self.conn)
+        ingest.ingest_jnt(_jnt_df([("2222222222", "60.00", "3.00")]),
+                          "JTMYBBB-20260619.csv", self.conn)
+        self.assertEqual(len(self._conflicts()), 0)
+        self.assertEqual(len(self._lines()), 2)
+
+
+# =====================================================================
+# 8. Jejak SENYAP perubahan harga order (Feature 2). Order SEDIA ADA yang datang
+#    semula dengan selling_price BERBEZA -> 1 app_events (action=price_change).
+#    Status berubah sahaja (harga sama) -> 0 log. Order baru -> 0 log.
+# =====================================================================
+def _fighter_priced(order_id, price, status="Completed", tracking="1234567890"):
+    return pd.DataFrame({
+        ingest.F_ORDER: [order_id],
+        ingest.F_DATE: ["2026-06-18"],
+        ingest.F_STATUS: [status],
+        ingest.F_SELLER: ["Rekaan Stockist"],
+        ingest.F_PAYMENT: ["COD"],
+        ingest.F_PROVIDER: ["J&T Express"],
+        ingest.F_TRACK: [tracking],
+        ingest.F_AMOUNT: [price],
+        ingest.F_COMM: ["10.00"],
+        ingest.F_SKUS: ["JAG-MY-1"],
+        ingest.F_ITEMCOUNT: ["1"],
+    })
+
+
+class TestPriceChangeLog(unittest.TestCase):
+    def setUp(self):
+        self.eng = create_engine("sqlite://")
+        self.conn = self.eng.connect()
+        db.init_db(self.conn)
+
+    def tearDown(self):
+        self.conn.close()
+
+    def _events(self):
+        return self.conn.execute(text(
+            "SELECT action, detail FROM app_events ORDER BY ts")).fetchall()
+
+    def test_new_order_logs_nothing(self):
+        ingest.ingest_fighter(_fighter_priced("O1", "100.00"), "f1.xlsx", self.conn)
+        self.assertEqual(len(self._events()), 0)
+
+    def test_price_change_logs_one(self):
+        ingest.ingest_fighter(_fighter_priced("O1", "100.00"), "f1.xlsx", self.conn)
+        ingest.ingest_fighter(_fighter_priced("O1", "150.00"), "f2.xlsx", self.conn)
+        evs = self._events()
+        self.assertEqual(len(evs), 1)
+        self.assertEqual(evs[0][0], "price_change")
+        self.assertIn("O1", evs[0][1])
+        self.assertIn("100.00", evs[0][1])
+        self.assertIn("150.00", evs[0][1])
+
+    def test_status_change_only_logs_nothing(self):
+        # Harga SAMA, status berubah (Completed -> Returned) = bukan duit = senyap.
+        ingest.ingest_fighter(_fighter_priced("O1", "100.00", status="Completed"),
+                              "f1.xlsx", self.conn)
+        ingest.ingest_fighter(_fighter_priced("O1", "100.00", status="Returned"),
+                              "f2.xlsx", self.conn)
+        self.assertEqual(len(self._events()), 0)
+
+    def test_reupload_same_price_logs_nothing(self):
+        ingest.ingest_fighter(_fighter_priced("O1", "100.00"), "f1.xlsx", self.conn)
+        ingest.ingest_fighter(_fighter_priced("O1", "100.00"), "f1.xlsx", self.conn)
+        self.assertEqual(len(self._events()), 0)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

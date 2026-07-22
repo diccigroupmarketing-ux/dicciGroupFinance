@@ -211,6 +211,27 @@ CREATE TABLE IF NOT EXISTS cod_bill_lines (
 );
 CREATE INDEX IF NOT EXISTS idx_lines_bill ON cod_bill_lines(bill_id);
 
+-- Kuarantin baris bil bertindih (isu D3, PK awb global). cod_bill_lines PK = awb,
+-- jadi AWB sama dari BIL BERBEZA akan timpa senyap baris lama (duit bil lama
+-- lenyap). Bila ingest jumpa AWB sedia ada tapi bill_id BERBEZA (parcel sama
+-- disebut 2 bil: kemungkinan bayar berganda / pembetulan bil), baris BARU TIDAK
+-- ditimpa, dia diparkir di sini untuk finance bandingkan. AWB sama + bill_id SAMA
+-- = re-upload bil sama (idempotent, bukan konflik, tak masuk sini). Additive,
+-- tiada kesan logik recon. PK (awb, bill_id_new) = idempotent re-upload konflik.
+CREATE TABLE IF NOT EXISTS bill_line_conflicts (
+    awb              TEXT,
+    bill_id_new      TEXT,
+    bill_id_existing TEXT,
+    cod_new          DOUBLE PRECISION,
+    cod_existing     DOUBLE PRECISION,
+    fee_new          DOUBLE PRECISION,
+    delivered_date   TEXT,
+    source_file      TEXT,
+    detected_at      TEXT,
+    PRIMARY KEY (awb, bill_id_new)
+);
+CREATE INDEX IF NOT EXISTS idx_bill_conflicts_awb ON bill_line_conflicts(awb);
+
 -- Pengesahan bank: jumlah SEBENAR masuk akaun bank per bil settlement (satu bil
 -- courier = satu payout). Additive, tak sentuh logik recon, dibanding dengan net
 -- remit dijangka untuk tangkap variance (bocor duit). Diisi dari webApp.
