@@ -43,23 +43,63 @@ button{font-family:var(--body)}
   font-size:9.5px;font-weight:700;letter-spacing:.32em;text-transform:uppercase;
   color:#7FA3A6;margin-top:7px;
 }
+.companySwitch{position:relative;margin:18px 2px 8px}
 .company{
-  margin:18px 2px 8px;display:flex;align-items:center;gap:10px;
+  display:flex;align-items:center;gap:10px;
   background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.08);
   border-radius:10px;padding:10px 12px;
 }
+.companyBtn{width:100%;text-align:left;cursor:pointer;color:inherit;transition:background .15s,border-color .15s}
+.companyBtn:hover{background:rgba(255,255,255,.09);border-color:rgba(214,180,103,.35)}
+.companyMeta{min-width:0;flex:1}
 .companyDot{
   width:30px;height:30px;border-radius:8px;background:var(--gold);color:var(--tealDeep);
   font-family:var(--display);font-weight:600;font-size:15px;
   display:flex;align-items:center;justify-content:center;flex:none;
 }
-.companyName{font-weight:700;font-size:13.5px;color:#F2F0E9;line-height:1.2}
+.companyName{font-weight:700;font-size:13.5px;color:#F2F0E9;line-height:1.2;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .companyRole{font-size:10.5px;color:#7FA3A6}
-.navGroup{margin-top:20px}
-.navLabel{
-  font-size:9.5px;font-weight:700;letter-spacing:.22em;text-transform:uppercase;
-  color:#6E969A;padding:0 12px 8px;
+.companyCaret{width:14px;height:14px;flex:none;color:#7FA3A6;transition:transform .18s ease}
+.companyBtn[aria-expanded="true"] .companyCaret{transform:rotate(180deg)}
+.companyMenu{
+  position:absolute;left:0;right:0;top:calc(100% + 6px);z-index:40;
+  background:var(--tealDeep);border:1px solid rgba(214,180,103,.28);
+  border-radius:12px;padding:6px;box-shadow:0 12px 30px -10px rgba(0,0,0,.55);
+  display:flex;flex-direction:column;gap:2px;
 }
+.companyMenuItem{
+  display:flex;align-items:center;gap:9px;padding:8px 9px;border-radius:8px;
+  color:#C4D4D4;font-size:13px;font-weight:600;cursor:pointer;transition:background .13s,color .13s;
+}
+.companyMenuItem:hover{background:rgba(255,255,255,.08);color:#fff}
+.companyMenuItem.active{background:rgba(214,180,103,.14)}
+.companyMenuDot{
+  width:24px;height:24px;border-radius:7px;flex:none;
+  background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.12);
+  color:#E8C885;font-family:var(--display);font-weight:600;font-size:11px;
+  display:flex;align-items:center;justify-content:center;
+}
+.companyMenuItem.active .companyMenuDot{background:var(--gold);border-color:var(--gold);color:var(--tealDeep)}
+.companyMenuName{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.companyMenuTag{
+  font-size:9px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;
+  color:#7FA3A6;border:1px solid rgba(255,255,255,.14);border-radius:999px;padding:1px 6px;flex:none;
+}
+.navScroll{flex:1;min-height:0;overflow-y:auto;display:flex;flex-direction:column}
+.navGroup{margin-top:6px}
+.navGroupPinned{padding-top:8px;border-top:1px solid rgba(214,180,103,.14)}
+.navGroupHead{
+  display:flex;align-items:center;width:100%;background:none;border:0;cursor:pointer;
+  padding:8px 12px 6px;color:#6E969A;transition:color .13s;
+}
+.navGroupHead:hover{color:#9FC0C3}
+.navGroupLabel{
+  flex:1;text-align:left;font-size:9.5px;font-weight:700;letter-spacing:.22em;
+  text-transform:uppercase;line-height:1;
+}
+.navChevron{width:14px;height:14px;flex:none;transition:transform .18s ease}
+.navGroup:not(.open) .navChevron{transform:rotate(-90deg)}
+.navGroup:not(.open) .navGroupBody{display:none}
 .navItem{
   display:flex;align-items:center;gap:10px;width:100%;text-align:left;
   background:none;border:0;color:#C4D4D4;font-size:13.5px;font-weight:600;
@@ -122,15 +162,21 @@ button{font-family:var(--body)}
     border-bottom:1px solid rgba(214,180,103,.18);margin-bottom:4px}
   :root.sideRailed .brandName,
   :root.sideRailed .brandSub,
-  :root.sideRailed .navLabel,
   :root.sideRailed .navText,
   :root.sideRailed .navBadge,
-  :root.sideRailed .company > div:last-child,
+  :root.sideRailed .navGroupHead,
+  :root.sideRailed .companyMeta,
+  :root.sideRailed .companyCaret,
   :root.sideRailed .userMail,
   :root.sideRailed .uploadTxt{display:none}
-  :root.sideRailed .navGroup{margin-top:14px}
+  /* Rail = flat: kumpulan dilipat jadi ikon je, abaikan buka/tutup, semua tunjuk. */
+  :root.sideRailed .navGroup .navGroupBody{display:block}
+  :root.sideRailed .navGroup{margin-top:10px}
+  :root.sideRailed .navGroupPinned{border-top:0}
   :root.sideRailed .navItem{justify-content:center;gap:0;padding:9px 0}
-  :root.sideRailed .company{justify-content:center;padding:8px;margin:14px 0 4px}
+  :root.sideRailed .companySwitch{margin:14px 0 4px}
+  :root.sideRailed .company{justify-content:center;padding:8px}
+  :root.sideRailed .companyMenu{right:auto;min-width:190px}
   :root.sideRailed .uploadBtn{padding:11px 0}
   :root.sideRailed .userChip{flex-direction:column;gap:8px;padding:6px 0}
   :root.sideRailed .signOutBtn{margin-left:0}
@@ -526,9 +572,13 @@ th.num{text-align:right}
   .shell{grid-template-columns:1fr}
   .side{position:static;height:auto;flex-direction:row;flex-wrap:wrap;align-items:center;gap:6px;padding:14px 16px}
   .brand{border:0;padding:0 14px 0 0}
-  .company{margin:0}
-  .navGroup{margin:0;display:flex;gap:4px}
-  .navLabel{display:none}
+  .companySwitch{margin:0}
+  .navScroll{flex:1 1 100%;min-height:0;overflow:visible;flex-direction:row;flex-wrap:wrap;gap:4px}
+  .navGroup{margin:0;display:flex;gap:4px;align-items:center}
+  .navGroupPinned{border-top:0;padding-top:0}
+  .navGroupHead{display:none}
+  .navGroupBody{display:flex;flex-direction:row;flex-wrap:wrap;gap:4px}
+  .navGroup:not(.open) .navGroupBody{display:flex}
   .sideFoot{margin:0;flex-direction:row}
   .main{padding:22px 18px 40px}
   .kpis{grid-template-columns:repeat(2,1fr)}
@@ -656,3 +706,38 @@ th.num{text-align:right}
 .bktBreakHint{color:var(--faint)}
 .bktSubRow:hover{background:transparent}
 .bktSubRow td.bktSubCell{padding:2px 10px 10px 10px;background:var(--card)}
+
+/* ---------- coming soon (anak syarikat belum disambung) ---------- */
+.comingWrap{
+  min-height:100dvh;display:flex;align-items:center;justify-content:center;padding:32px 16px;
+  background:linear-gradient(160deg,var(--tealDeep) 0%,var(--teal) 62%,var(--tealMid) 100%);
+}
+.comingCard{
+  width:100%;max-width:440px;text-align:center;
+  background:rgba(255,255,255,.04);border:1px solid rgba(214,180,103,.22);
+  border-radius:18px;padding:40px 34px;box-shadow:0 24px 60px -24px rgba(0,0,0,.5);
+}
+.comingBrand{margin-bottom:26px}
+.comingMark{
+  font-family:var(--display);font-weight:600;font-size:26px;color:var(--gold);
+  letter-spacing:.1em;line-height:1;
+}
+.comingBrandSub{
+  font-size:9.5px;font-weight:700;letter-spacing:.32em;text-transform:uppercase;
+  color:#7FA3A6;margin-top:8px;
+}
+.comingBadge{
+  display:inline-block;font-size:10px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;
+  color:#E8C885;border:1px solid rgba(214,180,103,.38);border-radius:999px;padding:4px 12px;margin-bottom:16px;
+}
+.comingName{
+  font-family:var(--display);font-weight:600;font-size:30px;color:#F2F0E9;
+  margin:0 0 14px;line-height:1.15;
+}
+.comingLine{color:#9DB8BA;font-size:14px;line-height:1.6;margin:0 0 28px}
+.comingBack{
+  display:inline-flex;align-items:center;gap:7px;
+  background:var(--gold);color:var(--tealDeep);font-weight:800;font-size:13.5px;
+  padding:11px 20px;border-radius:11px;transition:background .15s;
+}
+.comingBack:hover{background:var(--goldLight)}

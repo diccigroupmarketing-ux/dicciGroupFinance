@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { SignOutButton, useUser } from "@clerk/nextjs";
@@ -56,11 +56,6 @@ const ICONS: Record<string, React.ReactNode> = {
       <circle cx="7.5" cy="7.5" r="1.3" />
     </svg>
   ),
-  search: (
-    <svg className="navIcon" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.7">
-      <circle cx="9" cy="9" r="6" /><path d="m14 14 3.5 3.5" />
-    </svg>
-  ),
   activity: (
     <svg className="navIcon" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.7">
       <path d="M2.5 10.5h3l2-5 3 11 2.5-6h4.5" />
@@ -83,13 +78,73 @@ const ICONS: Record<string, React.ReactNode> = {
       <path d="M10 8C10 6 8.8 4.5 7.5 4.5S6 5.5 7 6.5s3 1.5 3 1.5m0 0C10 6 11.2 4.5 12.5 4.5S14 5.5 13 6.5s-3 1.5-3 1.5" />
     </svg>
   ),
+  settings: (
+    <svg className="navIcon" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.7">
+      <circle cx="10" cy="10" r="2.6" />
+      <path d="M10 2.5v2M10 15.5v2M2.5 10h2M15.5 10h2M4.6 4.6l1.4 1.4M14 14l1.4 1.4M15.4 4.6 14 6M6 14l-1.4 1.4" />
+    </svg>
+  ),
 };
 
-const STREAMS = [
-  { key: "jnt", name: "J&T COD" },
-  { key: "dhl", name: "DHL" },
-  { key: "ninja", name: "Ninja Van" },
+// Pola URL stream courier sedia ada: /impact/streams/<key>. CHIP ikut pola sama.
+type NavLink = {
+  key: string; name: string; icon: string;
+  href?: string; disabled?: boolean; badge?: string;
+};
+type NavGroupDef = { id: string; label: string; items: NavLink[]; pinned?: boolean };
+
+const GROUPS: NavGroupDef[] = [
+  {
+    id: "moneyIn", label: "Money in",
+    items: [
+      { key: "dashboard", name: "Dashboard", icon: "dashboard", href: "/impact" },
+      { key: "jnt", name: "J&T COD", icon: "jnt", href: "/impact/streams/jnt" },
+      { key: "dhl", name: "DHL", icon: "dhl", href: "/impact/streams/dhl" },
+      { key: "ninja", name: "Ninja Van", icon: "ninja", href: "/impact/streams/ninja" },
+      { key: "chip", name: "CHIP", icon: "chip", href: "/impact/streams/chip" },
+    ],
+  },
+  {
+    id: "moneyOut", label: "Money out",
+    items: [
+      { key: "moneyOutSoon", name: "Coming soon", icon: "bank", disabled: true, badge: "Soon" },
+    ],
+  },
+  {
+    id: "operations", label: "Operations",
+    items: [
+      { key: "stockists", name: "Stockists", icon: "stockists", href: "/impact/stockists" },
+      { key: "skus", name: "SKUs", icon: "sku", href: "/impact/skus" },
+      { key: "gifts", name: "Gifts", icon: "gift", href: "/impact/gifts" },
+      { key: "commission", name: "Commission", icon: "commission", href: "/impact/commission" },
+    ],
+  },
+  {
+    id: "tools", label: "Tools",
+    items: [
+      { key: "uploads", name: "Uploads", icon: "uploads", href: "/impact/uploads" },
+      { key: "activity", name: "Activity", icon: "activity", href: "/impact/activity" },
+      { key: "export", name: "Export", icon: "export", href: "/impact/export" },
+    ],
+  },
+  {
+    id: "settings", label: "Settings", pinned: true,
+    items: [
+      { key: "settingsSoon", name: "Coming soon", icon: "settings", disabled: true, badge: "Soon" },
+    ],
+  },
 ];
+
+// Anak syarikat lain masih "coming soon"; Impact = app sebenar ni.
+const COMPANIES = [
+  { key: "group", name: "Dicci Group", dot: "DG", href: "/group" },
+  { key: "impact", name: "Dicci Impact", dot: "DI", href: "/impact" },
+  { key: "flux", name: "Dicci Flux", dot: "DF", href: "/flux" },
+  { key: "hub", name: "Dicci Hub", dot: "DH", href: "/hub" },
+  { key: "empyre", name: "Dicci Empyre", dot: "DE", href: "/empyre" },
+];
+
+const GROUP_LS = (id: string) => `dicci.nav.${id}`;
 
 export default function Sidebar() {
   const path = usePathname();
@@ -115,6 +170,94 @@ export default function Sidebar() {
   };
   const tip = (label: string) => (collapsed ? label : undefined);
 
+  // Buka/tutup tiap kumpulan, diingat dalam localStorage (default: semua buka).
+  const [open, setOpen] = useState<Record<string, boolean>>(
+    () => Object.fromEntries(GROUPS.map((g) => [g.id, true])),
+  );
+  useEffect(() => {
+    setOpen((prev) => {
+      const next = { ...prev };
+      for (const g of GROUPS) {
+        try {
+          const v = localStorage.getItem(GROUP_LS(g.id));
+          if (v === "0") next[g.id] = false;
+          else if (v === "1") next[g.id] = true;
+        } catch {}
+      }
+      return next;
+    });
+  }, []);
+  const toggleGroup = (id: string) => {
+    setOpen((prev) => {
+      const next = { ...prev, [id]: !prev[id] };
+      try { localStorage.setItem(GROUP_LS(id), next[id] ? "1" : "0"); } catch {}
+      return next;
+    });
+  };
+
+  // Company switcher dropdown.
+  const [switchOpen, setSwitchOpen] = useState(false);
+  const switchRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!switchOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (switchRef.current && !switchRef.current.contains(e.target as Node)) {
+        setSwitchOpen(false);
+      }
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setSwitchOpen(false); };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [switchOpen]);
+
+  const isActive = (link: NavLink) => !!link.href && path === link.href;
+
+  const renderItem = (link: NavLink) => {
+    if (link.disabled) {
+      return (
+        <span key={link.key} className="navItem disabled" title={tip(link.name)}>
+          {ICONS[link.icon]} <span className="navText">{link.name}</span>
+          {link.badge && <span className="navBadge">{link.badge}</span>}
+        </span>
+      );
+    }
+    return (
+      <Link key={link.key} href={link.href!} className={cls(isActive(link))} title={tip(link.name)}>
+        {ICONS[link.icon]} <span className="navText">{link.name}</span>
+      </Link>
+    );
+  };
+
+  const renderGroup = (g: NavGroupDef) => {
+    const isOpen = open[g.id];
+    return (
+      <nav
+        key={g.id}
+        className={"navGroup" + (isOpen ? " open" : "") + (g.pinned ? " navGroupPinned" : "")}
+        aria-label={g.label}
+      >
+        <button
+          className="navGroupHead"
+          onClick={() => toggleGroup(g.id)}
+          aria-expanded={isOpen}
+          title={tip(g.label)}
+        >
+          <span className="navGroupLabel">{g.label}</span>
+          <svg className="navChevron" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="2">
+            <path d="M6 8.5 10 12l4-3.5" />
+          </svg>
+        </button>
+        <div className="navGroupBody">
+          {g.items.map(renderItem)}
+        </div>
+      </nav>
+    );
+  };
+
   return (
     <aside className="side">
       <div className="sideTop">
@@ -135,61 +278,50 @@ export default function Sidebar() {
         </button>
       </div>
 
-      <div className="company">
-        <div className="companyDot">DI</div>
-        <div>
-          <div className="companyName">Dicci Impact</div>
-          <div className="companyRole">Phase 1 · Active</div>
-        </div>
+      <div className="companySwitch" ref={switchRef}>
+        <button
+          className="company companyBtn"
+          onClick={() => setSwitchOpen((v) => !v)}
+          aria-haspopup="menu"
+          aria-expanded={switchOpen}
+          title={tip("Switch company")}
+        >
+          <div className="companyDot">DI</div>
+          <div className="companyMeta">
+            <div className="companyName">Dicci Impact</div>
+            <div className="companyRole">Phase 1 · Active</div>
+          </div>
+          <svg className="companyCaret" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="2">
+            <path d="M6 8.5 10 12l4-3.5" />
+          </svg>
+        </button>
+        {switchOpen && (
+          <div className="companyMenu" role="menu">
+            {COMPANIES.map((c) => {
+              const active = c.key === "impact";
+              return (
+                <Link
+                  key={c.key}
+                  href={c.href}
+                  role="menuitem"
+                  className={"companyMenuItem" + (active ? " active" : "")}
+                  onClick={() => setSwitchOpen(false)}
+                >
+                  <span className="companyMenuDot">{c.dot}</span>
+                  <span className="companyMenuName">{c.name}</span>
+                  {active && <span className="companyMenuTag">Current</span>}
+                </Link>
+              );
+            })}
+          </div>
+        )}
       </div>
 
-      <nav className="navGroup" aria-label="Overview">
-        <div className="navLabel">Overview</div>
-        <Link href="/impact" className={cls(path === "/impact")} title={tip("Dashboard")}>
-          {ICONS.dashboard} <span className="navText">Dashboard</span>
-        </Link>
-        <Link href="/impact/export" className={cls(path === "/impact/export")} title={tip("Export")}>
-          {ICONS.export} <span className="navText">Export</span>
-        </Link>
-      </nav>
+      <div className="navScroll">
+        {GROUPS.filter((g) => !g.pinned).map(renderGroup)}
+      </div>
 
-      <nav className="navGroup" aria-label="Income streams">
-        <div className="navLabel">Income streams</div>
-        {STREAMS.map((s) => (
-          <Link key={s.key} href={`/impact/streams/${s.key}`}
-            className={cls(path === `/impact/streams/${s.key}`)} title={tip(s.name)}>
-            {ICONS[s.key]} <span className="navText">{s.name}</span>
-          </Link>
-        ))}
-        <span className="navItem disabled">{ICONS.chip} <span className="navText">CHIP</span> <span className="navBadge">Soon</span></span>
-        <span className="navItem disabled">{ICONS.bank} <span className="navText">Bank Transfer</span> <span className="navBadge">Soon</span></span>
-      </nav>
-
-      <nav className="navGroup" aria-label="People">
-        <div className="navLabel">People</div>
-        <Link href="/impact/commission" className={cls(path === "/impact/commission")} title={tip("Commission")}>
-          {ICONS.commission} <span className="navText">Commission</span>
-        </Link>
-        <Link href="/impact/stockists" className={cls(path === "/impact/stockists")} title={tip("Stockists")}>
-          {ICONS.stockists} <span className="navText">Stockists</span>
-        </Link>
-        <Link href="/impact/gifts" className={cls(path === "/impact/gifts")} title={tip("Free gifts")}>
-          {ICONS.gift} <span className="navText">Free gifts</span>
-        </Link>
-      </nav>
-
-      <nav className="navGroup" aria-label="Setup">
-        <div className="navLabel">Setup</div>
-        <Link href="/impact/skus" className={cls(path === "/impact/skus")} title={tip("SKU / Bottles")}>
-          {ICONS.sku} <span className="navText">SKU / Bottles</span>
-        </Link>
-        <Link href="/impact/uploads" className={cls(path === "/impact/uploads")} title={tip("Uploads")}>
-          {ICONS.uploads} <span className="navText">Uploads</span>
-        </Link>
-        <Link href="/impact/activity" className={cls(path === "/impact/activity")} title={tip("Activity")}>
-          {ICONS.activity} <span className="navText">Activity</span>
-        </Link>
-      </nav>
+      {GROUPS.filter((g) => g.pinned).map(renderGroup)}
 
       <div className="sideFoot">
         <UploadModal />
