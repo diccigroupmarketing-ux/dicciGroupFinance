@@ -77,8 +77,11 @@ export default async function ExportPage() {
         </div>
         <p className="pageSub" style={{ marginTop: 2 }}>
           Snapshot for <b>Dicci Impact</b>, numbers move as more bills arrive. Variance =
-          expected net remit minus actual banked; a non-zero variance is a leak signal.
-          Bills not yet confirmed in the bank leave banked and variance blank.
+          net remit minus actual banked, counted over <b>confirmed bills only</b>, so a
+          non-zero variance is a real leak signal. Bills not yet confirmed in the bank leave
+          banked and variance blank and never inflate the variance. The <b>Net remit</b>
+          column stays full (all bills) as the expected total; the <b>Bills</b> column shows
+          how many are confirmed so far.
         </p>
         <div className="tableWrap">
           <table>
@@ -93,7 +96,11 @@ export default async function ExportPage() {
             </thead>
             <tbody>
               {rows.map((r) => {
-                const matched = Math.abs(r.variance) < 0.005 && r.bankedBills === r.totalBills;
+                // Variance dikira atas bil confirmed sahaja (lihat closePack), jadi
+                // warna ikut magnitud variance sahaja, macam BillsTable.totVar. Period
+                // separa-confirm yang tally = hijau RM0.00; kolum "X of Y" yang bawa
+                // isyarat "belum siap", bukan variance merah palsu.
+                const matched = Math.abs(r.variance) < 0.005;
                 return (
                   <tr key={`${r.streamKey}-${r.period}`}>
                     <td className="cellMain">{r.stream}</td>
