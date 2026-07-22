@@ -14,7 +14,9 @@ import "./reconEnv";
 // Guna versi *Impl (tanpa cache) , unstable_cache perlukan konteks request Next.
 import {
   streamSummaryImpl as streamSummary,
-  stockistBottlesImpl as stockistBottles, StreamKey,
+  streamPrepaidSummaryImpl as streamPrepaidSummary,
+  stockistBottlesImpl as stockistBottles, StreamKey, PrepaidKey,
+  type StreamSummary,
 } from "../lib/recon";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -36,46 +38,57 @@ function stable(v: unknown): string {
   return JSON.stringify(v);
 }
 
+// Bentuk perbandingan satu stream (courier atau prepaid). Sama untuk kedua.
+function shape(s: StreamSummary) {
+  return {
+    katN: Object.fromEntries(Object.entries(s.katN).sort()),
+    linesN: s.linesN, linesCod: r2(s.linesCod), linesFee: r2(s.linesFee),
+    integN: s.integN, agedN: s.agedN,
+    tallyN: s.tallyN, tallyCod: r2(s.tallyCod),
+    daily: s.daily.map((d) => ({
+      day: d.day, parcel: d.parcel, cod: r2(d.cod_dikutip), fee: r2(d.fee),
+      tally: d.tally, exception: d.exception, botol: d.botol,
+      botol_free: d.botol_free,
+    })),
+    // Susun ikut code-point (bukan localeCompare) supaya padan urutan sort Python.
+    perBill: [...s.perBill]
+      .sort((a, b) => cp(a.bill_id, b.bill_id))
+      .map((b) => ({ bill_id: b.bill_id, parcel: b.parcel, cod: r2(b.cod),
+                     fee: r2(b.fee), tally: b.tally, exc: b.exc })),
+    // Susun ikut code-point (bukan localeCompare) supaya padan urutan sort Python.
+    stokisKat: [...s.stokisKat]
+      .sort((a, b) => cp(a.seller, b.seller) || cp(a.kategori, b.kategori))
+      .map((x) => ({ seller: x.seller, kategori: x.kategori, n: x.n })),
+    otherCourier: [...s.otherCouriers]
+      .sort((a, b) => cp(a.courier, b.courier))
+      .map((x) => ({ courier: x.courier, orders: x.orders, value: r2(x.value) })),
+  };
+}
+
+function compareStream(key: string, mine: ReturnType<typeof shape>): number {
+  const a = stable(mine);
+  const b = stable(ref[key]);
+  if (a === b) {
+    console.log(`[${key}] PADAN  (kat=${JSON.stringify(mine.katN)})`);
+    return 0;
+  }
+  console.log(`[${key}] TAK PADAN`);
+  for (const f of Object.keys(mine) as (keyof typeof mine)[]) {
+    const x = stable(mine[f]);
+    const y = stable(ref[key][f]);
+    if (x !== y) console.log(`  medan ${f}:\n    TS : ${x}\n    PY : ${y}`);
+  }
+  return 1;
+}
+
 async function main() {
   let fail = 0;
   for (const key of ["jnt", "dhl", "ninja"] as StreamKey[]) {
-    const s = await streamSummary(key);
-    const mine = {
-      katN: Object.fromEntries(Object.entries(s.katN).sort()),
-      linesN: s.linesN, linesCod: r2(s.linesCod), linesFee: r2(s.linesFee),
-      integN: s.integN, agedN: s.agedN,
-      tallyN: s.tallyN, tallyCod: r2(s.tallyCod),
-      daily: s.daily.map((d) => ({
-        day: d.day, parcel: d.parcel, cod: r2(d.cod_dikutip), fee: r2(d.fee),
-        tally: d.tally, exception: d.exception, botol: d.botol,
-        botol_free: d.botol_free,
-      })),
-      // Susun ikut code-point (bukan localeCompare) supaya padan urutan sort Python.
-      perBill: [...s.perBill]
-        .sort((a, b) => cp(a.bill_id, b.bill_id))
-        .map((b) => ({ bill_id: b.bill_id, parcel: b.parcel, cod: r2(b.cod),
-                       fee: r2(b.fee), tally: b.tally, exc: b.exc })),
-      // Susun ikut code-point (bukan localeCompare) supaya padan urutan sort Python.
-      stokisKat: [...s.stokisKat]
-        .sort((a, b) => cp(a.seller, b.seller) || cp(a.kategori, b.kategori))
-        .map((x) => ({ seller: x.seller, kategori: x.kategori, n: x.n })),
-      otherCourier: [...s.otherCouriers]
-        .sort((a, b) => cp(a.courier, b.courier))
-        .map((x) => ({ courier: x.courier, orders: x.orders, value: r2(x.value) })),
-    };
-    const a = stable(mine);
-    const b = stable(ref[key]);
-    if (a === b) {
-      console.log(`[${key}] PADAN  (kat=${JSON.stringify(mine.katN)})`);
-    } else {
-      fail++;
-      console.log(`[${key}] TAK PADAN`);
-      for (const f of Object.keys(mine) as (keyof typeof mine)[]) {
-        const x = stable(mine[f]);
-        const y = stable(ref[key][f]);
-        if (x !== y) console.log(`  medan ${f}:\n    TS : ${x}\n    PY : ${y}`);
-      }
-    }
+    fail += compareStream(key, shape(await streamSummary(key)));
+  }
+  // Prepaid (gateway CHIP): padan ikut order_id, bentuk perbandingan sama.
+  for (const key of ["chip"] as PrepaidKey[]) {
+    fail += compareStream(key, shape(await streamPrepaidSummary(key)));
   }
   // Botol per stokis
   const sb = (await stockistBottles())

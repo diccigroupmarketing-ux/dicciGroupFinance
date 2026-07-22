@@ -73,6 +73,16 @@ export const COURIERS: Record<StreamKey, {
            awbValid: "present", noAwbCat: "takde_tracking" },
 };
 
+// Gateway prepaid (bayar online, padan ikut order_id = order_ref, BUKAN tracking).
+// Mirror db.PREPAID. methods = nilai orders.payment_method untuk gateway ni.
+// PENTING: duit gateway ni masuk bank Dicci Group, BUKAN bank Dicci Impact
+// (sebab asal stream CHIP dorman); page memaparkan nota ini supaya finance jelas.
+export type PrepaidKey = "chip";
+
+export const PREPAID: Record<PrepaidKey, { name: string; methods: string[] }> = {
+  chip: { name: "CHIP", methods: ["CHIP"] },
+};
+
 export interface ExcRow {
   order_id: string | null; seller_name: string | null; tracking: string | null;
   awb: string | null; kategori: string; selling_price: number | null;
@@ -188,6 +198,22 @@ function mSqlCourier(key: StreamKey): string {
   `;
 }
 
+// DDL tmp_m dikongsi laluan courier + prepaid (bentuk baris dikategorikan sama).
+const TMP_M_DDL = `
+  CREATE TEMPORARY TABLE tmp_m (
+    order_id TEXT, order_date TEXT, status TEXT, seller_name TEXT,
+    tracking TEXT, selling_price DOUBLE PRECISION,
+    awb TEXT, bill_id TEXT, cod_amount DOUBLE PRECISION,
+    fee DOUBLE PRECISION, delivered_date TEXT,
+    remit DOUBLE PRECISION, kategori TEXT
+  ) ON COMMIT DROP`;
+
+async function tmpMIndexes(c: PoolClient) {
+  await c.query(`CREATE INDEX idx_tmp_m_oid ON tmp_m(order_id)`);
+  await c.query(`CREATE INDEX idx_tmp_m_bill ON tmp_m(bill_id)`);
+  await c.query(`CREATE INDEX idx_tmp_m_kat ON tmp_m(kategori)`);
+}
+
 async function buildTmpM(c: PoolClient, key: StreamKey, pendingDays: number) {
   const cfg = COURIERS[key];
   await c.query(`
@@ -197,21 +223,58 @@ async function buildTmpM(c: PoolClient, key: StreamKey, pendingDays: number) {
     JOIN cod_bills b ON b.bill_id = li.bill_id
     WHERE b.courier = $1`, [cfg.courierLabel]);
   await c.query(`CREATE INDEX idx_tmp_lines_awb ON tmp_lines(awb)`);
-  await c.query(`
-    CREATE TEMPORARY TABLE tmp_m (
-      order_id TEXT, order_date TEXT, status TEXT, seller_name TEXT,
-      tracking TEXT, selling_price DOUBLE PRECISION,
-      awb TEXT, bill_id TEXT, cod_amount DOUBLE PRECISION,
-      fee DOUBLE PRECISION, delivered_date TEXT,
-      remit DOUBLE PRECISION, kategori TEXT
-    ) ON COMMIT DROP`);
+  await c.query(TMP_M_DDL);
   await c.query(
     `INSERT INTO tmp_m ${mSqlCourier(key)}`,
     [cfg.noAwbCat, cutoff(pendingDays), COD_VALUES, cfg.provider],
   );
-  await c.query(`CREATE INDEX idx_tmp_m_oid ON tmp_m(order_id)`);
-  await c.query(`CREATE INDEX idx_tmp_m_bill ON tmp_m(bill_id)`);
-  await c.query(`CREATE INDEX idx_tmp_m_kat ON tmp_m(kategori)`);
+  await tmpMIndexes(c);
+}
+
+// Salinan setia _m_sql_prepaid (cabang postgresql) dari reconSql.py. Padan ikut
+// order_id = order_ref (BUKAN tracking). Tiada guard AWB dikongsi, tiada aging
+// (prepaid dibayar online masa order). Kategori: tally / amount_mismatch /
+// duit_hantu / belum_bayar. $1 = payment_method gateway ni.
+function mSqlPrepaid(): string {
+  return `
+    SELECT s.order_id, s.order_date, s.status, s.seller_name, s.tracking,
+           s.selling_price,
+           p.order_ref AS awb, p.statement_id AS bill_id, p.amount AS cod_amount,
+           p.fee, p.paid_on AS delivered_date,
+           p.amount - p.fee AS remit,
+           CASE
+             WHEN p.order_ref IS NOT NULL THEN
+               CASE WHEN ${R2("s.selling_price")} = ${R2("p.amount")}
+                    THEN 'tally' ELSE 'amount_mismatch' END
+             ELSE 'belum_bayar'
+           END AS kategori
+    FROM orders s
+    LEFT JOIN tmp_lines p ON p.order_ref = s.order_id
+    WHERE s.payment_method = ANY($1)
+
+    UNION ALL
+
+    SELECT NULL, NULL, NULL, NULL, NULL, NULL,
+           p.order_ref, p.statement_id, p.amount, p.fee, p.paid_on,
+           p.amount - p.fee,
+           'duit_hantu'
+    FROM tmp_lines p
+    WHERE NOT EXISTS (SELECT 1 FROM orders s
+                      WHERE s.order_id = p.order_ref
+                        AND s.payment_method = ANY($1))
+  `;
+}
+
+async function buildTmpMPrepaid(c: PoolClient, key: PrepaidKey) {
+  const cfg = PREPAID[key];
+  await c.query(`
+    CREATE TEMPORARY TABLE tmp_lines ON COMMIT DROP AS
+    SELECT order_ref, statement_id, amount, fee, paid_on
+    FROM prepaid_payments WHERE gateway = $1`, [key]);
+  await c.query(`CREATE INDEX idx_tmp_lines_ref ON tmp_lines(order_ref)`);
+  await c.query(TMP_M_DDL);
+  await c.query(`INSERT INTO tmp_m ${mSqlPrepaid()}`, [cfg.methods]);
+  await tmpMIndexes(c);
 }
 
 function toNum(v: unknown): number {
@@ -280,26 +343,33 @@ export async function billParcels(
   }
 }
 
-export async function streamSummaryImpl(
-  key: StreamKey, pendingDays: number = REMIT_PENDING_DAYS,
-): Promise<StreamSummary> {
-  const cfg = COURIERS[key];
-  const client = await getPool().connect();
-  try {
-    await client.query("BEGIN");
-    await buildTmpM(client, key, pendingDays);
+// Agregat kongsi atas tmp_m (identik untuk courier + prepaid; hanya cara tmp_m
+// dibina yang beza). Mirror bahagian tmp_m dalam reconSql.stream_summary. MESTI
+// dipanggil dalam transaksi yang sama (sebelum ROLLBACK).
+interface TmpMAgg {
+  katN: Record<string, number>;
+  katCod: Record<string, number>;
+  daily: DailyRow[];
+  integ: ExcRow[];
+  aged: ExcRow[];
+  perBill: { bill_id: string; parcel: number; cod: number; fee: number; tally: number; exc: number }[];
+  auditPreview: ExcRow[];
+  scopedOrders: number;
+  stokisKat: { seller: string; kategori: string; n: number }[];
+}
 
-    const kat = await client.query(`
+async function tmpMAggregates(client: PoolClient): Promise<TmpMAgg> {
+  const kat = await client.query(`
       SELECT kategori, COUNT(*) AS n, SUM(cod_amount) AS cod_sum
       FROM tmp_m GROUP BY kategori`);
-    const katN: Record<string, number> = {};
-    const katCod: Record<string, number> = {};
-    for (const r of kat.rows) {
-      katN[r.kategori] = Number(r.n);
-      katCod[r.kategori] = toNum(r.cod_sum);
-    }
+  const katN: Record<string, number> = {};
+  const katCod: Record<string, number> = {};
+  for (const r of kat.rows) {
+    katN[r.kategori] = Number(r.n);
+    katCod[r.kategori] = toNum(r.cod_sum);
+  }
 
-    const daily = await client.query(`
+  const daily = await client.query(`
       SELECT SUBSTR(m.delivered_date, 1, 10) AS day,
              COUNT(*) AS parcel,
              SUM(m.cod_amount) AS cod_dikutip,
@@ -309,7 +379,7 @@ export async function streamSummaryImpl(
       FROM tmp_m m
       WHERE m.bill_id IS NOT NULL AND m.delivered_date IS NOT NULL
       GROUP BY 1 ORDER BY 1`, [INTEGRITY_EXC]);
-    const dailyB = await client.query(`
+  const dailyB = await client.query(`
       SELECT SUBSTR(m.delivered_date, 1, 10) AS day,
              SUM(os.qty * (COALESCE(sb.paid, 0) + COALESCE(sb.free, 0))) AS botol,
              SUM(os.qty * COALESCE(sb.free, 0)) AS botol_free
@@ -318,53 +388,75 @@ export async function streamSummaryImpl(
       LEFT JOIN sku_bottles sb ON UPPER(TRIM(sb.sku)) = os.sku
       WHERE m.bill_id IS NOT NULL AND m.delivered_date IS NOT NULL
       GROUP BY 1`);
-    const botolByDay = new Map<string, { b: number; f: number }>(
-      dailyB.rows.map((r) => [r.day as string, { b: toNum(r.botol), f: toNum(r.botol_free) }]),
-    );
-    const dailyRows: DailyRow[] = daily.rows.map((r) => ({
-      day: r.day as string,
-      parcel: Number(r.parcel),
-      cod_dikutip: toNum(r.cod_dikutip),
-      fee: toNum(r.fee),
-      tally: Number(r.tally),
-      exception: Number(r.exception),
-      botol: botolByDay.get(r.day as string)?.b ?? 0,
-      botol_free: botolByDay.get(r.day as string)?.f ?? 0,
-    }));
+  const botolByDay = new Map<string, { b: number; f: number }>(
+    dailyB.rows.map((r) => [r.day as string, { b: toNum(r.botol), f: toNum(r.botol_free) }]),
+  );
+  const dailyRows: DailyRow[] = daily.rows.map((r) => ({
+    day: r.day as string,
+    parcel: Number(r.parcel),
+    cod_dikutip: toNum(r.cod_dikutip),
+    fee: toNum(r.fee),
+    tally: Number(r.tally),
+    exception: Number(r.exception),
+    botol: botolByDay.get(r.day as string)?.b ?? 0,
+    botol_free: botolByDay.get(r.day as string)?.f ?? 0,
+  }));
 
-    const integ = await client.query(`
+  const integ = await client.query(`
       SELECT order_id, seller_name, tracking, awb, kategori, selling_price,
              cod_amount, order_date
       FROM tmp_m WHERE kategori = ANY($1)
       ORDER BY order_date LIMIT $2`, [INTEGRITY_EXC, EXC_CAP]);
-    const aged = await client.query(`
+  const aged = await client.query(`
       SELECT order_id, seller_name, tracking, awb, kategori, selling_price,
              cod_amount, order_date
       FROM tmp_m WHERE kategori = ANY($1)
       ORDER BY order_date LIMIT $2`, [AGED, EXC_CAP]);
 
-    const perBill = await client.query(`
+  const perBill = await client.query(`
       SELECT bill_id, COUNT(*) AS parcel, SUM(cod_amount) AS cod, SUM(fee) AS fee,
              SUM(CASE WHEN kategori = 'tally' THEN 1 ELSE 0 END) AS tally,
              SUM(CASE WHEN kategori = ANY($1) THEN 1 ELSE 0 END) AS exc
       FROM tmp_m WHERE bill_id IS NOT NULL
       GROUP BY bill_id ORDER BY bill_id`, [INTEGRITY_EXC]);
 
-    const audit = await client.query(`
+  const audit = await client.query(`
       SELECT order_id, seller_name, tracking, awb, kategori, selling_price,
              cod_amount, order_date
       FROM tmp_m WHERE order_id IS NOT NULL
       ORDER BY order_date DESC LIMIT $1`, [AUDIT_PREVIEW]);
 
-    const scoped = await client.query(`
+  const scoped = await client.query(`
       SELECT COUNT(*) AS n FROM tmp_m WHERE order_id IS NOT NULL`);
 
-    // Cross-tab stokis x kategori (port setia stokis_kat dari reconSql.py). Guna
-    // tmp_m, jadi WAJIB dibaca sebelum ROLLBACK.
-    const stokisKat = await client.query(`
+  const stokisKat = await client.query(`
       SELECT COALESCE(seller_name, '(no order)') AS seller, kategori, COUNT(*) AS n
       FROM tmp_m GROUP BY 1, 2`);
 
+  return {
+    katN, katCod, daily: dailyRows,
+    integ: excRows(integ.rows), aged: excRows(aged.rows),
+    perBill: perBill.rows.map((r) => ({
+      bill_id: r.bill_id, parcel: Number(r.parcel), cod: toNum(r.cod),
+      fee: toNum(r.fee), tally: Number(r.tally), exc: Number(r.exc),
+    })),
+    auditPreview: excRows(audit.rows),
+    scopedOrders: Number(scoped.rows[0].n),
+    stokisKat: stokisKat.rows.map((r) => ({
+      seller: r.seller as string, kategori: r.kategori as string, n: Number(r.n),
+    })),
+  };
+}
+
+export async function streamSummaryImpl(
+  key: StreamKey, pendingDays: number = REMIT_PENDING_DAYS,
+): Promise<StreamSummary> {
+  const cfg = COURIERS[key];
+  const client = await getPool().connect();
+  try {
+    await client.query("BEGIN");
+    await buildTmpM(client, key, pendingDays);
+    const agg = await tmpMAggregates(client);
     await client.query("ROLLBACK");
 
     // Bahagian luar tmp_m (baca terus, tiada transaksi perlu).
@@ -386,31 +478,82 @@ export async function streamSummaryImpl(
       WHERE payment_method = ANY($1) AND shipping_provider <> ALL($2)
       GROUP BY shipping_provider`, [COD_VALUES, cfg.provider]);
 
-    const integN = INTEGRITY_EXC.reduce((a, k) => a + (katN[k] ?? 0), 0);
-    const agedN = AGED.reduce((a, k) => a + (katN[k] ?? 0), 0);
+    const integN = INTEGRITY_EXC.reduce((a, k) => a + (agg.katN[k] ?? 0), 0);
+    const agedN = AGED.reduce((a, k) => a + (agg.katN[k] ?? 0), 0);
     const lt = linesTotal.rows[0];
 
     return {
-      katN, katCod,
-      daily: dailyRows,
-      integ: excRows(integ.rows), integN,
-      integRisk: INTEGRITY_EXC.reduce((a, k) => a + (katCod[k] ?? 0), 0),
-      aged: excRows(aged.rows), agedN,
-      perBill: perBill.rows.map((r) => ({
-        bill_id: r.bill_id, parcel: Number(r.parcel), cod: toNum(r.cod),
-        fee: toNum(r.fee), tally: Number(r.tally), exc: Number(r.exc),
-      })),
+      katN: agg.katN, katCod: agg.katCod,
+      daily: agg.daily,
+      integ: agg.integ, integN,
+      integRisk: INTEGRITY_EXC.reduce((a, k) => a + (agg.katCod[k] ?? 0), 0),
+      aged: agg.aged, agedN,
+      perBill: agg.perBill,
       bills: bills.rows,
       linesN: Number(lt.n ?? 0), linesCod: toNum(lt.cod), linesFee: toNum(lt.fee),
-      tallyN: katN["tally"] ?? 0, tallyCod: katCod["tally"] ?? 0,
-      auditPreview: excRows(audit.rows),
-      scopedOrders: Number(scoped.rows[0].n),
-      stokisKat: stokisKat.rows.map((r) => ({
-        seller: r.seller as string, kategori: r.kategori as string, n: Number(r.n),
-      })),
+      tallyN: agg.katN["tally"] ?? 0, tallyCod: agg.katCod["tally"] ?? 0,
+      auditPreview: agg.auditPreview,
+      scopedOrders: agg.scopedOrders,
+      stokisKat: agg.stokisKat,
       otherCouriers: other.rows.map((r) => ({
         courier: r.shipping_provider as string, orders: Number(r.n), value: toNum(r.nilai),
       })),
+    };
+  } catch (e) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+// Recon satu gateway prepaid (CHIP). Port setia cabang prepaid
+// reconSql.stream_summary: bina tmp_m via mSqlPrepaid, agregat kongsi sama, cuma
+// bahagian "luar tmp_m" tarik dari prepaid_payments (bukan cod_bills). Tiada
+// courier lain (otherCouriers kosong). Bentuk output = StreamSummary supaya page
+// boleh guna semula renderer yang sama.
+export async function streamPrepaidSummaryImpl(
+  key: PrepaidKey,
+): Promise<StreamSummary> {
+  const client = await getPool().connect();
+  try {
+    await client.query("BEGIN");
+    await buildTmpMPrepaid(client, key);
+    const agg = await tmpMAggregates(client);
+    await client.query("ROLLBACK");
+
+    // Bahagian luar tmp_m: statement CHIP (bukan bil courier).
+    const linesTotal = await client.query(`
+      SELECT COUNT(*) AS n, SUM(amount) AS cod, SUM(fee) AS fee
+      FROM prepaid_payments WHERE gateway = $1`, [key]);
+    // Satu "bill" = satu statement CHIP (statement_id). settlement_date = tarikh
+    // bayar terawal dalam statement itu.
+    const bills = await client.query(`
+      SELECT statement_id AS bill_id, MIN(paid_on) AS settlement_date,
+             MIN(source_file) AS source_file
+      FROM prepaid_payments
+      WHERE gateway = $1 AND statement_id IS NOT NULL
+      GROUP BY statement_id
+      ORDER BY MIN(paid_on) IS NULL, MIN(paid_on), statement_id`, [key]);
+
+    const integN = INTEGRITY_EXC.reduce((a, k) => a + (agg.katN[k] ?? 0), 0);
+    const agedN = AGED.reduce((a, k) => a + (agg.katN[k] ?? 0), 0);
+    const lt = linesTotal.rows[0];
+
+    return {
+      katN: agg.katN, katCod: agg.katCod,
+      daily: agg.daily,
+      integ: agg.integ, integN,
+      integRisk: INTEGRITY_EXC.reduce((a, k) => a + (agg.katCod[k] ?? 0), 0),
+      aged: agg.aged, agedN,
+      perBill: agg.perBill,
+      bills: bills.rows,
+      linesN: Number(lt.n ?? 0), linesCod: toNum(lt.cod), linesFee: toNum(lt.fee),
+      tallyN: agg.katN["tally"] ?? 0, tallyCod: agg.katCod["tally"] ?? 0,
+      auditPreview: agg.auditPreview,
+      scopedOrders: agg.scopedOrders,
+      stokisKat: agg.stokisKat,
+      otherCouriers: [],
     };
   } catch (e) {
     await client.query("ROLLBACK").catch(() => {});
@@ -1260,6 +1403,7 @@ export async function uploadedFiles(): Promise<UploadedFile[]> {
 const RECON_CACHE = { tags: ["recon"], revalidate: 3600 };
 
 export const streamSummary = unstable_cache(streamSummaryImpl, ["streamSummary"], RECON_CACHE);
+export const streamPrepaidSummary = unstable_cache(streamPrepaidSummaryImpl, ["streamPrepaidSummary"], RECON_CACHE);
 export const storeCounts = unstable_cache(storeCountsImpl, ["storeCounts"], RECON_CACHE);
 export const lastIngest = unstable_cache(lastIngestImpl, ["lastIngest"], RECON_CACHE);
 export const stockistBottles = unstable_cache(stockistBottlesImpl, ["stockistBottles"], RECON_CACHE);

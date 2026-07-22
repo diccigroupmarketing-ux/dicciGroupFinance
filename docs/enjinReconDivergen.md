@@ -88,15 +88,18 @@ Sisi padanan: order lawan bayaran prepaid di-merge ikut order_id = order_ref.
 
 | Keadaan baris | reconcile.py | reconSql.py | recon.ts |
 |---|---|---|---|
-| Ada bayaran + amaun padan | `tally` (`reconcile.py:223`) | `tally` (`reconSql.py:201`) | TIADA laluan prepaid recon |
-| Ada bayaran + amaun tak padan | `amount_mismatch` (`reconcile.py:223`) | `amount_mismatch` (`reconSql.py:201`) | TIADA |
-| Bayaran tanpa order | `duit_hantu` (`reconcile.py:221`) | `duit_hantu` (`reconSql.py:213`) | TIADA |
-| Order tanpa bayaran | `belum_bayar` (`reconcile.py:224`) | `belum_bayar` (`reconSql.py:203`) | TIADA |
+| Ada bayaran + amaun padan | `tally` (`reconcile.py:223`) | `tally` (`reconSql.py:211`) | `tally` (`mSqlPrepaid`) |
+| Ada bayaran + amaun tak padan | `amount_mismatch` (`reconcile.py:223`) | `amount_mismatch` (`reconSql.py:211`) | `amount_mismatch` (`mSqlPrepaid`) |
+| Bayaran tanpa order | `duit_hantu` (`reconcile.py:221`) | `duit_hantu` (`reconSql.py:224`) | `duit_hantu` (`mSqlPrepaid`) |
+| Order tanpa bayaran | `belum_bayar` (`reconcile.py:224`) | `belum_bayar` (`reconSql.py:213`) | `belum_bayar` (`mSqlPrepaid`) |
 
-`recon.ts` tak port fungsi recon prepaid langsung (StreamKey = `jnt`/`dhl`/`ninja`
-sahaja, `recon.ts:49`). Sebaliknya webApp guna "pay buckets" jujur
-(`recon.ts:520` `payBucketCase`) yang derive baldi bayaran dari payment_method +
-kehadiran feed, BUKAN kira kategori tally/mismatch prepaid. Lihat Divergen D3.
+`recon.ts` kini ADA laluan recon prepaid penuh: `mSqlPrepaid()` +
+`buildTmpMPrepaid()` + `streamPrepaidSummaryImpl(gateway)` (port setia cabang
+prepaid `reconSql.stream_summary`). Padanan ikut order_id = order_ref, agregat
+tmp_m dikongsi dengan laluan courier (`tmpMAggregates`). "Pay buckets" jujur
+(`payBucketCase`) KEKAL sebagai lapisan paparan atas payment_method + kehadiran
+feed (soalan berbeza: keadaan bayaran per stokis), bukan pengganti recon prepaid.
+Lihat Divergen D3 (kini DITUTUP).
 
 ### Cara kira botol
 
@@ -180,20 +183,34 @@ antara order COD dalam skop, jadi kedua sisi keluar sama dan parity LULUS. Ini b
 laten yang disorok data, bukan bukti dua enjin selari. Penyatuan WAJIB dedah dan tutup
 lubang ni.
 
-### D3. recon.ts tiada laluan recon prepaid (LARI, skop, CHIP dorman)
+### D3. recon.ts tiada laluan recon prepaid (DITUTUP 2026-07-23, kini SAMA)
+
+> Status: keputusan owner = pilihan (a), PORT recon prepaid ke `recon.ts`. Siap
+> 2026-07-23. `mSqlPrepaid()` + `buildTmpMPrepaid()` + `streamPrepaidSummaryImpl()`
+> ditambah sebagai port setia cabang prepaid `reconSql.stream_summary`. Padanan ikut
+> order_id = order_ref, kategori `tally`/`amount_mismatch`/`duit_hantu`/`belum_bayar`
+> identik tiga enjin. Parity harness diperluas: `parityDump.py` + `parityCheck.ts`
+> kini banding stream `chip` (row-by-row) di sisi Python DAN TS, LULUS. Page stream
+> CHIP dihidupkan (`/impact/streams/chip`) dengan nota jelas "duit CHIP masuk bank
+> Dicci Group, bukan Dicci Impact". "Pay buckets" jujur KEKAL sebagai lapisan
+> paparan (soalan berbeza), tidak dibuang. Butiran asal dikekalkan di bawah.
 
 - reconcile.py + reconSql.py: ada fungsi recon prepaid penuh
-  (`reconcile.py:191` `reconcile_prepaid`, `reconSql.py:179` `_m_sql_prepaid`) yang
+  (`reconcile.py:191` `reconcile_prepaid`, `reconSql.py:190` `_m_sql_prepaid`) yang
   keluar kategori `tally`/`amount_mismatch`/`duit_hantu`/`belum_bayar` untuk gateway
   prepaid (CHIP).
-- recon.ts: TIADA. StreamKey terhad `jnt`/`dhl`/`ninja` (`recon.ts:49`). WebApp guna
-  derivasi "pay buckets" jujur (`recon.ts:520`) atas payment_method + kehadiran feed,
+- recon.ts (sebelum ini): TIADA. StreamKey terhad `jnt`/`dhl`/`ninja`. WebApp guna
+  derivasi "pay buckets" jujur (`payBucketCase`) atas payment_method + kehadiran feed,
   bukan kategori recon prepaid.
 
-Kesan finance: SEKARANG sifar, sebab CHIP DORMAN (tiada feed CHIP live). Tapi bila CHIP
-diaktifkan, webApp TAKDE laluan yang keluarkan kategori recon prepaid setara enjin
-Python. Tangga penyatuan kena putuskan: port recon prepaid ke webApp, atau tetapkan
-"pay buckets" sebagai pengganti rasmi dan buang recon prepaid dari enjin Python.
+Kesan finance (asal): SEKARANG sifar, sebab CHIP DORMAN (tiada feed CHIP live). Tapi
+bila CHIP diaktifkan, webApp TAKDE laluan yang keluarkan kategori recon prepaid setara
+enjin Python. Tangga penyatuan kena putuskan: port recon prepaid ke webApp, atau
+tetapkan "pay buckets" sebagai pengganti rasmi. KEPUTUSAN: port (a), lihat status atas.
+
+Nota data dev: `prepaid_payments` kosong tapi ada 120 order `payment_method='CHIP'`,
+jadi laluan prepaid diuji pada cabang `belum_bayar` (120 order, 9 stokis); parity padan
+dua belah walaupun sisi statement kosong.
 
 ### D4. Layanan sentinel tracking NONE tak selari (LARI, laten, kepercayaan rendah)
 
@@ -217,7 +234,8 @@ tinjau nilai tracking sebenar sebelum satukan.
 - Konstan/takrif dibanding: 10 baris.
 - SAMA: 6 (REMIT_PENDING_DAYS, COD_VALUES, INTEGRITY_EXC, AGED,
   PREPAID_SUCCESS_STATUS, awb_valid), tambah botol + confirmed-paid yang selari.
-- LARI: 4 (D1 TODAY, D2 guard AWB dikongsi, D3 skop prepaid, D4 sentinel NONE).
+- LARI asal: 4. DITUTUP: D2 (guard AWB), D3 (skop prepaid). BAKI LARI: 1 aktif
+  (D4 sentinel NONE) + D1 TODAY (sedang dibaiki sesi 2026-07-23).
 
 ---
 
@@ -256,15 +274,18 @@ Kerja selari sesi 2026-07-23 dah nyahbeku `recon.ts` baca `RECON_TODAY`. Sahkan
 Verify: parity LULUS dengan `RECON_TODAY=2026-06-18` (kedua sisi beku sama). Uji tambahan
 tanpa env: kedua enjin patut guna hari sebenar dan masih padan.
 
-### Langkah 3. Putus keputusan D3 (recon prepaid)
+### Langkah 3. Putus keputusan D3 (recon prepaid) , SELESAI 2026-07-23
 
-Keputusan owner diperlukan sebelum kod: (a) port `reconcile_prepaid` ke `recon.ts`
-sebagai StreamKey prepaid, ATAU (b) iktiraf "pay buckets" sebagai pengganti rasmi dan
-buang recon prepaid dari enjin Python. Sebab CHIP dorman, ini boleh tunggu selepas
-Langkah 1 dan 2, tapi mesti diputus sebelum CHIP diaktifkan.
+Keputusan owner = (a) PORT `reconcile_prepaid` ke `recon.ts` sebagai laluan prepaid
+(`PrepaidKey`), "pay buckets" KEKAL sebagai lapisan paparan berasingan (bukan pengganti).
+Siap: `mSqlPrepaid` + `buildTmpMPrepaid` + `streamPrepaidSummaryImpl` dalam `recon.ts`,
+page `/impact/streams/chip` hidup dengan nota bank Dicci Group, parity diperluas ke
+stream `chip` (dump + check).
 
-Verify: kalau (a), tambah kes prepaid ke parity dump/check. Kalau (b), dokumen keputusan
-dalam HANDOVER dan tanda fungsi prepaid Python sebagai deprecated.
+Verify (DIBUAT): `npx tsc --noEmit` LULUS; `parityDump.py > parityPython.json` +
+`parityCheck.ts` LULUS termasuk `[chip] PADAN (kat={"belum_bayar":120})`; `npm test`
+SEMUA LULUS; baseline suci kekal `RM 63,912.00 (369 order)`; route `/impact/streams/chip`
+respond (307 Clerk gate = route wujud).
 
 ### Langkah 4. Sahkan atau tutup D4 (sentinel NONE)
 

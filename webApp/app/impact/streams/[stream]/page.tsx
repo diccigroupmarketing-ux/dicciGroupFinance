@@ -1,11 +1,13 @@
 import { notFound } from "next/navigation";
 import Link from "next/link";
 import {
-  AGED, COURIERS, INTEGRITY_EXC, KAT_LABEL, REMIT_PENDING_DAYS,
-  StreamKey, streamSummary, storeCounts, lastIngest, type ExcRow,
+  AGED, COURIERS, INTEGRITY_EXC, KAT_LABEL, PREPAID, REMIT_PENDING_DAYS,
+  PrepaidKey, StreamKey, streamSummary, streamPrepaidSummary,
+  storeCounts, lastIngest, type ExcRow,
 } from "@/lib/recon";
 import {
-  fmtDate, fmtInt, fmtRM, GRAIN_LABEL, groupByGrain, parseGrain, trackingOrDash,
+  fmtDate, fmtInt, fmtRM, type Grain, GRAIN_LABEL, groupByGrain, parseGrain,
+  trackingOrDash,
 } from "@/lib/format";
 import { KatChip, katTone } from "@/components/Chip";
 import GrainSwitcher from "@/components/GrainSwitcher";
@@ -56,6 +58,11 @@ export default async function StreamPage(
   const sp = await searchParams;
   const grain = parseGrain(sp.grain);
   const pending = parsePending(sp.pending);
+  // Prepaid gateway (CHIP) = laluan berasingan: padan ikut order_id, tiada fi
+  // courier, duit masuk bank Dicci Group (bukan Dicci Impact).
+  if (stream in PREPAID) {
+    return <PrepaidStreamPage streamKey={stream as PrepaidKey} grain={grain} />;
+  }
   if (!(stream in COURIERS)) notFound();
   const key = stream as StreamKey;
   const cfg = COURIERS[key];
@@ -411,5 +418,288 @@ function WarnIcon() {
     <svg className="ic" width="17" height="17" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="2">
       <path d="M10 3.5 18 16.5H2z" /><path d="M10 8.8v3.4M10 14.6v.2" />
     </svg>
+  );
+}
+
+function BankIcon() {
+  return (
+    <svg className="ic" width="17" height="17" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.9">
+      <path d="M3 16.5h14M4.5 8.5v5M8.2 8.5v5M11.8 8.5v5M15.5 8.5v5M2.5 8.5 10 3.5l7.5 5z" />
+    </svg>
+  );
+}
+
+// ====================================================================
+// Prepaid gateway stream (CHIP). Padan ikut order_id (BUKAN tracking), tiada fi
+// courier. Nota WAJIB: duit gateway ni masuk bank Dicci Group, bukan Dicci Impact.
+// ====================================================================
+function PrepaidHeader({ name, asOf }: { name: string; asOf?: string | null }) {
+  return (
+    <div className="pageHead">
+      <div>
+        <div className="eyebrow">Income stream · Prepaid gateway</div>
+        <h1>{name}</h1>
+        <div className="pageSub">Online payments matched against Fighter orders by order ID.</div>
+      </div>
+      <div className="headActions">
+        <div className="periodPill" title={asOf ? `Last upload ${asOf}` : undefined}>
+          <span className="cal">◷</span>
+          {asOf ? `Data as of ${fmtDate(asOf)}` : "All uploaded data"}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Nota bank yang WAJIB nampak: CHIP settle ke bank Dicci Group, bukan Dicci Impact.
+function GroupBankNote({ name }: { name: string }) {
+  return (
+    <div className="cauPanel" style={{ marginBottom: 16 }}>
+      <BankIcon />
+      <div>
+        <b>{name} settles into the Dicci Group bank account, not Dicci Impact.</b>
+        <p>
+          These online payments are reconciled here for completeness, but the cash
+          does not land in Dicci Impact&apos;s ledger. Treat this stream as
+          informational, not part of Dicci Impact&apos;s cash position.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+interface StatementRow {
+  bill_id: string; settlement_date: string | null; parcel: number;
+  cod: number; fee: number; net: number; tally: number; exc: number;
+}
+
+function StatementsTable({ rows }: { rows: StatementRow[] }) {
+  return (
+    <div className="card">
+      <div className="cardHead">
+        <div className="cardTitle">CHIP statements</div>
+        <div className="cardHint">online settlements · matched by order ID</div>
+      </div>
+      <div className="tableWrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Statement</th><th>Date</th>
+              <th className="num">Payments</th><th className="num">Amount</th>
+              <th className="num">Gateway fee</th><th className="num">Net</th>
+              <th className="num">Tally</th><th className="num">Exceptions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r.bill_id}>
+                <td className="cellMain">{r.bill_id}</td>
+                <td>{fmtDate(r.settlement_date)}</td>
+                <td className="num">{fmtInt(r.parcel)}</td>
+                <td className="num">{fmtRM(r.cod)}</td>
+                <td className="num">{fmtRM(r.fee)}</td>
+                <td className="num">{fmtRM(r.net)}</td>
+                <td className="num">{fmtInt(r.tally)}</td>
+                <td className="num">{r.exc ? fmtInt(r.exc) : "—"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+async function PrepaidStreamPage(
+  { streamKey, grain }: { streamKey: PrepaidKey; grain: Grain },
+) {
+  const cfg = PREPAID[streamKey];
+
+  const counts = await storeCounts();
+  if (counts.orders === 0) {
+    return (
+      <>
+        <PrepaidHeader name={cfg.name} />
+        <GroupBankNote name={cfg.name} />
+        <div className="emptyCard">
+          <div className="big">No data yet</div>
+          Upload a Fighter export and a {cfg.name} settlement statement to reconcile this stream.
+        </div>
+      </>
+    );
+  }
+
+  const [s, asOf] = await Promise.all([streamPrepaidSummary(streamKey), lastIngest()]);
+  const net = Math.round((s.linesCod - s.linesFee) * 100) / 100;
+  const weekly = groupByGrain(s.daily, grain);
+
+  const stmtRows: StatementRow[] = s.bills.map((b) => {
+    const pb = s.perBill.find((x) => x.bill_id === b.bill_id);
+    const cod = pb?.cod ?? 0, fee = pb?.fee ?? 0;
+    return {
+      bill_id: b.bill_id, settlement_date: b.settlement_date,
+      parcel: pb?.parcel ?? 0, cod, fee,
+      net: Math.round((cod - fee) * 100) / 100,
+      tally: pb?.tally ?? 0, exc: pb?.exc ?? 0,
+    };
+  });
+
+  const katRows = KAT_ORDER.filter((k) => (s.katN[k] ?? 0) > 0)
+    .map((k) => ({ kat: k, n: s.katN[k] }));
+  const maxKat = Math.max(...katRows.map((r) => r.n), 1);
+
+  return (
+    <>
+      <PrepaidHeader name={cfg.name} asOf={asOf} />
+      <GroupBankNote name={cfg.name} />
+
+      <div className="kpis">
+        <div className="kpi">
+          <div className="kpiLabel">Payments received</div>
+          <div className="kpiValue"><small>RM</small> {fmtRM(s.linesCod).replace("RM ", "")}</div>
+          <div className="kpiNote">{fmtInt(s.linesN)} payment{s.linesN === 1 ? "" : "s"} in {s.bills.length} statement{s.bills.length === 1 ? "" : "s"}</div>
+        </div>
+        <div className="kpi">
+          <div className="kpiLabel">Gateway fee</div>
+          <div className="kpiValue"><small>RM</small> {fmtRM(s.linesFee).replace("RM ", "")}</div>
+          <div className="kpiNote">{s.linesN > 0 ? `avg ${fmtRM(s.linesFee / s.linesN)} per payment` : "—"}</div>
+        </div>
+        <div className="kpi">
+          <div className="kpiLabel">Net settled</div>
+          <div className="kpiValue"><small>RM</small> {fmtRM(net).replace("RM ", "")}</div>
+          <div className="kpiNote">into Dicci Group bank</div>
+        </div>
+        <div className="kpi">
+          <div className="kpiLabel">Tally (exact match)</div>
+          <div className="kpiValue">{fmtInt(s.tallyN)} <small>/ {fmtInt(s.linesN)}</small></div>
+          <div className="kpiNote">
+            {s.linesN > 0
+              ? <span className={s.tallyN === s.linesN ? "up" : ""}>{((s.tallyN / s.linesN) * 100).toFixed(0)}% of settled payments</span>
+              : "no statement loaded yet"}
+          </div>
+        </div>
+      </div>
+
+      {stmtRows.length > 0 ? (
+        <StatementsTable rows={stmtRows} />
+      ) : (
+        <div className="emptyCard">
+          <div className="big">No {cfg.name} statement loaded yet</div>
+          {fmtInt(s.scopedOrders)} CHIP orders are awaiting a gateway settlement statement.
+          Upload a {cfg.name} statement to reconcile online payments by order ID.
+        </div>
+      )}
+
+      <div className="sectionGap" />
+
+      <div className="grid2">
+        <div className="card">
+          <div className="cardHead">
+            <div className="cardTitle">Order status</div>
+            <div className="cardHint">{fmtInt(s.scopedOrders)} CHIP orders</div>
+          </div>
+          <div style={{ marginTop: 10 }}>
+            {katRows.map(({ kat, n }) => {
+              const tone = katTone(kat);
+              const fill = tone === "pos" ? "pos" : tone === "dan" ? "dan" : tone === "cau" ? "cau" : "mut";
+              return (
+                <div className="breakRow" key={kat}>
+                  <div className="breakName">
+                    <span className="cdot" style={{
+                      background: tone === "pos" ? "var(--pos)" : tone === "dan" ? "var(--dan)"
+                        : tone === "cau" ? "var(--goldDark)" : "#C9C2B2",
+                    }} />
+                    {KAT_LABEL[kat] ?? kat}
+                  </div>
+                  <div className="breakTrack">
+                    <div className={`breakFill ${fill}`} style={{ width: `${(n / maxKat) * 100}%` }} />
+                  </div>
+                  <div className="breakN">{fmtInt(n)}</div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        <div className="card">
+          <div className="cardHead">
+            <div className="cardTitle">Exceptions</div>
+            <div className="cardHint">what needs a human</div>
+          </div>
+          {s.integN === 0 ? (
+            <div className="posPanel">
+              <CheckIcon />
+              <div><b>Tier 1 · 0 integrity issues.</b>
+                <p>No ghost payments and no amount mismatches on this gateway.</p></div>
+            </div>
+          ) : (
+            <div className="danPanel">
+              <WarnIcon />
+              <div><b>Tier 1 · {fmtInt(s.integN)} integrity issues worth {fmtRM(s.integRisk)}.</b>
+                <p>Investigate the rows flagged below; these are real leaks until proven otherwise.</p></div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {s.integ.length > 0 && (
+        <>
+          <div className="sectionGap" />
+          <div className="card">
+            <div className="cardHead">
+              <div className="cardTitle">Integrity exceptions</div>
+              <div className="cardHint">Tier 1 · oldest first</div>
+            </div>
+            <AuditTable rows={s.integ.slice(0, 15)} />
+          </div>
+        </>
+      )}
+
+      {s.auditPreview.length > 0 && (
+        <>
+          <div className="sectionGap" />
+          <div className="card">
+            <div className="cardHead">
+              <div className="cardTitle">Audit trail</div>
+              <div className="cardHint">latest CHIP orders</div>
+            </div>
+            <AuditTable rows={s.auditPreview} />
+          </div>
+        </>
+      )}
+
+      {s.stokisKat.length > 0 && (
+        <>
+          <div className="sectionGap" />
+          <div className="card">
+            <div className="cardHead">
+              <div className="cardTitle">Breakdown by stockist</div>
+              <div className="cardHint">order count by status</div>
+            </div>
+            <StockistCrossTab rows={s.stokisKat} />
+          </div>
+        </>
+      )}
+
+      {weekly.length > 0 && (
+        <>
+          <div className="sectionGap" />
+          <div className="card">
+            <div className="cardHead">
+              <div className="cardTitle">Net settled by {GRAIN_LABEL[grain]}</div>
+              <div className="cardHint">payment date</div>
+              <GrainSwitcher grain={grain} basePath={`/impact/streams/${streamKey}`} />
+            </div>
+            <WeeklyChart bars={weekly} />
+          </div>
+        </>
+      )}
+
+      <div className="footNote">
+        Prepaid recon matched by order ID · category logic mirrors the proven engine
+        <span className="sep">·</span>
+        <Link href="/impact" style={{ color: "var(--goldDark)", fontWeight: 700 }}>← Back to overview</Link>
+      </div>
+    </>
   );
 }
