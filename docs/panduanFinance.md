@@ -88,9 +88,33 @@ Setiap baris satu sumber duit (satu kurier atau gateway). Status setiap satu:
 
 Klik mana mana baris untuk masuk halaman terperinci sumber tu.
 
+### Kad Payment confirmation (5 baldi bayaran jujur)
+
+Kat halaman Impact ada satu kad **Payment confirmation** yang ambil semua order Completed dan pecah jadi **5 baldi** ikut cara pelanggan bayar. Ini seksyen yang paling penting sebab dia hentikan satu salah faham besar: order yang dibayar guna **CHIP** selalu disangka "duit tak tally" atau "duit hilang", padahal ia cuma tengah **tunggu statement CHIP** diupload. Duit dah masuk, kita cuma belum ada kertas untuk padan.
+
+Setiap baldi ada label warna (chip) dan tag saluran bayaran (COD, CHIP, atau Bank Transfer). Ini lima lima baldi macam yang awak nampak kat skrin:
+
+| Baldi (macam di skrin) | Maksud dalam bahasa biasa | Apa perlu buat |
+| --- | --- | --- |
+| **Confirmed COD** (chip hijau, tag COD) | Order COD dah padan dengan bil kurier, duit COD memang dah disahkan masuk. | **Abaikan**, dah settle. |
+| **Confirmed prepaid (CHIP)** (chip biru, tag CHIP) | Order yang bayar guna CHIP dah padan dengan baris statement CHIP yang berjaya, duit dah disahkan masuk. | **Abaikan**, dah settle. |
+| **Awaiting COD remittance** (chip kuning, tag COD) | Order COD belum muncul dalam mana mana bil kurier. Normal sampai bil kurier sampai. | **Tunggu** bil kurier. Tengok kolum Aging, kalau umur dah lama baru risau. |
+| **Awaiting CHIP statement** (chip biru, tag CHIP) | Order bayar CHIP masa checkout, cuma statement CHIP belum diupload. Auto sahkan sendiri bila statement masuk. **BUKAN duit bocor.** | **Tunggu**, atau upload statement CHIP terkini. |
+| **No payment feed · cannot verify** (chip merah, tag Bank Transfer) | Kaedah bayaran ni belum ada feed disambung (contoh Bank Transfer), jadi app memang tak boleh sahkan duit masuk lagi. | **Siasat**, atau bagitahu owner (feed belum wujud). |
+
+Dua baldi Confirmed (COD + CHIP) dicampur = jumlah botol "confirmed" yang awak nampak di tempat lain. Dua baldi **Awaiting bukan duit bocor**, dia cuma tunggu kertas: COD tunggu bil kurier, CHIP tunggu statement diupload. Kolum **Aging** tunjuk umur order paling lama yang masih tersangkut dalam baldi tu, supaya apa yang betul betul lambat tak hilang dari mata.
+
+### Kenapa hanya baldi COD boleh dibuka
+
+Dua baldi COD (Confirmed COD dan Awaiting COD remittance) ada anak panah kecil, klik dia terbuka satu jadual pecahan **per kurier** (J&T, DHL, Ninja Van). Sebabnya duit COD mengalir lalu tiga kurier berlainan, jadi kita perlu tahu kurier mana yang belum remit. Baldi CHIP dan Bank Transfer pula satu saluran je seorang, tiada apa nak pecah, sebab tu takde anak panah untuk dia.
+
+### Banner semak SKU (bukan duit hilang)
+
+Kadang kat halaman SKU (atau dalam modal stokis) muncul banner kuning macam **"X SKUs in orders are not mapped"**. Maksudnya: ada SKU dalam order yang **belum masuk katalog botol** kita, jadi order tu dikira **0 botol** buat sementara. Ini **bukan** tanda duit hilang, duit tetap tally macam biasa, cuma kiraan botol nampak kurang sampai SKU tu didaftarkan. Cara betulkan: pergi halaman SKU, tambah SKU yang tertinggal tu dengan bilangan botol dia, angka botol terus naik semula.
+
 ### Ringkas cara faham exception
 
-Angka "exceptions" tu bukan salah awak upload. Dia jujur tunjuk mana data tak lengkap atau tak padan, supaya kita boleh kejar punca (contoh bil kurier tertinggal, atau order salah rekod). Kalau nampak exception, klik masuk stream berkenaan untuk lihat kes satu satu.
+Angka "exceptions" tu bukan salah awak upload, dan dia **berbeza** dengan baldi Awaiting di atas. Exception cuma dua jenis: **duit hantu** (ada duit dalam bil, tiada order padan) dan **tak padan** (order ada, duit ada, tapi jumlah tak sama). Baldi Awaiting (tunggu bil kurier atau tunggu statement CHIP) **bukan** exception, dia normal dan akan sahkan sendiri bila kertas sampai. Jadi kalau nampak exception, itu baru kes betul betul kena kejar puncanya, klik masuk stream berkenaan untuk lihat satu satu.
 
 ***
 
