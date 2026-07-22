@@ -2,14 +2,15 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { fmtDate, fmtInt, fmtRM, trackingOrDash } from "@/lib/format";
+import { fmtDate, fmtDay, fmtInt, fmtRM, trackingOrDash } from "@/lib/format";
 import ExportCsv from "@/components/ExportCsv";
 
 const BILL_COLS = [
   { key: "bill_id", header: "Bill" }, { key: "settlement_date", header: "Settled" },
   { key: "parcel", header: "Parcels" }, { key: "cod", header: "COD collected" },
   { key: "fee", header: "Fee" }, { key: "net", header: "Net remit" },
-  { key: "actual", header: "In bank" }, { key: "exc", header: "Exceptions" },
+  { key: "actual", header: "In bank" }, { key: "deposited_on", header: "Deposited on" },
+  { key: "exc", header: "Exceptions" },
   { key: "note", header: "Note" }, { key: "entered_by", header: "Confirmed by" },
 ];
 const PARCEL_COLS = [
@@ -24,6 +25,7 @@ export type BillRow = {
   settlement_date: string | null;
   parcel: number; cod: number; fee: number; net: number; exc: number;
   actual: number | null; note: string | null; entered_by: string | null;
+  deposited_on: string | null;
 };
 
 type Parcel = {
@@ -39,12 +41,45 @@ const TONE_CLASS: Record<string, string> = {
 
 const isMatched = (net: number, actual: number) => Math.abs(net - actual) < 0.005;
 
+// Tarikh hari ini dalam waktu tempatan (bukan UTC) sebagai YYYY-MM-DD, untuk
+// default input date supaya tak tergelincir sehari pada zon waktu timur UTC.
+const todayLocal = (): string => {
+  const d = new Date();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${d.getFullYear()}-${mm}-${dd}`;
+};
+
+// Papar tarikh deposit sebenar + lag vs settlement (maklumat, bukan amaran):
+// "18 Jun" tanpa settlement, "18 Jun (+2d)" bila ada. Lag = deposited − settled.
+function DepositLabel({ depositedOn, settlementDate }: {
+  depositedOn: string; settlementDate: string | null;
+}) {
+  const short = fmtDay(depositedOn.slice(0, 10));
+  let tag: string | null = null;
+  if (settlementDate) {
+    const a = Date.parse(depositedOn.slice(0, 10) + "T00:00:00");
+    const b = Date.parse(settlementDate.slice(0, 10) + "T00:00:00");
+    if (!Number.isNaN(a) && !Number.isNaN(b)) {
+      const days = Math.round((a - b) / 86_400_000);
+      tag = days === 0 ? "same day" : days > 0 ? `+${days}d` : `−${Math.abs(days)}d`;
+    }
+  }
+  return (
+    <span>
+      {short}
+      {tag && <span className="faintCell"> ({tag})</span>}
+    </span>
+  );
+}
+
 export default function BillsTable({
   rows, courierName, streamKey,
 }: { rows: BillRow[]; courierName: string; streamKey: string }) {
   const router = useRouter();
   const [editing, setEditing] = useState<string | null>(null);
   const [amount, setAmount] = useState("");
+  const [depositDate, setDepositDate] = useState("");
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -73,6 +108,7 @@ export default function BillsTable({
   const open = (r: BillRow) => {
     setEditing(r.bill_id);
     setAmount(r.actual != null ? String(r.actual) : String(Math.max(0, r.net)));
+    setDepositDate(r.deposited_on?.slice(0, 10) ?? todayLocal());
     setNote(r.note ?? "");
     setErr(null);
   };
@@ -86,7 +122,10 @@ export default function BillsTable({
       const res = await fetch("/api/bank", {
         method: "PUT",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ bill_id, actual_amount: val, note: note.trim() || null }),
+        body: JSON.stringify({
+          bill_id, actual_amount: val,
+          deposited_on: depositDate || null, note: note.trim() || null,
+        }),
       });
       const j = await res.json();
       if (!res.ok) { setErr(j.error ?? "Simpan gagal"); }
@@ -124,7 +163,7 @@ export default function BillsTable({
             <tr>
               <th>Bill</th><th>Settled</th><th className="num">Parcels</th>
               <th className="num">Net remit</th>
-              <th className="num">In bank</th><th className="num">Variance</th>
+              <th className="num">In bank</th><th>Deposited</th><th className="num">Variance</th>
               <th>Books</th><th aria-label="Confirm" />
             </tr>
           </thead>
@@ -151,7 +190,7 @@ export default function BillsTable({
                     <td className="num"><b>{fmtRM(r.net)}</b></td>
 
                     {isEd ? (
-                      <td className="num" colSpan={2}>
+                      <td className="num" colSpan={3}>
                         <div className="bankEdit">
                           <input
                             className="cellInput num" type="number" step="0.01" min={0}
@@ -160,6 +199,15 @@ export default function BillsTable({
                             aria-label={`Bank amount for ${r.bill_id}`}
                             placeholder="Amount in bank"
                           />
+                          <label className="bankDateRow">
+                            <span className="bankDateLabel">Actual deposit date</span>
+                            <input
+                              className="cellInput" type="date"
+                              value={depositDate}
+                              onChange={(e) => setDepositDate(e.target.value)}
+                              aria-label={`Actual deposit date for ${r.bill_id}`}
+                            />
+                          </label>
                           <input
                             className="cellInput" value={note}
                             onChange={(e) => setNote(e.target.value)}
@@ -185,6 +233,16 @@ export default function BillsTable({
                       <>
                         <td className="num">
                           {has ? fmtRM(r.actual!) : <span className="faintCell">not confirmed</span>}
+                        </td>
+                        <td>
+                          {!has ? (
+                            <span className="faintCell">—</span>
+                          ) : r.deposited_on ? (
+                            <DepositLabel depositedOn={r.deposited_on}
+                              settlementDate={r.settlement_date} />
+                          ) : (
+                            <span className="faintCell">not recorded</span>
+                          )}
                         </td>
                         <td className="num">
                           {!has ? (
@@ -214,7 +272,7 @@ export default function BillsTable({
 
                   {isOpen && (
                     <tr className="drillRow">
-                      <td colSpan={8}>
+                      <td colSpan={9}>
                         {loadingBill === r.bill_id ? (
                           <div className="drillNote">Loading parcels…</div>
                         ) : !list || list.length === 0 ? (

@@ -90,6 +90,7 @@ export default async function StreamPage(
       net: Math.round((cod - fee) * 100) / 100, exc: pb?.exc ?? 0,
       actual: d ? d.actual_amount : null, note: d?.note ?? null,
       entered_by: d?.entered_by ?? null,
+      deposited_on: d?.deposited_on ?? null,
     };
   });
 
