@@ -6,6 +6,7 @@
 import { getPool } from "./db";
 import { ensureGiftTable } from "./giftsSchema";
 import { ensureOrderUploadsTable } from "./orderUploadsSchema";
+import { ensureBillConflictsTable } from "./billConflictsSchema";
 
 export interface SkuInput {
   sku: string;
@@ -203,6 +204,7 @@ export async function resetStore(): Promise<void> {
 export interface DeleteUploadResult {
   orders: number; orderSkus: number; billLines: number; bills: number;
   prepaid: number; wallet: number; total: number;
+  conflicts: number;         // baris parkir bill_line_conflicts fail ni dibuang
   ordersKeptShared: number;  // order dikekalkan sebab fail lain masih vouch
   ordersKeptLegacy: number;  // order dikekalkan sebab tiada jejak (pra-fix B1)
 }
@@ -212,6 +214,9 @@ export async function deleteUpload(file: string): Promise<DeleteUploadResult> {
   if (!f) throw new Error("nama fail kosong");
   // Jamin jadual jejak wujud (prod: dicipta malas kalau ingest belum jalan).
   await ensureOrderUploadsTable();
+  // Jamin jadual kuarantin bil wujud juga (dicipta malas): DELETE di bawah pecah
+  // kalau jadual belum ada, dan roll-back seluruh padam.
+  await ensureBillConflictsTable();
   const client = await getPool().connect();
   try {
     await client.query("BEGIN");
@@ -301,12 +306,22 @@ export async function deleteUpload(file: string): Promise<DeleteUploadResult> {
       "DELETE FROM prepaid_payments WHERE source_file = $1", [f]);
     const wallet = await client.query(
       "DELETE FROM wallet_txns WHERE source_file = $1", [f]);
+    // Baris kuarantin bill_line_conflicts diparkir MASA ingest fail ni (source_file
+    // = fail yang bawa bill_id_new bertindih). Padam ikut source_file sahaja: baris
+    // tu memang rekod fail ni, bila failnya hilang rekodnya jadi yatim dalam seksyen
+    // "Needs attention". SEMANTIK (kes songsang): kalau fail dipadam ialah fail bil
+    // ASAL (bill_id_existing) dan konflik datang dari fail LAIN, source_file konflik
+    // != fail ni, jadi ia TAK disentuh , sengaja. Baris tu rekod fail lain (masih
+    // ada), dan buang senyap boleh sorok isyarat bayar-berganda yang sah. Konsisten
+    // dgn cara cod_bill_lines/prepaid/wallet dipadam ikut source_file.
+    const conflicts = await client.query(
+      "DELETE FROM bill_line_conflicts WHERE source_file = $1", [f]);
     await client.query("COMMIT");
     const n = (r: { rowCount: number | null }) => r.rowCount ?? 0;
     const out = {
       orders: n(orders), orderSkus: n(orderSkus), billLines: n(billLines),
       bills: n(bills), prepaid: n(prepaid), wallet: n(wallet), total: 0,
-      ordersKeptShared, ordersKeptLegacy,
+      conflicts: n(conflicts), ordersKeptShared, ordersKeptLegacy,
     };
     out.total = out.orders + out.billLines + out.prepaid + out.wallet;
     return out;

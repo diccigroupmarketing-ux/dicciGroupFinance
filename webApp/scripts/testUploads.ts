@@ -212,6 +212,39 @@ async function main() {
     "(D3) konflik tanpa order tetap dipapar (order_id null)");
   await cleanD3();
 
+  // =====================================================================
+  // 10) deleteUpload buang baris parkir bill_line_conflicts fail penyebab supaya
+  //     tak jadi yatim dalam seksyen "Needs attention". Kes songsang: konflik dari
+  //     fail LAIN (source_file != fail dipadam) KEKAL (rekod fail lain, isyarat sah).
+  //     Data SINTETIK (prefix DEL*), dibersih selepas.
+  // =====================================================================
+  const DEL_AWBS = ["9991000001", "9991000002"];
+  const cleanDel = async () => {
+    await pool.query("DELETE FROM bill_line_conflicts WHERE awb = ANY($1::text[])", [DEL_AWBS]);
+  };
+  await cleanDel();
+  // Dua konflik: satu dari delConflictFile.csv (fail penyebab yang akan dipadam),
+  // satu dari fail LAIN (delOtherFile.csv) yang kena kekal.
+  await pool.query(
+    `INSERT INTO bill_line_conflicts (awb, bill_id_new, bill_id_existing, cod_new,
+                                      cod_existing, fee_new, delivered_date,
+                                      source_file, detected_at)
+     VALUES ('9991000001', 'DELBILLB', 'DELBILLA', 200, 100, 7, '2026-06-18',
+             'delConflictFile.csv', '2026-07-23T01:00:00Z'),
+            ('9991000002', 'DELBILLD', 'DELBILLC', 55, 50, 2, '2026-06-18',
+             'delOtherFile.csv', '2026-07-23T01:00:01Z')`);
+  const confBefore = await billLineConflicts();
+  ok(confBefore.some((c) => c.awb === "9991000001"),
+    "(DEL) konflik fail penyebab wujud sebelum padam");
+  const dDel = await deleteUpload("delConflictFile.csv");
+  ok(dDel.conflicts === 1, `(DEL) deleteUpload lapor 1 konflik dibuang (dapat ${dDel.conflicts})`);
+  const confAfter = await billLineConflicts();
+  ok(!confAfter.some((c) => c.awb === "9991000001"),
+    "(DEL) konflik fail penyebab HILANG dari Needs attention selepas padam");
+  ok(confAfter.some((c) => c.awb === "9991000002"),
+    "(DEL) konflik dari fail LAIN KEKAL (source_file != fail dipadam)");
+  await cleanDel();
+
   console.log(fail ? `\n${fail} GAGAL` : "\nSEMUA PASS");
   console.log("NOTA: dev DB dah diubah. Restore: python3 scripts/loadDevDb.py + backfillAutoSkus.py");
   process.exit(fail ? 1 : 0);
