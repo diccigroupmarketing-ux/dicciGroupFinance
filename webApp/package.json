@@ -6,7 +6,9 @@
     "dev": "next dev -p 4000",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "check:engine": "node scripts/checkEngineSync.mjs",
+    "test": "node scripts/testAll.mjs"
   },
   "dependencies": {
     "@clerk/nextjs": "^7.5.12",
