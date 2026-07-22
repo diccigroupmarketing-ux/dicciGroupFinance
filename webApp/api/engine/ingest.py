@@ -586,6 +586,43 @@ def parse_chip(data, filename):
     return df
 
 
+def _dedup_chip_recs(recs):
+    """Gabung baris purchase CHIP yang kongsi order_ref DALAM satu statement.
+
+    Kenapa perlu: PK prepaid_payments = (gateway, order_ref). Kalau satu fail CHIP
+    ada 2+ baris purchase berjaya untuk order_ref SAMA, batch upsert cuba kena
+    baris PK sama dua kali , Postgres RAISE "cannot affect row a second time",
+    SQLite pula senyap last-wins (tak konsisten, dan last-wins buang duit baris
+    lain). De-dup di Python (sebelum upsert) buat dua enjin berkelakuan sama.
+
+    Semantik JUJUR untuk recon: JUMLAHKAN amaun. Kalau customer betul betul bayar
+    2 kali untuk order sama, duit masuk memang lebih; reconcile_prepaid banding
+    amount lawan selling_price order, jadi jumlah yang lebih akan ANGKAT
+    amount_mismatch untuk finance siasat , itu perangai jujur, bukan sembunyi.
+    Fee dijumlah sama. Medan tarikh/status/sumber ambil rekod TERKINI (paid_on
+    paling lewat). amount None (parse gagal) tak menyumbang ke jumlah; hasil
+    kekal None hanya kalau SEMUA duplikat None (jatuh ke 'perlu semak', bukan
+    RM0 disahkan senyap). Turutan kemunculan pertama dikekalkan (idempotent)."""
+    by_ref = {}
+    order = []
+    for r in recs:
+        ref = r["order_ref"]
+        if ref not in by_ref:
+            by_ref[ref] = dict(r)
+            order.append(ref)
+            continue
+        merged = by_ref[ref]
+        a, b = merged.get("amount"), r.get("amount")
+        merged["amount"] = a if b is None else (b if a is None else a + b)
+        merged["fee"] = (merged.get("fee") or 0.0) + (r.get("fee") or 0.0)
+        # Rekod terkini menang untuk medan bukan-duit (tarikh, status, sumber).
+        if (r.get("paid_on") or "") >= (merged.get("paid_on") or ""):
+            for k in ("status", "paid_on", "settled_on", "source_file",
+                      "ingested_at"):
+                merged[k] = r[k]
+    return [by_ref[ref] for ref in order]
+
+
 def ingest_chip(df, source_file, conn):
     # Hanya baris 'purchase' = bayaran pelanggan masuk (disbursement diparkir).
     df = df[df[C_TYPE].astype(str).str.lower() == "purchase"].copy()
@@ -614,6 +651,7 @@ def ingest_chip(df, source_file, conn):
             "ingested_at": now_iso(),
         })
     if recs:
+        recs = _dedup_chip_recs(recs)
         conn.execute(PREPAID_UPSERT, recs)
     conn.commit()
     return len(recs)

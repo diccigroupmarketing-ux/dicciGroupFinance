@@ -57,8 +57,15 @@ def norm_trk(s: pd.Series) -> pd.Series:
 
 
 def to_num(s: pd.Series) -> pd.Series:
-    cleaned = s.astype(str).str.replace(r"[^0-9.\-]", "", regex=True).replace("", "0")
-    return pd.to_numeric(cleaned, errors="coerce").fillna(0)
+    # Notasi perakaunan: "(30.00)" = negatif (kurungan). Kesan dulu SEBELUM buang
+    # aksara, sebab langkah bersih strip kurungan dan hilang tanda negatif itu.
+    # Selaras dengan _num() di ingest.py (laluan CHIP). Behavior lain kekal:
+    # minus biasa "-30", koma ribuan "1,000.50", blank/nan -> 0.
+    raw = s.astype(str).str.strip()
+    neg = raw.str.startswith("(") & raw.str.endswith(")")
+    cleaned = raw.str.replace(r"[^0-9.\-]", "", regex=True).replace("", "0")
+    nums = pd.to_numeric(cleaned, errors="coerce").fillna(0)
+    return nums.where(~neg, -nums.abs())
 
 
 def parse_dt(s: pd.Series, dayfirst: bool) -> pd.Series:

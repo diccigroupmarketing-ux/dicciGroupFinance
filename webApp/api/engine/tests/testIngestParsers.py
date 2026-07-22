@@ -114,6 +114,13 @@ class TestSentinelNan(unittest.TestCase):
         out = db.to_num(pd.Series(["", "nan", "RM 5", "12.50", None]))
         self.assertEqual(list(out), [0.0, 0.0, 5.0, 12.5, 0.0])
 
+    def test_to_num_parentheses_are_negative(self):
+        # Notasi perakaunan: kurungan = negatif. Dulu to_num buang kurungan dan
+        # baca "(30.00)" jadi +30 (salah); kini selaras dengan _num ingest.
+        out = db.to_num(pd.Series(
+            ["(30.00)", "(1,000.50)", "-30", "30", ""]))
+        self.assertEqual(list(out), [-30.0, -1000.5, -30.0, 30.0, 0.0])
+
     def test_is_real_awb(self):
         self.assertTrue(db.is_real_awb("1234567890"))     # 10 digit
         self.assertFalse(db.is_real_awb("123"))           # terlalu pendek
@@ -332,6 +339,77 @@ class TestChipParser(unittest.TestCase):
         self.assertIsNone(ingest._amount_or_none("nan"))
         self.assertIsNone(ingest._amount_or_none("rosak"))
         self.assertEqual(ingest._amount_or_none("RM 51.90"), 51.9)
+
+
+# =====================================================================
+# 5b. CHIP de-dup: 2+ baris purchase berjaya untuk order_ref SAMA dalam satu
+#     statement mesti digabung SEBELUM upsert (elak PK (gateway, order_ref)
+#     kena dua kali: Postgres RAISE, SQLite senyap last-wins).
+# =====================================================================
+class _CaptureConn:
+    """Conn tiruan: rakam params yang dihantar ke execute (tanpa DB sebenar)."""
+    def __init__(self):
+        self.captured = None
+
+    def execute(self, stmt, params=None):
+        self.captured = params
+
+    def commit(self):
+        pass
+
+
+class TestChipDedup(unittest.TestCase):
+    def test_dedup_recs_sums_amount_and_fee(self):
+        recs = [
+            {"order_ref": "DUP1", "amount": 50.0, "fee": 1.0,
+             "paid_on": "2026-07-16 09:00:00", "status": "paid",
+             "settled_on": None, "source_file": "a", "ingested_at": "t1"},
+            {"order_ref": "DUP1", "amount": 30.0, "fee": 2.0,
+             "paid_on": "2026-07-16 10:00:00", "status": "paid",
+             "settled_on": None, "source_file": "a", "ingested_at": "t2"},
+            {"order_ref": "SOLO", "amount": 15.0, "fee": 0.5,
+             "paid_on": "2026-07-16 08:00:00", "status": "paid",
+             "settled_on": None, "source_file": "a", "ingested_at": "t3"},
+        ]
+        out = ingest._dedup_chip_recs(recs)
+        by = {r["order_ref"]: r for r in out}
+        self.assertEqual(len(out), 2)                 # DUP1 digabung jadi satu
+        self.assertEqual(by["DUP1"]["amount"], 80.0)  # 50 + 30 (jumlah jujur)
+        self.assertEqual(by["DUP1"]["fee"], 3.0)      # 1 + 2
+        self.assertEqual(by["DUP1"]["paid_on"], "2026-07-16 10:00:00")  # terkini
+        self.assertEqual(by["SOLO"]["amount"], 15.0)
+
+    def test_dedup_recs_none_amount_does_not_poison_sum(self):
+        recs = [
+            {"order_ref": "X", "amount": None, "fee": 0.0, "paid_on": None,
+             "status": "paid", "settled_on": None, "source_file": "a",
+             "ingested_at": "t1"},
+            {"order_ref": "X", "amount": 40.0, "fee": 0.0, "paid_on": None,
+             "status": "paid", "settled_on": None, "source_file": "a",
+             "ingested_at": "t2"},
+        ]
+        out = ingest._dedup_chip_recs(recs)
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0]["amount"], 40.0)   # None tak racun jumlah
+
+    def test_ingest_chip_dedups_same_order_ref(self):
+        # End-to-end lewat ingest_chip dengan conn tiruan: dua baris purchase
+        # berjaya untuk order_ref sama mesti keluar SATU rekod (amaun dijumlah).
+        data = make_chip_bytes([
+            {"Type": "purchase", "Reference Nr.": "FIGHTER-DUPORDER",
+             "Amount": "RM 100.00", "Fee": "3.00", "Status": "paid",
+             "Paid On": "2026-07-16 09:00:00", "Settled On": "2026-07-17"},
+            {"Type": "purchase", "Reference Nr.": "FIGHTER-DUPORDER",
+             "Amount": "RM 25.00", "Fee": "1.00", "Status": "paid",
+             "Paid On": "2026-07-16 11:00:00", "Settled On": "2026-07-17"},
+        ])
+        df = ingest.parse_chip(data, "chipStatement2026-07-16.xlsx")
+        conn = _CaptureConn()
+        ingest.ingest_chip(df, "chipStatement2026-07-16.xlsx", conn)
+        self.assertIsNotNone(conn.captured)
+        self.assertEqual(len(conn.captured), 1)                   # de-dup jadi 1
+        self.assertEqual(conn.captured[0]["order_ref"], "DUPORDER")
+        self.assertEqual(conn.captured[0]["amount"], 125.0)       # 100 + 25
 
 
 # =====================================================================
