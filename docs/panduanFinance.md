@@ -54,6 +54,14 @@ Kalau app kata "format not recognised", maksudnya fail tu bukan salah satu jenis
 
 Selalunya export **penuh dan terkini**, bukan export yang awak dah tapis ikut tarikh atau status. Sebab kenapa, lihat seksyen 4.
 
+### Bila upload kata "N quarantined", parcel disebut dua kali
+
+Kadang lepas ingest, label hijau fail tu ada tambahan macam **"... · 3 quarantined (see Uploads)"**. Maksudnya app jumpa parcel (nombor tracking) yang muncul dalam **dua bil kurier berbeza**. Daripada main timpa, app parkir baris kedua tu supaya duit **tak dikira dua kali**, dan letak dia di halaman Uploads untuk awak semak.
+
+Pergi halaman **Uploads**. Kalau ada kes, satu kad muncul kat atas berlabel **"Needs attention · parcels billed twice"**. Dia senaraikan setiap parcel yang bertindih dengan kolum: **Order**, **Stockist**, **Tracking**, **Existing bill** dan **Existing COD** (baris asal yang app dah simpan), pastu **New bill**, **New COD** dan **New fee** (baris baru yang diparkir), serta tarikh **Detected**.
+
+Apa maksudnya: parcel sama disebut dalam dua bil boleh jadi **bayaran berganda** (double payout), atau satu **bil pembetulan** untuk bil lama. App **tak** ganti baris lama dengan yang baru secara senyap, jadi tiada duit tertimpa. **Apa awak perlu buat**: bandingkan dua amaun COD tu (Existing COD lawan New COD), tentukan mana bil yang betul, dan bagitahu owner untuk kes yang nampak macam bayaran berganda betul betul.
+
 ***
 
 ## 3. Baca Dashboard
@@ -112,6 +120,12 @@ Dua baldi COD (Confirmed COD dan Awaiting COD remittance) ada anak panah kecil, 
 
 Kadang kat halaman SKU (atau dalam modal stokis) muncul banner kuning macam **"X SKUs in orders are not mapped"**. Maksudnya: ada SKU dalam order yang **belum masuk katalog botol** kita, jadi order tu dikira **0 botol** buat sementara. Ini **bukan** tanda duit hilang, duit tetap tally macam biasa, cuma kiraan botol nampak kurang sampai SKU tu didaftarkan. Cara betulkan: pergi halaman SKU, tambah SKU yang tertinggal tu dengan bilangan botol dia, angka botol terus naik semula.
 
+### Price change dalam Activity
+
+Kat halaman **Activity** kadang muncul baris berlabel **Price change**. Maksudnya harga jualan sesuatu order **berubah antara dua upload**, contoh baris tu tulis "Order 12345: RM 100.00 -> RM 120.00". Ini berlaku bila awak upload export Fighter terkini dan harga sesuatu order dah lain dari kali sebelum.
+
+Ini **log sahaja**, bukan masalah automatik, app tak buat apa apa selain catat perubahan tu. Gunanya untuk **siasat**: kalau ada kemusykilan kenapa duit sesuatu order nampak lain, awak boleh rujuk Activity dan nampak bila serta berapa harga dia berubah.
+
 ### Ringkas cara faham exception
 
 Angka "exceptions" tu bukan salah awak upload, dan dia **berbeza** dengan baldi Awaiting di atas. Exception cuma dua jenis: **duit hantu** (ada duit dalam bil, tiada order padan) dan **tak padan** (order ada, duit ada, tapi jumlah tak sama). Baldi Awaiting (tunggu bil kurier atau tunggu statement CHIP) **bukan** exception, dia normal dan akan sahkan sendiri bila kertas sampai. Jadi kalau nampak exception, itu baru kes betul betul kena kejar puncanya, klik masuk stream berkenaan untuk lihat satu satu.
@@ -129,6 +143,16 @@ Angka "exceptions" tu bukan salah awak upload, dan dia **berbeza** dengan baldi 
 ### Hati hati, walau selamat
 
 * **Selalu upload export PENUH dan TERKINI.** Kalau awak upload fail lama atau fail yang dah ditapis (contoh tapis satu tarikh je), app akan **tulis ganti** status order, tracking, dan harga dengan yang lama tu. Jadi bukan dia tambah, dia timpa. Sebab tu, ambil export penuh setiap kali, jangan yang separuh.
+
+### Padam fail di halaman Uploads
+
+Kat halaman **Uploads** setiap fail ada butang **Delete**. Ini untuk buang data satu fail yang tersilap upload, lepas tu awak boleh upload versi betul (re-upload tak pernah double count). Klik Delete tak terus padam, dia buka panel sahkan dulu (kena tick kotak akui) dan padam satu fail satu masa.
+
+Perangai penting bila padam fail Orders, dan ini yang baru:
+
+* Order yang **turut ada dalam fail upload lain DIKEKALKAN**, bukan dibuang. Mesej hasil akan tulis macam "N orders kept (also in another upload)". Jadi awak tak hilang order yang datang dari tempat lain.
+* Order lama yang diupload **sebelum app mula jejak fail** (tiada jejak fail asal) pun **dikekalkan**, ditandakan **"kept"** dalam mesej hasil ("N older orders kept").
+* Nak aktifkan jejak penuh untuk order lama tu? Cukup **upload semula fail Orders sekali**. Selamat, dan **tak akan double count**.
 
 ### JANGAN SENTUH
 
