@@ -69,6 +69,13 @@ kekal senyap idempotent. Bonus: perubahan selling_price antara upload dilog Acti
 sebagai "Price change" (log sahaja, tak menahan). Kiraan akhir pemburuan: 10 daripada
 14 calon dibaiki, baki 4 kosmetik/laten direkod sahaja.
 
+## Penutup 23 Jul (otak segar)
+Peta lokal naik v1.6 (2 kabinet baru order_uploads + bill_line_conflicts, 195 ujian
+pass, backup vault raw). Graf kod Understand-Anything dibina semula penuh: 105 fail,
+377 node, 745 edge, 7 lapisan Melayu, tour 14 langkah, fingerprint baseline segar
+(commit 465b952). docs/panduanFinance.md dikemaskini dengan Needs attention + Price
+change + perangai delete baru (pushed).
+
 ## Cara run
 
 ```
