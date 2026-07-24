@@ -1,10 +1,14 @@
 // Test helper mutasi atas dev PG (port 5433). Self-restoring untuk saveSkuMap;
 // resetStore diuji betul, restore selepas via loadDevDb.py (backup = data sama).
 //   npx tsx scripts/testMutations.ts
-import { saveSkuMap, addSku, resetStore, isAdmin } from "../lib/mutations";
+import { saveSkuMap, addSku, resetStore, saveGifts, isAdmin } from "../lib/mutations";
 // Versi *Impl (tanpa cache) , unstable_cache perlukan konteks request Next.
 import { skuMapImpl as skuMap, storeCountsImpl as storeCounts, type SkuRow } from "../lib/recon";
 import { getPool } from "../lib/db";
+import { ensureAppEventsTable } from "../lib/audit";
+import { ensureOrderUploadsTable } from "../lib/orderUploadsSchema";
+import { ensureBankTable } from "../lib/bank";
+import { ensureBillConflictsTable } from "../lib/billConflictsSchema";
 
 // GUARD: resetStore padam semua data. Refuse selain dev PG lokal supaya skrip
 // tak boleh terlanjur wipe Neon produksi.
@@ -23,6 +27,36 @@ async function bottlesFor(sku: string): Promise<{ paid: number; free: number } |
   const r = await getPool().query(
     "SELECT paid, free FROM sku_bottles WHERE UPPER(TRIM(sku)) = UPPER(TRIM($1))", [sku]);
   return r.rows[0] ? { paid: Number(r.rows[0].paid), free: Number(r.rows[0].free) } : null;
+}
+
+async function countRows(table: string): Promise<number> {
+  const r = await getPool().query(`SELECT COUNT(*)::int AS n FROM ${table}`);
+  return (r.rows[0]?.n as number) ?? 0;
+}
+
+// Semai satu baris probe ke tiap jadual era webApp supaya kita boleh sahkan
+// resetStore benar benar padam ia (bukan lulus palsu sebab jadual asal kosong).
+async function seedProbeRows(): Promise<void> {
+  await ensureAppEventsTable();
+  await ensureOrderUploadsTable();
+  await ensureBankTable();
+  await ensureBillConflictsTable();
+  await getPool().query(
+    `INSERT INTO app_events (event_id, ts, actor, action, detail)
+     VALUES ('probe-reset', 'now', 'test', 'probe', 'x')
+     ON CONFLICT (event_id) DO NOTHING`);
+  await getPool().query(
+    `INSERT INTO order_uploads (order_id, source_file, ingested_at)
+     VALUES ('probe-reset', 'probe.xlsx', 'now')
+     ON CONFLICT (order_id, source_file) DO NOTHING`);
+  await getPool().query(
+    `INSERT INTO bank_deposits (bill_id, actual_amount, entered_by, updated_at)
+     VALUES ('probe-reset', 1, 'test', 'now')
+     ON CONFLICT (bill_id) DO NOTHING`);
+  await getPool().query(
+    `INSERT INTO bill_line_conflicts (awb, bill_id_new, source_file, detected_at)
+     VALUES ('probe-reset', 'probe-bill', 'probe.xlsx', 'now')
+     ON CONFLICT (awb, bill_id_new) DO NOTHING`);
 }
 
 async function main() {
@@ -88,12 +122,28 @@ async function main() {
   const before = await storeCounts();
   const skuBefore = (await skuMap()).length;
   ok(before.orders > 0, `sebelum reset: ${before.orders} orders`);
+  // Semai probe + config sku_gifts supaya kita sahkan reset padam jadual webApp
+  // TAPI kekalkan sku_gifts (config finance, mesti kekal macam sku_bottles).
+  await seedProbeRows();
+  await saveGifts("JAG-MY-1", [{ gift_name: "probe-gift", unit_cost: 1, qty: 1 }]);
+  const giftsBefore = await countRows("sku_gifts");
+  ok(giftsBefore > 0, `sebelum reset: ${giftsBefore} sku_gifts (config)`);
   await resetStore();
   const zero = await storeCounts();
   const skuAfter = (await skuMap()).length;
   ok(zero.orders === 0 && zero.billLines === 0 && zero.wallet === 0,
     `selepas reset semua transaksi 0 (orders=${zero.orders} lines=${zero.billLines} wallet=${zero.wallet})`);
   ok(skuAfter === skuBefore, `sku_bottles KEKAL (${skuAfter}, jangka ${skuBefore})`);
+  // Jadual era webApp turut dipadam bersih.
+  const events = await countRows("app_events");
+  const uploads = await countRows("order_uploads");
+  const bank = await countRows("bank_deposits");
+  const conflicts = await countRows("bill_line_conflicts");
+  ok(events === 0 && uploads === 0 && bank === 0 && conflicts === 0,
+    `jadual webApp dipadam (app_events=${events} order_uploads=${uploads} bank_deposits=${bank} bill_line_conflicts=${conflicts})`);
+  // sku_gifts = config, mesti KEKAL (tak dipadam oleh reset).
+  const giftsAfter = await countRows("sku_gifts");
+  ok(giftsAfter === giftsBefore, `sku_gifts KEKAL (${giftsAfter}, jangka ${giftsBefore})`);
 
   console.log(fail === 0 ? "\nSEMUA LULUS" : `\n${fail} GAGAL`);
   await getPool().end();

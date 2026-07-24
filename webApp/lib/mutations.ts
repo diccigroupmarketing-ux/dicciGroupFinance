@@ -7,6 +7,8 @@ import { getPool } from "./db";
 import { ensureGiftTable } from "./giftsSchema";
 import { ensureOrderUploadsTable } from "./orderUploadsSchema";
 import { ensureBillConflictsTable } from "./billConflictsSchema";
+import { ensureAppEventsTable } from "./audit";
+import { ensureBankTable } from "./bank";
 
 export interface SkuInput {
   sku: string;
@@ -159,14 +161,25 @@ export async function saveGifts(sku: string, gifts: GiftInput[]): Promise<number
   }
 }
 
-// Padam SEMUA data transaksi yang di-upload. KEKAL sku_bottles (mapping config
-// finance) , identik senarai jadual reset_db.
+// Padam SEMUA data transaksi yang di-upload. KEKAL sku_bottles + sku_gifts
+// (mapping config finance, mesti kekal). Enam jadual pertama ikut senarai asal
+// reset_db Python; selebihnya jadual era webApp (app_events log Activity,
+// order_uploads jejak vouch, bank_deposits pengesahan bank, bill_line_conflicts
+// baris kuarantin) ditambah supaya reset benar benar bersih, bukan tinggal baki.
 const RESET_TABLES = [
   "orders", "order_skus", "cod_bill_lines", "cod_bills",
   "wallet_txns", "prepaid_payments",
+  "app_events", "order_uploads", "bank_deposits", "bill_line_conflicts",
 ];
 
 export async function resetStore(): Promise<void> {
+  // Jadual era webApp dicipta MALAS (ensure*Table). Dalam DB yang belum sentuh
+  // ciri tu, jadualnya belum wujud, dan DELETE atas jadual tak wujud pecah lalu
+  // rollback SELURUH reset. Jamin semua wujud dulu, di LUAR transaksi padam.
+  await ensureAppEventsTable();
+  await ensureOrderUploadsTable();
+  await ensureBankTable();
+  await ensureBillConflictsTable();
   const client = await getPool().connect();
   try {
     await client.query("BEGIN");

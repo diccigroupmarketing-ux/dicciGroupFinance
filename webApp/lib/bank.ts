@@ -15,7 +15,9 @@ export interface BankDeposit {
 
 let ensured = false;
 
-async function ensureTable(): Promise<void> {
+// Dieksport supaya resetStore boleh jamin jadual wujud sebelum padam (jadual ni
+// dicipta malas, DELETE atas jadual tak wujud pecah + rollback seluruh reset).
+export async function ensureBankTable(): Promise<void> {
   if (ensured) return;
   await getPool().query(`
     CREATE TABLE IF NOT EXISTS bank_deposits (
@@ -31,7 +33,7 @@ async function ensureTable(): Promise<void> {
 
 // Semua deposit sebagai peta bill_id -> rekod (jadual kecil, satu baris per bil).
 export async function getBankDeposits(): Promise<Record<string, BankDeposit>> {
-  await ensureTable();
+  await ensureBankTable();
   const res = await getPool().query(
     `SELECT bill_id, actual_amount, deposited_on, note, entered_by, updated_at
      FROM bank_deposits`);
@@ -57,7 +59,7 @@ export interface BankInput {
 }
 
 export async function saveBankDeposit(input: BankInput): Promise<void> {
-  await ensureTable();
+  await ensureBankTable();
   const amount = Number(input.actual_amount);
   if (!Number.isFinite(amount) || amount < 0) {
     throw new Error("jumlah bank tidak sah");
@@ -80,7 +82,7 @@ export async function saveBankDeposit(input: BankInput): Promise<void> {
 }
 
 export async function deleteBankDeposit(billId: string): Promise<void> {
-  await ensureTable();
+  await ensureBankTable();
   await getPool().query("DELETE FROM bank_deposits WHERE bill_id = $1",
     [String(billId ?? "").trim()]);
 }

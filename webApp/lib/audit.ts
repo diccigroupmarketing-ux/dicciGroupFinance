@@ -5,7 +5,9 @@ import { getPool } from "./db";
 
 let ensured = false;
 
-async function ensureTable(): Promise<void> {
+// Dieksport supaya resetStore boleh jamin jadual wujud sebelum padam (jadual ni
+// dicipta malas, DELETE atas jadual tak wujud pecah + rollback seluruh reset).
+export async function ensureAppEventsTable(): Promise<void> {
   if (ensured) return;
   await getPool().query(`
     CREATE TABLE IF NOT EXISTS app_events (
@@ -20,7 +22,7 @@ async function ensureTable(): Promise<void> {
 
 export async function logEvent(actor: string, action: string, detail: string): Promise<void> {
   try {
-    await ensureTable();
+    await ensureAppEventsTable();
     await getPool().query(
       `INSERT INTO app_events (event_id, ts, actor, action, detail)
        VALUES ($1, $2, $3, $4, $5)`,
@@ -37,7 +39,7 @@ export interface AppEvent {
 }
 
 export async function getRecentEvents(limit = 60): Promise<AppEvent[]> {
-  await ensureTable();
+  await ensureAppEventsTable();
   const res = await getPool().query(
     `SELECT ts, actor, action, detail FROM app_events
      ORDER BY ts DESC LIMIT $1`, [limit]);
