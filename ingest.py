@@ -121,6 +121,20 @@ def ingest_bytes(data, filename, conn):
     dhl = parse_dhl(data)
     if dhl is not None:
         return "dhl", ingest_dhl(dhl, filename, conn)
+    # PDF: team finance boleh upload DHL Payment Advice terus dalam bentuk PDF
+    # (bukan lagi .xls kembar sahaja). Kesan ikut magic byte %PDF, hantar ke
+    # parser PDF. Kalau PDF tapi BUKAN DHL advice, pulang (None, 0) terus, JANGAN
+    # biar jatuh ke _load_df (pd.read_excel atas bytes PDF akan crash).
+    if data[:5].startswith(b"%PDF"):
+        dhl_pdf = parse_dhl_pdf(data)
+        if dhl_pdf is not None:
+            return "dhl", ingest_dhl(dhl_pdf, filename, conn)
+        jnt_pdf = parse_jnt_pdf(data)
+        if jnt_pdf is not None:
+            jnt_df, jnt_settlement = jnt_pdf
+            return "jnt", ingest_jnt(jnt_df, filename, conn,
+                                     settlement_override=jnt_settlement)
+        return None, 0
     chip = parse_chip(data, filename)
     if chip is not None:
         return "chip", ingest_chip(chip, filename, conn)
@@ -501,12 +515,17 @@ def conflicts_count(conn, source_file):
     ).scalar() or 0
 
 
-def ingest_jnt(df, source_file, conn):
+def ingest_jnt(df, source_file, conn, settlement_override=None):
     # Buang baris AWB kosong (baris total/blank hujung bil), macam guard Ninja/DHL.
     # Kalau tak, NaN jadi string "NAN" dan padan dengan semua order tanpa tracking.
     df = df[df[J_AWB].notna()].copy()
     df = df[df[J_AWB].astype(str).str.strip() != ""]
     bill_id, settlement = parse_bill_meta(source_file)
+    # settlement_override: laluan PDF (COD Statement) baca tarikh dari kandungan
+    # statement (nama fail J&T PDF tiada larian 8-digit). Default None kekalkan
+    # perangai Excel sedia ada (tarikh dari nama fail sahaja).
+    if settlement_override:
+        settlement = settlement_override
     conn.execute(BILLS_UPSERT, {
         "bill_id": bill_id, "courier": "J&T Express", "settlement_date": settlement,
         "source_file": source_file, "ingested_at": now_iso(),
@@ -529,6 +548,106 @@ def ingest_jnt(df, source_file, conn):
             conn.execute(LINES_UPSERT, rows)
     conn.commit()
     return len(rows)
+
+
+# ---------- J&T COD Statement (.pdf) ----------
+# Team finance kadang dapat bil J&T dalam PDF "COD Statement" (bukan Excel).
+# PDF ni ada blok SUMMARY (GRAND TOTAL) + "DETAIL DAILY TRANSACTION LIST" dengan
+# lajur: No, AWB No., Delivery Date (datetime), COD, Transaction Fee, SST, Net.
+# Nilai fee/SST ditulis dalam kurungan (contoh "(3.27)") = tolakan. Output
+# diselaraskan jadi DataFrame bentuk SAMA macam bil J&T Excel (lajur J_AWB/J_COD/
+# J_FEE/J_DELIVERED/J_PICKUP), jadi ingest_jnt guna semula tanpa ubah logik.
+#
+# Takrif fee: SAMA macam Excel "Total Processing Fee" = Transaction Fee + SST
+# (dua dua kos). Dibuktikan oleh GRAND TOTAL: net = COD - (txnFee + SST). Kita
+# simpan fee sebagai nilai POSITIF (magnitud kos), selaras lajur fee Excel.
+
+# Baris detail: "No AWB YYYY-MM-DD HH:MM:SS COD (txnFee) (SST) Net"
+# (kurungan optional; guna to_num untuk tanda, ambil magnitud untuk fee).
+_JNT_ROW_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_JNT_STMT_DATE = re.compile(r"Date\s*:\s*(\d{4}-\d{2}-\d{2})")
+
+
+def _jnt_pdf_num(tok):
+    """Nilai duit statement J&T; kurungan = tolakan (to_num handle tanda)."""
+    return db.to_num(pd.Series([tok])).iloc[0]
+
+
+def _jnt_parse_text(full):
+    """Baca teks COD Statement J&T -> (DataFrame bentuk bil J&T Excel, settlement)
+    kalau ia betul betul statement J&T, else None. RAISE ValueError kalau jumlah
+    baris detail tak tally dengan GRAND TOTAL. Fungsi TULEN (atas teks) supaya
+    boleh diuji tanpa PDF sebenar."""
+    # Tandatangan J&T COD Statement (JANGAN silap kenal PDF DHL / lain).
+    if "COD Statement" not in full or "J&T EXPRESS" not in full:
+        return None
+
+    rows, grand = [], None
+    for line in full.splitlines():
+        t = line.split()
+        # Baris detail: No + AWB (semua digit) + tarikh + masa + 4 lajur duit.
+        if len(t) >= 8 and t[0].isdigit() and t[1].isdigit() \
+                and _JNT_ROW_DATE.match(t[2]):
+            awb, deliv = t[1], t[2] + " " + t[3]
+            cod, txn, sst, net = t[4], t[5], t[6], t[7]
+            fee = abs(_jnt_pdf_num(txn)) + abs(_jnt_pdf_num(sst))  # total kos positif
+            rows.append({
+                "awb": awb, "deliv": deliv,
+                "cod": _jnt_pdf_num(cod), "fee": round(fee, 2),
+                "net": _jnt_pdf_num(net),
+            })
+        elif line.strip().upper().startswith("GRAND TOTAL") and len(t) >= 6:
+            grand = {"cod": _jnt_pdf_num(t[2]), "net": _jnt_pdf_num(t[5])}
+
+    if grand is None:
+        raise ValueError("J&T COD Statement: GRAND TOTAL tak dijumpai, "
+                         "fail ditolak (tak boleh sahkan jumlah).")
+    # Validasi dalaman: jumlah baris detail MESTI tally GRAND TOTAL (COD & net).
+    cod_sum = round(sum(r["cod"] for r in rows), 2)
+    net_sum = round(sum(r["net"] for r in rows), 2)
+    if abs(cod_sum - grand["cod"]) > 0.01 or abs(net_sum - grand["net"]) > 0.01:
+        raise ValueError(
+            "J&T COD Statement tak tally dengan GRAND TOTAL "
+            "(detail COD %.2f vs %.2f, net %.2f vs %.2f), fail ditolak."
+            % (cod_sum, grand["cod"], net_sum, grand["net"]))
+
+    settlement = None
+    m = _JNT_STMT_DATE.search(full)
+    if m:
+        settlement = m.group(1)
+    # Bentuk DataFrame IDENTIK lajur bil J&T Excel, supaya ingest_jnt guna semula.
+    df = pd.DataFrame({
+        J_AWB: [r["awb"] for r in rows],
+        J_COD: [r["cod"] for r in rows],
+        J_FEE: [r["fee"] for r in rows],
+        J_DELIVERED: [r["deliv"] for r in rows],
+        J_PICKUP: [None] * len(rows),   # statement tiada tarikh pick up
+    })
+    return df, settlement
+
+
+def parse_jnt_pdf(data):
+    """Pulang (DataFrame bentuk bil J&T Excel, settlement) kalau `data` ialah
+    J&T COD Statement PDF, else None. RAISE ValueError kalau jumlah baris detail
+    tak tally dengan GRAND TOTAL (tolak fail, jangan simpan senyap)."""
+    if not data[:5].startswith(b"%PDF"):
+        return None
+    try:
+        import pdfplumber  # lazy: sama corak parse_dhl_pdf
+    except Exception:
+        return None
+    try:
+        pdf = pdfplumber.open(io.BytesIO(data))
+    except Exception:
+        return None
+    full = ""
+    try:
+        with pdf:
+            for page in pdf.pages:
+                full += (page.extract_text() or "") + "\n"
+    except Exception:
+        return None
+    return _jnt_parse_text(full)
 
 
 # ---------- DHL Payment Advice (UTF-16 tab-text dalam .xls) ----------
@@ -596,6 +715,95 @@ def ingest_dhl(parsed, source_file, conn):
             conn.execute(LINES_UPSERT, recs)
     conn.commit()
     return len(recs)
+
+
+# ---------- DHL Payment Advice (.pdf) ----------
+# Team finance kadang dapat advice DHL dalam PDF (bukan .xls kembar). PDF ni
+# dijana mesin, jadual kemas, jadi kita baca guna pdfplumber (import LAZY supaya
+# env yang tak upload PDF, cth CLI reconcile, tak perlu library ni). Output
+# diselaraskan jadi bentuk {meta, header, rows} SAMA macam parse_dhl (.xls),
+# jadi ingest_dhl guna semula tanpa ubah. Header dikanonkan ke nama yang
+# ingest_dhl cari (Customer Reference ID / CoD Amount / Delivery Date), dan
+# Payment Date ditukar dd.mm.yyyy -> yyyymmdd supaya identik dengan kembar .xls.
+
+# Header baris-item jadual advice (nama ringkas dalam PDF: "Customer Ref.ID").
+_DHL_PDF_HEADER = [
+    "No.", "Delivery Date", "DHL Parcel ID", "Customer Reference ID",
+    "Consignee Name", "Deposit Date", "CoD Amount",
+]
+
+
+def _pdf_cell(v):
+    """Bersih satu sel jadual pdfplumber: ambil baris PERTAMA sahaja (nama
+    consignee/parcel id kadang bungkus ke baris bawah, dan baris akhir setiap
+    muka ada garis pemisah '____' tercantum), buang ruang tepi."""
+    if v is None:
+        return ""
+    return str(v).split("\n")[0].strip()
+
+
+def _ddmmyyyy_to_yyyymmdd(s):
+    """'08.06.2026' -> '20260608' (selaraskan Payment Date PDF dengan .xls).
+    None kalau bukan format dd.mm.yyyy."""
+    m = re.match(r"(\d{2})\.(\d{2})\.(\d{4})", str(s or "").strip())
+    return m.group(3) + m.group(2) + m.group(1) if m else None
+
+
+def parse_dhl_pdf(data):
+    """Pulang {meta, header, rows} kalau `data` ialah DHL Payment Advice PDF,
+    else None. Bentuk output identik parse_dhl (.xls) supaya ingest_dhl guna
+    semula tanpa ubah."""
+    if not data[:5].startswith(b"%PDF"):
+        return None
+    try:
+        import pdfplumber  # lazy: hanya perlu bila betul betul upload PDF
+    except Exception:
+        return None
+    try:
+        pdf = pdfplumber.open(io.BytesIO(data))
+    except Exception:
+        return None
+    line_rows, pay_ref, pay_date, full_text = [], None, None, ""
+    try:
+        with pdf:
+            for page in pdf.pages:
+                full_text += (page.extract_text() or "") + "\n"
+                for tbl in page.extract_tables():
+                    if not tbl:
+                        continue
+                    head = [_pdf_cell(c) for c in tbl[0]]
+                    # Jadual baris-item advice: tandatangan header "No." + "CoD
+                    # Amount" + "DHL Parcel ID" (khusus DHL, elak silap kenal).
+                    if head[:1] == ["No."] and "CoD Amount" in head \
+                            and "DHL Parcel ID" in head:
+                        for r in tbl[1:]:
+                            if _pdf_cell(r[0]).isdigit():  # baris item betul
+                                line_rows.append([_pdf_cell(x) for x in r])
+                    # Jadual ringkasan bayaran: ambil rujukan + tarikh bayaran.
+                    elif head[:1] == ["Payment document"] and pay_ref is None:
+                        for r in tbl[1:]:
+                            cells = [_pdf_cell(x) for x in r]
+                            if cells and cells[0]:
+                                pay_ref = cells[0]
+                                pay_date = cells[1] if len(cells) > 1 else None
+                                break
+    except Exception:
+        return None
+    if not line_rows:
+        return None  # PDF sah tapi bukan advice DHL (tiada jadual baris-item)
+    # Fallback rujukan dari teks ("...bank transfer number 84780324, subject...").
+    if not pay_ref:
+        m = re.search(r"bank transfer number\s+(\w+)", full_text)
+        pay_ref = m.group(1) if m else None
+    meta = {}
+    if pay_ref:
+        meta["Payment Reference"] = pay_ref
+    ymd = _ddmmyyyy_to_yyyymmdd(pay_date)
+    if ymd:
+        meta["Payment Date"] = ymd
+    # Ambil hanya 7 lajur kanonik (buang sel ekor kosong jadual).
+    rows = [r[:len(_DHL_PDF_HEADER)] for r in line_rows]
+    return {"meta": meta, "header": list(_DHL_PDF_HEADER), "rows": rows}
 
 
 # ---------- Ninja Van COD SOA (.xlsx) ----------

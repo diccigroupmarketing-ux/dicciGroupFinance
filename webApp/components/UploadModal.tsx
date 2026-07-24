@@ -104,8 +104,8 @@ export default function UploadModal() {
             </div>
             <p className="modalNote">
               Fighter export, courier bill (J&T / DHL / Ninja Van), CHIP statement or
-              Fighter Wallet. The type is detected automatically, re-uploading the
-              same file never double counts.
+              Fighter Wallet. DHL payment advice works as .xls or .pdf. The type is
+              detected automatically, re-uploading the same file never double counts.
             </p>
 
             <button
@@ -115,11 +115,11 @@ export default function UploadModal() {
             >
               {files.length
                 ? `${files.length} file${files.length > 1 ? "s" : ""} selected`
-                : "Choose files (.xlsx / .xls / .csv)"}
+                : "Choose files (.xlsx / .xls / .csv / .pdf)"}
             </button>
             <input
               ref={inputRef} type="file" multiple hidden
-              accept=".xlsx,.xls,.csv"
+              accept=".xlsx,.xls,.csv,.pdf"
               onChange={(e) => {
                 setFiles(Array.from(e.target.files ?? []));
                 setResults([]);
