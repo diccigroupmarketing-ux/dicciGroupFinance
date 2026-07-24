@@ -8,6 +8,7 @@ import { useRouter } from "next/navigation";
 import type { UploadedFile } from "@/lib/recon";
 import { fmtInt } from "@/lib/format";
 import TableFilter from "@/components/TableFilter";
+import InfoTip from "@/components/InfoTip";
 
 const KIND_LABEL: Record<string, string> = {
   orders: "Fighter orders", cod: "Courier bill",
@@ -115,7 +116,11 @@ export default function UploadsManager({ files }: { files: UploadedFile[] }) {
         <div className="tableWrap">
           <table>
             <thead>
-              <tr><th>File</th><th>Type</th><th className="num">Rows</th><th>Last upload</th><th /></tr>
+              <tr><th>File</th><th>Type
+                <InfoTip text="What kind of feed this file is. Fighter orders are the sales orders. Courier bill is a courier's settlement of COD cash. Gateway statement is an online-payment settlement (e.g. CHIP). Fighter wallet is the stockist commission export." />
+              </th><th className="num">Rows
+                <InfoTip text="How many rows this file added to the store. Deleting a file removes exactly these rows and updates every dashboard right away; re-uploading the corrected file never double counts." />
+              </th><th>Last upload</th><th /></tr>
             </thead>
             <tbody>
               {visible.length === 0 && (

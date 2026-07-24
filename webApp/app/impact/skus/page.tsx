@@ -4,6 +4,7 @@ import { isAdmin } from "@/lib/mutations";
 import { fmtInt } from "@/lib/format";
 import SkuEditor from "@/components/SkuEditor";
 import StoreDanger from "@/components/StoreDanger";
+import InfoTip from "@/components/InfoTip";
 
 export const dynamic = "force-dynamic";
 
@@ -53,7 +54,9 @@ export default async function SkusPage() {
             <path d="M10 7v4m0 3h.01M10 2.5 18 16H2z" />
           </svg>
           <div>
-            <b>Review these auto-added SKU bottle counts ({fmtInt(autoAdded.length)}).</b>
+            <b>Review these auto-added SKU bottle counts ({fmtInt(autoAdded.length)}).
+              <InfoTip text="When a new SKU first appears in an upload, the system guesses its paid and free bottle counts from the SKU name (the +1, +2, KORBAN part). These are guesses. Check the numbers, then give the SKU a real product name to clear it from this list." />
+            </b>
             <p>These were auto-registered on upload with a guessed paid/free split , confirm the
               numbers are right:{" "}
               <span style={{ fontWeight: 700 }}>
@@ -71,7 +74,9 @@ export default async function SkusPage() {
             <path d="M10 7v4m0 3h.01M10 2.5 18 16H2z" />
           </svg>
           <div>
-            <b>Price per bottle looks low for {fmtInt(lowPrice.length)} SKU{lowPrice.length === 1 ? "" : "s"}.</b>
+            <b>Price per bottle looks low for {fmtInt(lowPrice.length)} SKU{lowPrice.length === 1 ? "" : "s"}.
+              <InfoTip text="We divide the order value by the number of bottles. If that comes out very low, the bottle count for this SKU may be set too high. Nothing was changed, this is just a heads-up to double check." />
+            </b>
             <p>Order value ÷ bottles is under RM {LOW_PPB_THRESHOLD}/bottle , the bottle count may be
               too high. Please verify (nothing was changed):{" "}
               <span style={{ fontWeight: 700 }}>

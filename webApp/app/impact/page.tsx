@@ -4,6 +4,7 @@ import { Chip } from "@/components/Chip";
 import GrainSwitcher from "@/components/GrainSwitcher";
 import WeeklyChart from "@/components/WeeklyChart";
 import PaymentBuckets from "@/components/PaymentBuckets";
+import InfoTip from "@/components/InfoTip";
 import Link from "next/link";
 
 export const dynamic = "force-dynamic";
@@ -62,7 +63,9 @@ export default async function Dashboard(
       <Header asOf={asOf} />
       <div className="hero">
         <div className="heroTop">
-          <div className="heroLabel">Net remit · All streams</div>
+          <div className="heroLabel">Net remit · All streams
+            <InfoTip text="The money we expect to land in the bank after the courier takes its delivery fee out of what the customer paid (COD collected minus courier fee)." />
+          </div>
           {totExc === 0 ? (
             <div className="heroChip"><span className="dot" /> Clean books</div>
           ) : (
@@ -86,22 +89,30 @@ export default async function Dashboard(
 
       <div className="kpis">
         <div className="kpi">
-          <div className="kpiLabel">COD collected</div>
+          <div className="kpiLabel">COD collected
+            <InfoTip text="COD means Cash On Delivery: the customer pays the courier when the parcel arrives. This is the total cash the courier collected on our behalf." />
+          </div>
           <div className="kpiValue"><small>RM</small> {fmtRM(totCollected).replace("RM ", "")}</div>
           <div className="kpiNote">across all settled bills</div>
         </div>
         <div className="kpi">
-          <div className="kpiLabel">Courier fees</div>
+          <div className="kpiLabel">Courier fees
+            <InfoTip text="What the courier charges to deliver and to collect the cash. It is taken out of the COD before the rest is sent to us." />
+          </div>
           <div className="kpiValue"><small>RM</small> {fmtRM(totFee).replace("RM ", "")}</div>
           <div className="kpiNote">{totCollected > 0 ? ((totFee / totCollected) * 100).toFixed(2) + "% of COD collected" : "—"}</div>
         </div>
         <div className="kpi">
-          <div className="kpiLabel">Parcels settled</div>
+          <div className="kpiLabel">Parcels settled
+            <InfoTip text="Parcels that now appear on a courier bill, so we know the money for them has been accounted for. One parcel is one delivery." />
+          </div>
           <div className="kpiValue">{fmtInt(totParcels)}</div>
           <div className="kpiNote">{fmtInt(counts.orders)} orders in store</div>
         </div>
         <div className="kpi">
-          <div className="kpiLabel">Bottles confirmed</div>
+          <div className="kpiLabel">Bottles confirmed
+            <InfoTip text="How many bottles we can count as truly sold, because the money for their order has been confirmed. Orders still waiting for payment are not counted here." />
+          </div>
           <div className="kpiValue">{fmtInt(totBottles)}</div>
           <div className="kpiNote">counted once money is confirmed</div>
         </div>
@@ -136,7 +147,9 @@ export default async function Dashboard(
           <div className="tableWrap">
             <table>
               <thead>
-                <tr><th>Stream</th><th className="num">Net remit</th><th>Status</th></tr>
+                <tr><th>Stream</th><th className="num">Net remit</th><th>Status
+                  <InfoTip text="Clean means every settled parcel matches a Fighter order at the exact amount. Exceptions are rows that do not match and need a person to check them." />
+                </th></tr>
               </thead>
               <tbody>
                 {rows.map((r) => (

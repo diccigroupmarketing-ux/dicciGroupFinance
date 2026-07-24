@@ -4,6 +4,7 @@ import { useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
 import { useHydrated } from "./useHydrated";
+import InfoTip from "@/components/InfoTip";
 import type { SkuGifts, SkuGiftItem } from "@/lib/recon";
 
 type Draft = { gift_name: string; unit_cost: number; qty: number };
@@ -158,8 +159,12 @@ export default function GiftEditor({ initial }: { initial: SkuGifts[] }) {
           <table>
             <thead>
               <tr>
-                <th>SKU</th><th>Product</th><th>Free gifts</th>
-                <th className="num">Cost / unit SKU</th><th aria-label="edit" />
+                <th>SKU
+                  <InfoTip text="SKU (Stock Keeping Unit) is the product code on each order line, for example a specific package or bundle. We map each SKU to its bottles and gifts." />
+                </th><th>Product</th><th>Free gifts</th>
+                <th className="num">Cost / unit SKU
+                  <InfoTip text="The total gift cost for one unit of this SKU: every gift's unit cost times its quantity, added up. The system multiplies this by how many were ordered." />
+                </th><th aria-label="edit" />
               </tr>
             </thead>
             <tbody>

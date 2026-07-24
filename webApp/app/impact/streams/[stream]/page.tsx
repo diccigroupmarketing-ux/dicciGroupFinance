@@ -15,6 +15,7 @@ import WeeklyChart from "@/components/WeeklyChart";
 import BillsTable, { type BillRow } from "@/components/BillsTable";
 import ExportCsv from "@/components/ExportCsv";
 import AgingControl from "@/components/AgingControl";
+import InfoTip from "@/components/InfoTip";
 import { getBankDeposits } from "@/lib/bank";
 
 // Ambang aging: 3..45 (padan slider Streamlit), default REMIT_PENDING_DAYS (14).
@@ -111,22 +112,30 @@ export default async function StreamPage(
 
       <div className="kpis">
         <div className="kpi">
-          <div className="kpiLabel">COD collected</div>
+          <div className="kpiLabel">COD collected
+            <InfoTip text="COD means Cash On Delivery: the customer pays the courier when the parcel arrives. This is the cash this courier collected for us." />
+          </div>
           <div className="kpiValue"><small>RM</small> {fmtRM(s.linesCod).replace("RM ", "")}</div>
           <div className="kpiNote">{fmtInt(s.linesN)} parcels in {s.bills.length} bill{s.bills.length === 1 ? "" : "s"}</div>
         </div>
         <div className="kpi">
-          <div className="kpiLabel">{cfg.name.split(" ")[0]} fee</div>
+          <div className="kpiLabel">{cfg.name.split(" ")[0]} fee
+            <InfoTip text="The delivery and collection charge this courier keeps. It is taken out of the COD before the rest is sent to us." />
+          </div>
           <div className="kpiValue"><small>RM</small> {fmtRM(s.linesFee).replace("RM ", "")}</div>
           <div className="kpiNote">{s.linesN > 0 ? `avg ${fmtRM(s.linesFee / s.linesN)} per parcel` : "—"}</div>
         </div>
         <div className="kpi">
-          <div className="kpiLabel">Net remit</div>
+          <div className="kpiLabel">Net remit
+            <InfoTip text="The money we expect this courier to send to the bank: COD collected minus the courier fee." />
+          </div>
           <div className="kpiValue"><small>RM</small> {fmtRM(net).replace("RM ", "")}</div>
           <div className="kpiNote">expected in bank</div>
         </div>
         <div className="kpi">
-          <div className="kpiLabel">Tally (exact match)</div>
+          <div className="kpiLabel">Tally (exact match)
+            <InfoTip text="Parcels where the amount on the courier bill matches the Fighter order exactly, ringgit for ringgit. A high tally means the books line up cleanly." />
+          </div>
           <div className="kpiValue">{fmtInt(s.tallyN)} <small>/ {fmtInt(s.linesN)}</small></div>
           <div className="kpiNote">
             {s.linesN > 0
@@ -151,7 +160,9 @@ export default async function StreamPage(
       <div className="grid2">
         <div className="card">
           <div className="cardHead">
-            <div className="cardTitle">Order status</div>
+            <div className="cardTitle">Order status
+              <InfoTip text="Where each order sits right now: matched cleanly (Tally), still waiting for a bill, returned, and so on. It shows the journey of the money, not just the total." />
+            </div>
             <div className="cardHint">{fmtInt(s.scopedOrders)} COD orders on {cfg.name}</div>
           </div>
           <div style={{ marginTop: 10 }}>
@@ -179,7 +190,9 @@ export default async function StreamPage(
 
         <div className="card">
           <div className="cardHead">
-            <div className="cardTitle">Exceptions</div>
+            <div className="cardTitle">Exceptions
+              <InfoTip text="Rows that do not add up and need a person to look. Tier 1 are integrity issues (real leaks until proven otherwise, like money paid on a returned order). Tier 2 are simply orders that have gone too long with no bill yet." />
+            </div>
             <div className="cardHint">what needs a human · aging</div>
             <AgingControl pending={pending} grain={grain} streamKey={key} />
           </div>
@@ -391,7 +404,9 @@ function Header({ name, asOf }: { name: string; asOf?: string | null }) {
   return (
     <div className="pageHead">
       <div>
-        <div className="eyebrow">Income stream · COD courier</div>
+        <div className="eyebrow">Income stream · COD courier
+          <InfoTip text="COD (Cash On Delivery) means the customer pays the courier on arrival, and the courier later remits the cash to us. Prepaid streams are different: the customer paid online before delivery." />
+        </div>
         <h1>{name}</h1>
         <div className="pageSub">Settlement bills matched against Fighter orders by tracking number.</div>
       </div>
@@ -437,7 +452,9 @@ function PrepaidHeader({ name, asOf }: { name: string; asOf?: string | null }) {
   return (
     <div className="pageHead">
       <div>
-        <div className="eyebrow">Income stream · Prepaid gateway</div>
+        <div className="eyebrow">Income stream · Prepaid gateway
+          <InfoTip text="Prepaid means the customer paid online at checkout, before the parcel ships (through a gateway like CHIP). There is no cash for the courier to collect, so these are matched by order ID, not tracking number." />
+        </div>
         <h1>{name}</h1>
         <div className="pageSub">Online payments matched against Fighter orders by order ID.</div>
       </div>
@@ -477,7 +494,9 @@ function StatementsTable({ rows }: { rows: StatementRow[] }) {
   return (
     <div className="card">
       <div className="cardHead">
-        <div className="cardTitle">CHIP statements</div>
+        <div className="cardTitle">CHIP statements
+          <InfoTip text="A statement is the gateway's own list of the online payments it settled to us, with its fee shown. It is the prepaid version of a courier bill." />
+        </div>
         <div className="cardHint">online settlements · matched by order ID</div>
       </div>
       <div className="tableWrap">
@@ -570,7 +589,9 @@ async function PrepaidStreamPage(
           <div className="kpiNote">into Dicci Group bank</div>
         </div>
         <div className="kpi">
-          <div className="kpiLabel">Tally (exact match)</div>
+          <div className="kpiLabel">Tally (exact match)
+            <InfoTip text="Payments where the amount on the CHIP statement matches the Fighter order exactly, ringgit for ringgit. A high tally means the books line up cleanly." />
+          </div>
           <div className="kpiValue">{fmtInt(s.tallyN)} <small>/ {fmtInt(s.linesN)}</small></div>
           <div className="kpiNote">
             {s.linesN > 0

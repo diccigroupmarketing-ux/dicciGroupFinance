@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
+import InfoTip from "@/components/InfoTip";
 import type { SkuRow } from "@/lib/recon";
 
 type Row = { sku: string; product_name: string; paid: number; free: number };
@@ -118,9 +119,17 @@ export default function SkuEditor({ initial }: { initial: SkuRow[] }) {
         <table>
           <thead>
             <tr>
-              <th>SKU</th><th>Product name</th>
-              <th className="num">Paid bottles</th>
-              <th className="num">Free bottles</th>
+              <th>SKU
+                <InfoTip text="SKU (Stock Keeping Unit) is the product code on each order line. Every SKU here is mapped to how many bottles it represents." />
+              </th><th>Product name
+                <InfoTip text="A readable name for the SKU. Giving an auto-added SKU a real product name here also clears it from the review banner above." />
+              </th>
+              <th className="num">Paid bottles
+                <InfoTip text="Bottles included in the price the customer paid, the sales portion of this SKU." />
+              </th>
+              <th className="num">Free bottles
+                <InfoTip text="Extra bottles given away with this SKU (like +1 or +2 KORBAN). Tracked separately because they are a cost, not a sale." />
+              </th>
               <th className="num">Total</th>
               <th aria-label="Row actions" />
             </tr>

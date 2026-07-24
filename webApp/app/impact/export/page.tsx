@@ -2,6 +2,7 @@ import { closePack } from "@/lib/closePack";
 import { storeCounts, lastIngest } from "@/lib/recon";
 import { fmtDate, fmtInt, fmtRM } from "@/lib/format";
 import ExportCsv from "@/components/ExportCsv";
+import InfoTip from "@/components/InfoTip";
 
 export const dynamic = "force-dynamic";
 
@@ -70,7 +71,9 @@ export default async function ExportPage() {
 
       <div className="card">
         <div className="cardHead">
-          <div className="cardTitle">Reconciliation close pack</div>
+          <div className="cardTitle">Reconciliation close pack
+            <InfoTip text="A tidy summary of a period, expected money-in versus what actually landed in the bank, ready to download for Excel. It is what you hand over when closing the books for a month." />
+          </div>
           <div className="cardHint">expected remit vs actual banked, per stream and period</div>
           <ExportCsv rows={csvRows} columns={COLS}
             filename={`impact-close-pack-asof-${asOfName}.csv`} />
@@ -90,8 +93,14 @@ export default async function ExportPage() {
                 <th>Stream</th><th>Period</th><th className="num">Parcels</th>
                 <th className="num">COD collected</th><th className="num">Fee</th>
                 <th className="num">Net remit</th><th className="num">Banked</th>
-                <th className="num">Bills</th><th className="num">Variance</th>
-                <th className="num">Exc</th>
+                <th className="num">Bills
+                  <InfoTip text="How many bills for this period have been confirmed against the bank so far, shown as confirmed of total. The rest are still pending confirmation." />
+                </th><th className="num">Variance
+                  <InfoTip text="Net remit expected minus what actually reached the bank, counted over confirmed bills only. RM 0.00 is a perfect match; anything else is a real gap to chase. Unconfirmed bills stay blank so they never create a fake variance." />
+                </th>
+                <th className="num">Exc
+                  <InfoTip text="Exceptions: rows in this period that did not match and need a person to check them." />
+                </th>
               </tr>
             </thead>
             <tbody>

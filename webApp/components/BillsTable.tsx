@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { fmtDate, fmtDay, fmtInt, fmtRM, trackingOrDash } from "@/lib/format";
 import ExportCsv from "@/components/ExportCsv";
+import InfoTip from "@/components/InfoTip";
 
 const BILL_COLS = [
   { key: "bill_id", header: "Bill" }, { key: "settlement_date", header: "Settled" },
@@ -152,7 +153,9 @@ export default function BillsTable({
   return (
     <div className="card">
       <div className="cardHead">
-        <div className="cardTitle">Settlement bills</div>
+        <div className="cardTitle">Settlement bills
+          <InfoTip text="A bill (or statement) is the courier's own list of parcels it delivered and the cash it is sending us for them, with its fee shown. We match it against our orders to make sure nothing is missing." />
+        </div>
         <div className="cardHint">click a bill to see its parcels · confirm the bank amount to close the loop</div>
         <ExportCsv rows={rows} columns={BILL_COLS} filename={`${streamKey}-bills.csv`} />
       </div>
@@ -163,8 +166,18 @@ export default function BillsTable({
             <tr>
               <th>Bill</th><th>Settled</th><th className="num">Parcels</th>
               <th className="num">Net remit</th>
-              <th className="num">In bank</th><th>Deposited</th><th className="num">Variance</th>
-              <th>Books</th><th aria-label="Confirm" />
+              <th className="num">In bank
+                <InfoTip text="The actual amount you found deposited in the bank for this bill, typed in when you confirm it. Blank until someone checks the bank and confirms." />
+              </th>
+              <th>Deposited
+                <InfoTip text="The real date the money landed in the bank. The tag like +2d shows how many days later it arrived compared to when the courier settled the bill." />
+              </th>
+              <th className="num">Variance
+                <InfoTip text="Net remit expected minus what actually reached the bank. RM 0.00 means it matched perfectly; anything else is a gap worth checking." />
+              </th>
+              <th>Books
+                <InfoTip text="A quick health check for this bill. Clean means every parcel on it matched an order; otherwise it shows how many exceptions need a look." />
+              </th><th aria-label="Confirm" />
             </tr>
           </thead>
           <tbody>

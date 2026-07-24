@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { fmtDate, fmtInt, fmtRM } from "@/lib/format";
+import InfoTip from "@/components/InfoTip";
 
 type Row = { seller_name: string; level: string; earned: number; paid: number; balance: number };
 type BySrc = { source: string; txn_type: string; count: number; total: number };
@@ -42,9 +43,17 @@ export default function CommissionTable({ rows }: { rows: Row[] }) {
         <table>
           <thead>
             <tr>
-              <th>Stockist</th><th>Level</th>
-              <th className="num">Earned</th><th className="num">Paid out</th>
-              <th className="num">Balance</th>
+              <th>Stockist</th><th>Level
+                <InfoTip text="The stockist's rank or tier in the Fighter network (e.g. their level in the referral structure). It comes straight from the Wallet export." />
+              </th>
+              <th className="num">Earned
+                <InfoTip text="Commission this stockist earned during the uploaded period. Click the stockist to see which sources and transactions it came from." />
+              </th><th className="num">Paid out
+                <InfoTip text="Commission already withdrawn (paid out to the stockist) during the uploaded period." />
+              </th>
+              <th className="num">Balance
+                <InfoTip text="Earned minus paid out for the uploaded period only. This is not their all-time wallet balance." />
+              </th>
             </tr>
           </thead>
           <tbody>

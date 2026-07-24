@@ -8,6 +8,7 @@ import { Fragment, useState } from "react";
 import { fmtInt, fmtRM } from "@/lib/format";
 import type { PayBucket } from "@/lib/recon";
 import CourierBreakdown, { canBreakdown } from "@/components/CourierBreakdown";
+import InfoTip from "@/components/InfoTip";
 
 function Caret() {
   return (
@@ -79,7 +80,9 @@ export default function PaymentBuckets({
   return (
     <div className="card">
       <div className="cardHead">
-        <div className="cardTitle">{title}</div>
+        <div className="cardTitle">{title}
+          <InfoTip text="Every order sorted into honest groups by how it was paid. Confirmed means the money was matched to a bill or statement. Awaiting means we are still waiting for that proof, it is not lost money." />
+        </div>
         <div className="cardHint">
           honest breakdown by payment method · {fmtInt(confOrders)} of {fmtInt(totOrders)} orders confirmed
         </div>
@@ -92,7 +95,9 @@ export default function PaymentBuckets({
               <th className="num">Orders</th>
               <th className="num">Expected (RM)</th>
               {showBottles && <th className="num">Bottles</th>}
-              <th>Aging</th>
+              <th>Aging
+                <InfoTip text="How old the oldest order still waiting in this group is, in days. The longer it sits, the more worth chasing. Counted from the aging reference date, 18 Jun 2026." />
+              </th>
             </tr>
           </thead>
           <tbody>

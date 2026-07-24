@@ -4,6 +4,7 @@ import { useMemo, useState } from "react";
 import Link from "next/link";
 import { fmtInt, fmtRM } from "@/lib/format";
 import TableFilter from "@/components/TableFilter";
+import InfoTip from "@/components/InfoTip";
 
 export interface StockistTableRow {
   stockist: string;
@@ -46,12 +47,20 @@ export default function StockistTable({
             <tr>
               <th>Stockist</th>
               <th className="num">Confirmed orders</th>
-              <th className="num">Paid bottles</th>
-              <th className="num">Free bottles</th>
+              <th className="num">Paid bottles
+                <InfoTip text="Bottles the customer actually paid for, part of the selling price. These are the sales." />
+              </th>
+              <th className="num">Free bottles
+                <InfoTip text="Bottles given away as part of a deal (for example +1 or +2 KORBAN). The customer did not pay for these, so they are a cost, not a sale." />
+              </th>
               <th className="num">Total bottles</th>
-              <th className="num">Unconfirmed</th>
+              <th className="num">Unconfirmed
+                <InfoTip text="Bottles from orders whose money is not yet confirmed (still waiting for a courier bill or CHIP statement). They flip to confirmed automatically once that feed is uploaded, no rework needed." />
+              </th>
               <th>Free gifts</th>
-              <th className="num">Giveaway cost</th>
+              <th className="num">Giveaway cost
+                <InfoTip text="What the free items for this stockist cost us: unit cost times gift quantity times orders. Counted only once the order's payment is confirmed." />
+              </th>
             </tr>
           </thead>
           <tbody>

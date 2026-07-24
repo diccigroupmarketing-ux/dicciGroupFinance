@@ -1,6 +1,7 @@
 import { skuGiftsList, giftCostSummary } from "@/lib/recon";
 import { fmtInt, fmtRM } from "@/lib/format";
 import GiftEditor from "@/components/GiftEditor";
+import InfoTip from "@/components/InfoTip";
 
 export const dynamic = "force-dynamic";
 
@@ -23,12 +24,16 @@ export default async function GiftsPage() {
 
       <div className="kpis">
         <div className="kpi">
-          <div className="kpiLabel">Giveaway cost · confirmed</div>
+          <div className="kpiLabel">Giveaway cost · confirmed
+            <InfoTip text="What the free gifts cost us on orders whose payment is confirmed. This is a real, accounted cost of doing the promotion." />
+          </div>
           <div className="kpiValue"><small>RM</small> {fmtRM(summary.confirmedCost).replace("RM ", "")}</div>
           <div className="kpiNote">gifts on paid-confirmed orders</div>
         </div>
         <div className="kpi">
-          <div className="kpiLabel">On returned / unpaid</div>
+          <div className="kpiLabel">On returned / unpaid
+            <InfoTip text="Free gifts that went out on orders the customer never paid for or returned. We spent on the gift but got no sale, so it is a potential leak worth watching." />
+          </div>
           <div className="kpiValue"><small>RM</small> {fmtRM(summary.atRiskCost).replace("RM ", "")}</div>
           <div className="kpiNote">
             {summary.atRiskCost > 0

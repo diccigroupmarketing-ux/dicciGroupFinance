@@ -1,5 +1,6 @@
 import { fmtDate, fmtRM, trackingOrDash } from "@/lib/format";
 import type { BillLineConflict } from "@/lib/recon";
+import InfoTip from "@/components/InfoTip";
 
 // Seksyen "needs attention": parcel yang AWB-nya muncul dalam DUA bil courier
 // berbeza (isu D3, double-billed). Baris baru TIDAK menimpa baris lama, ia
@@ -9,7 +10,9 @@ export default function BillConflicts({ rows }: { rows: BillLineConflict[] }) {
   return (
     <div className="card" style={{ marginBottom: 22 }}>
       <div className="cardHead">
-        <div className="cardTitle">Needs attention · parcels billed twice</div>
+        <div className="cardTitle">Needs attention · parcels billed twice
+          <InfoTip text="The same parcel showed up on two different courier bills. We set the second one aside (quarantine) instead of letting it overwrite the first, so no money is silently changed. Compare both and keep the correct one." />
+        </div>
         <div className="cardHint">
           {rows.length} tracking number{rows.length === 1 ? "" : "s"} appear in two
           different courier bills

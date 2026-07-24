@@ -1,6 +1,7 @@
 import { commissionSummary } from "@/lib/recon";
 import { fmtInt, fmtRM } from "@/lib/format";
 import CommissionTable from "@/components/CommissionTable";
+import InfoTip from "@/components/InfoTip";
 
 export const dynamic = "force-dynamic";
 
@@ -28,7 +29,9 @@ export default async function CommissionPage() {
       <Header />
       <div className="hero">
         <div className="heroTop">
-          <div className="heroLabel">Commission earned · uploaded period</div>
+          <div className="heroLabel">Commission earned · uploaded period
+            <InfoTip text="Commission is what stockists earn on their sales, taken straight from the Fighter Wallet export. These figures cover only the period of the file you uploaded, not their all-time total." />
+          </div>
           <div className="heroChip warn"><span className="dot" /> Record only · full tally coming</div>
         </div>
         <div className="heroFigure">
