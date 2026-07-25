@@ -3,12 +3,41 @@
 Tarikh mula: 2026-06-18
 
 ## Status
-- progress: (23 Jul, SEMUA LIVE) 4 divergen 3 enjin recon DITUTUP (TODAY dinamik zon KL per-request, guard shared AWB, recon prepaid CHIP + page /impact/streams/chip LIVE, sentinel NONE), sidebar 5 kumpulan + company switcher Dicci, pemburuan bug 10/14 dibaiki (delete selamat order_uploads, kuarantin bill_line_conflicts + Needs attention, variance Close Pack, log Price change), npm test + check:engine + 47 ujian parser, panduan finance lengkap, barisan proposal bersih, peta v1.6, graf UA segar 377 node. 26 commit PUSHED + 3 deploy Vercel READY malam sama. Laporan Jarvis: inbox laporanDicciFinance20260723. Sebelum tu: Fasa 1 pada dasarnya siap. WebApp Next.js LIVE di Vercel (diccigroupfinance.vercel.app), terkunci belakang Clerk auth (allowlist), cover 100% view Streamlit lama. Ciri terkini (22 Jul, LIVE): tapis client di Stockists + Uploads + tapis order dalam StockistModal (TableFilter kongsi; pintu carian Dashboard + link sidebar "Find order" DIBUANG atas arahan owner lepas test, page /impact/search kekal via URL terus), dan medan "Actual deposit date" dalam Bank Confirm + kolum Deposited dengan lag (+Nd) + masuk export (team TAK perlu adjust tarikh PDF J&T lagi). 3 feed disahkan dengan FAIL SEBENAR pertama kali (22 Jul, data/sampel/ gitignored): CHIP (112 paid masuk, 12 overdue ditolak, tekaan PREPAID_SUCCESS_STATUS SAH), DHL (UTF-16 .xls tepat jangkaan), Ninja (4 baris, nota: SOA campur baris caj bukan COD, akan nampak "pelik" dalam recon, bukan bug). Finance dah upload data sebenar (561 order, 2 bil J&T); 16 SKU live perlu masuk katalog di prod.
+- progress: (24-25 Jul, DEPLOY LIVE) audit /timbang laluan ingestion + 6 item hardening: decode DHL toleran (fail terpotong 1 byte kini lulus), sebab berkod + mesej upload jujur English plain (ganti error mentah), kenal laporan status DHL bukan-bil, IngestResult kaya, log tolakan PII-safe (jadual ingest_rejections, fingerprint tanpa nilai baris), auto-sync enjin (syncEngine.mjs prebuild + gate check:engine, syncEngine.sh dibuang). Recon TAK disentuh, baseline RM 63,912.00 kekal, 76 ujian parser lulus. Sebelum tu (23 Jul, SEMUA LIVE): 4 divergen 3 enjin recon DITUTUP (TODAY dinamik zon KL per-request, guard shared AWB, recon prepaid CHIP + page /impact/streams/chip LIVE, sentinel NONE), sidebar 5 kumpulan + company switcher Dicci, pemburuan bug 10/14 dibaiki (delete selamat order_uploads, kuarantin bill_line_conflicts + Needs attention, variance Close Pack, log Price change), npm test + check:engine + 47 ujian parser, panduan finance lengkap, barisan proposal bersih, peta v1.6, graf UA segar 377 node. 26 commit PUSHED + 3 deploy Vercel READY malam sama. Laporan Jarvis: inbox laporanDicciFinance20260723. Sebelum tu: Fasa 1 pada dasarnya siap. WebApp Next.js LIVE di Vercel (diccigroupfinance.vercel.app), terkunci belakang Clerk auth (allowlist), cover 100% view Streamlit lama. Ciri terkini (22 Jul, LIVE): tapis client di Stockists + Uploads + tapis order dalam StockistModal (TableFilter kongsi; pintu carian Dashboard + link sidebar "Find order" DIBUANG atas arahan owner lepas test, page /impact/search kekal via URL terus), dan medan "Actual deposit date" dalam Bank Confirm + kolum Deposited dengan lag (+Nd) + masuk export (team TAK perlu adjust tarikh PDF J&T lagi). 3 feed disahkan dengan FAIL SEBENAR pertama kali (22 Jul, data/sampel/ gitignored): CHIP (112 paid masuk, 12 overdue ditolak, tekaan PREPAID_SUCCESS_STATUS SAH), DHL (UTF-16 .xls tepat jangkaan), Ninja (4 baris, nota: SOA campur baris caj bukan COD, akan nampak "pelik" dalam recon, bukan bug). Finance dah upload data sebenar (561 order, 2 bil J&T); 16 SKU live perlu masuk katalog di prod.
 - fasa: WebApp Next.js production LIVE, mod handoff data-safe (prod Neon suci, semua ubah suai diuji atas dev DB dulu). Streamlit lama kekal hidup sebagai backup pasif (soft-retire, tak jadi delete).
 - seterusnya: (0) SIAP 23 Jul malam: push + deploy Vercel LIVE (dpl BdJwkhXH, commit 39e61ee). Owner masih perlu BERITAHU team: angka aging kini hidup, order lama belum remit naik hilang_lewat, itu jangkaan bukan bug. (1) Rotate kredential Neon = GATE terakhir sebelum jemput finance upload data BETUL, runbook siap (runbookRotateNeon.md), bila rotate update env Vercel SAHAJA, owner tangguh lagi 22 Jul. (2) Minta CSV export Google Sheet team finance, lepas tu Fasa 0 Sheet check (skrip gate luar app: sahkan ada order ID + semak lajur botol/komisen, design penuh dikunci, lihat seksyen "Sesi 22 Jul"). (3) Owner beritahu team: BERHENTI adjust tarikh PDF J&T, guna medan Actual deposit date masa Confirm. (4) Push 3 commit tertunggak ke GitHub (deploy dah jalan, decoupled). (5) Owner sahkan takrif kempen botol KJS-3-1 & KJS-4-2. (6) Clerk production (perlu domain custom, runbook siap). (7) Upload statement CHIP tally penuh (Batch D) tangguh sampai finance nak. Export Fasa B + komisen enrich = HOLD. Backlog baru: butang "Report mismatch" (lepas Sheet check terbukti).
 - nota (2026-07-09): peta Arkitektur (Understand-Anything) untuk projek ni DAH wujud di `.understand-anything/knowledge-graph.json` (221 node, 451 edge, 7 layer nama Melayu, tour 12 langkah, output BM), sudah di-gitignore jadi repo public selamat (52 fail data peribadi/secrets/build di-skip sengaja). HUD modul Arkitektur render terus (endpoint `/api/arch/ua` terima root). Refresh bila kod berubah: run `/understand` dalam projek ni (incremental, fingerprint baseline dah ada).
 - nota Jarvis (2026-07-19): KEPUTUSAN ARCHITECTURE DIKUNCI owner lepas 2x /timbang: multi syarikat = SATU database Neon dikongsi, company_id + RLS FORCE fail closed, BUKAN database per syarikat. Tangga kerja 0 sampai 7 (0 = rotate Neon, selaras dengan gate sedia ada; 2 = satukan enjin recon 3 salinan jadi 1 SEBELUM company label; WAJIB akaun app berkuasa rendah sebab RLS tak terpakai pada owner role). Detail penuh: knowledgeVault decisions/dicciFinanceSatuGudang20260718.md. PETA ARCHITECTURE interaktif: `peta/` kini LOKAL SAHAJA (22 Jul: di-gitignore + dikeluarkan dari git atas keputusan owner, repo public + peta ada info dalaman bisnes; backup rasmi = knowledgeVault/raw/petaDicciFinanceV*.html). Peta v1.4 (skema versi titik mulai 22 Jul): 8 flow (+ swimlane "Berlapis" 4 lorong), drill L0 sampai L3, mod Semasa vs Sasaran, ujian 190 pass. Buka: peta/buka.command port 4100; refresh: /petaDicci. JANGAN edit renderer masa refresh, ganti blok PETA_DATA sahaja, dan JANGAN commit/push peta.
-- kemaskini: 2026-07-24
+- kemaskini: 2026-07-25
+
+## Sesi 24-25 Jul (audit /timbang + hardening ingestion, DEPLOY Vercel LIVE)
+
+Audit /timbang penuh atas laluan ingestion, 6 item hardening dilaksana + deploy Vercel
+produksi. Logik recon TAK disentuh, baseline RM 63,912.00 (369 order) kekal, 76 ujian
+parser lulus (65+11 baru), npm test + check:engine + tsc + build lulus. Konteks: sesi
+sama hari sebelum ni dah upload PDF DHL+J&T LIVE, InfoTip seluruh UI, reset prod Neon
+(backup lokal), allowlist Clerk diccifinancehq (lihat seksyen Sesi 24 Jul bawah).
+
+- **Decode DHL toleran bedah**: fail DHL sah yang terpotong 1 byte hujung dulu ditolak
+  dengan error mentah. Kini buang byte ganjil hujung, cuba utf-16/-le/-be, validasi hasil
+  (_decode_dhl, parse_dhl lempar IngestError bila betul betul rosak).
+- **Sebab berkod + mesej jujur**: enum REASON_OK/CORRUPT_KNOWN/NOT_A_BILL/UNKNOWN +
+  IngestError, dipetakan ke mesej English plain dalam pyIngest.py, route.ts, UploadModal
+  (ganti error mentah pandas + "format not recognised"). server_error -> 500 + mesej
+  generik, tiada dalaman bocor ke user.
+- **Kenal "bukan bil" sempit**: laporan status penghantaran DHL (pre-alert) dikesan
+  (_STATUS_REPORT_SIGNATURES, is_status_report) -> mesej not_a_bill, bukan "tak dikenali".
+- **IngestResult**: dataclass kaya (kind/rows/quarantined/reason/message/detected_type)
+  dengan __iter__ shim backward-compat ganti tuple (kind,n); pemanggil dikemas (run,
+  pyIngest, app.py, devIngest).
+- **Log tolakan PII-safe**: jadual baru ingest_rejections (LUAR reset_db/RESET_TABLES) +
+  safe_fingerprint (nama lajur, magic bytes, saiz, encoding, sha256, ext, reason, ts
+  SAHAJA, TIADA nilai baris) + log_rejection. Tolakan boleh disiasat tanpa simpan data
+  pelanggan.
+- **Auto-sync enjin + gate build**: syncEngine.mjs baru (cross-platform) jadi prebuild,
+  salinan api/engine SENTIASA segar dari rujukan root, buang sync manual syncEngine.sh
+  (dibuang). check:engine jadi gate pertama testAll.mjs + jalan sebelum next build, SKIP
+  jujur bila root repo tak hadir (konteks build Vercel folder webApp sahaja).
 
 ## Sesi 24 Jul (reset prod + InfoTip + upload PDF DHL/J&T, SEMUA deploy Vercel READY)
 
@@ -28,7 +57,7 @@ siap + deploy Vercel produksi (deploy decoupled dari git, 4 deploy READY):
   parse_jnt_pdf dalam ingest.py (kesan magic byte %PDF). J&T PDF ada tally-guard lawan
   GRAND TOTAL (tolak fail kalau tak tally), bill_id ikut laluan Excel (parse_bill_meta,
   elak konflik palsu silang format), settlement date dari kandungan statement. Engine
-  disync (syncEngine.sh). Suite parser kini 65 ujian.
+  disync ke api/engine (kini AUTO-sync, lihat sesi 24-25 Jul). Suite parser kini 65 ujian.
 - **Allowlist Clerk**: email diccifinancehq@gmail.com ditambah untuk team finance login.
   ADMIN_EMAILS Vercel TAK diubah (tak perlu).
 
@@ -498,8 +527,8 @@ CSS tokens dari mockup (tanpa Tailwind), font next/font (Fraunces + Manrope).
 - **INGEST SIAP (2026-07-03): upload berfungsi penuh dalam app Vercel.** Seni bina:
   browser -> route Next `/api/upload` (tanpa token di browser) -> function Python
   `/api/pyIngest` (guard `UPLOAD_TOKEN`, env production) -> parser `ingest.py` SEBENAR
-  (salinan setia dalam `webApp/api/engine/`, sync via `scripts/syncEngine.sh`, JANGAN
-  edit salinan terus) -> upsert idempotent ke Neon. Dev lokal: `INGEST_MODE=local`
+  (salinan setia dalam `webApp/api/engine/`, sync AUTOMATIK via `scripts/syncEngine.mjs`
+  pada prebuild, JANGAN edit salinan terus) -> upsert idempotent ke Neon. Dev lokal: `INGEST_MODE=local`
   dalam .env.local -> route spawn `scripts/devIngest.py` (enjin rujukan root, tulis ke
   dev PG embedded). Had fail 4MB/fail (had body function Vercel).
   Diuji: E2E lokal fighter 852 baris idempotent (count tak berganda) + fail tak
@@ -701,7 +730,8 @@ Owner suka sidebar sedia ada, cuma nak butang collapse untuk big picture. Pilih 
   masa boot dan pool DB dimemo pada globalThis, betulkan env tanpa restart tak cukup.
 - Parity (WAJIB bila logik recon disentuh): `python3 scripts/parityDump.py >
   scripts/parityPython.json && npx tsx scripts/parityCheck.ts` , mesti LULUS.
-- Enjin berubah? `bash scripts/syncEngine.sh` (sync salinan api/engine/) sebelum deploy.
+- Enjin berubah? Sync AUTOMATIK (prebuild `scripts/syncEngine.mjs` salin ke api/engine/);
+  gate `npm run check:engine` tangkap drift dan gagalkan build. Manual: `npm run sync:engine`.
 - Deploy: `cd webApp && vercel deploy --prod --yes` (deploy TAK auto dari git push).
 
 ## Sesi 8 Jul: Free gift (giveaway) tracking (LIVE)
