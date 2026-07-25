@@ -1463,6 +1463,181 @@ export async function billLineConflicts(): Promise<BillLineConflict[]> {
 }
 
 // ====================================================================
+// Not collected + Ghost money (paparan silang-kurier, READ-ONLY). Untuk team
+// finance kejar order yang duitnya belum masuk, dan tengok duit masuk tanpa
+// order. WAJIB guna semula tmp_m yang SAMA (buildTmpM / buildTmpMPrepaid),
+// jadi kategori 100% identik dengan streamSummary (rujukan parity). TIADA
+// laluan kategori kedua, TIADA ubah output fungsi sedia ada. Tak di-cache:
+// aging bergantung reconToday(), jadi mesti segar tiap request (macam
+// search/drill), elak angka aging basi merentas tengah malam.
+// ====================================================================
+const NOT_COLLECTED_KATS = ["hilang_lewat", "belum_remit"];
+
+export interface NotCollectedRow {
+  order_id: string | null; order_date: string | null; seller_name: string | null;
+  tracking: string | null; kategori: string; selling_price: number | null;
+  umur_hari: number | null; courier: string; streamKey: string;
+  source_file: string | null;
+}
+
+export interface GhostRow {
+  awb: string | null; cod_amount: number | null; bill_id: string | null;
+  settlement_date: string | null; source_file: string | null;
+  courier: string; streamKey: string;
+}
+
+// overdueN/awaitingN/ghostN = kiraan PENUH (bukan panjang array yang dicap di
+// EXC_CAP). Nilai (value) = jumlah PENUH juga, supaya ringkasan tak silap bila
+// senarai baris dipotong. Baris (rows) dicap untuk paparan sahaja.
+export interface UncollectedStream {
+  streamKey: string; courier: string;
+  overdueRows: NotCollectedRow[]; overdueN: number; overdueValue: number;
+  awaitingRows: NotCollectedRow[]; awaitingN: number; awaitingValue: number;
+  ghostRows: GhostRow[]; ghostN: number; ghostValue: number;
+  capped: boolean;
+}
+
+function mapNotColl(
+  rows: Record<string, unknown>[], key: string, courier: string,
+): NotCollectedRow[] {
+  return rows.map((r) => ({
+    order_id: r.order_id as string | null,
+    order_date: r.order_date as string | null,
+    seller_name: r.seller_name as string | null,
+    tracking: r.tracking as string | null,
+    kategori: r.kategori as string,
+    selling_price: r.selling_price == null ? null : toNum(r.selling_price),
+    umur_hari: umurHari(r.order_date as string | null),
+    courier, streamKey: key,
+    source_file: (r.source_file as string | null) ?? null,
+  }));
+}
+
+function mapGhost(
+  rows: Record<string, unknown>[], key: string, courier: string,
+): GhostRow[] {
+  return rows.map((r) => ({
+    awb: r.awb as string | null,
+    cod_amount: r.cod_amount == null ? null : toNum(r.cod_amount),
+    bill_id: r.bill_id as string | null,
+    settlement_date: (r.settlement_date as string | null) ?? null,
+    source_file: (r.source_file as string | null) ?? null,
+    courier, streamKey: key,
+  }));
+}
+
+// Satu stream COD: order belum kutip (hilang_lewat + belum_remit) + duit hantu.
+export async function uncollectedCourier(
+  key: StreamKey, pendingDays: number = REMIT_PENDING_DAYS,
+): Promise<UncollectedStream> {
+  const cfg = COURIERS[key];
+  const client = await getPool().connect();
+  try {
+    await client.query("BEGIN");
+    await buildTmpM(client, key, pendingDays);
+
+    // Baris belum-kutip: order side (ada order_id, tiada baris bil). source_file
+    // = fail Fighter order itu datang (jawab "dari fail mana").
+    const notColl = await client.query(`
+      SELECT m.order_id, m.order_date, m.seller_name, m.tracking, m.kategori,
+             m.selling_price, o.source_file
+      FROM tmp_m m
+      LEFT JOIN orders o ON o.order_id = m.order_id
+      WHERE m.kategori = ANY($1)
+      ORDER BY m.order_date LIMIT $2`, [NOT_COLLECTED_KATS, EXC_CAP]);
+    const notCollTot = await client.query(`
+      SELECT kategori, COUNT(*) AS n, COALESCE(SUM(selling_price), 0) AS val
+      FROM tmp_m WHERE kategori = ANY($1) GROUP BY kategori`, [NOT_COLLECTED_KATS]);
+
+    // Duit hantu: baris bil tiada order padan. source_file + settlement date dari
+    // cod_bills (fallback delivered_date baris kalau bil tiada tarikh settle).
+    const ghost = await client.query(`
+      SELECT m.awb, m.cod_amount, m.bill_id,
+             COALESCE(b.settlement_date, m.delivered_date) AS settlement_date,
+             b.source_file
+      FROM tmp_m m
+      LEFT JOIN cod_bills b ON b.bill_id = m.bill_id
+      WHERE m.kategori = 'duit_hantu'
+      ORDER BY settlement_date DESC NULLS LAST, m.awb LIMIT $1`, [EXC_CAP]);
+    const ghostTot = await client.query(`
+      SELECT COUNT(*) AS n, COALESCE(SUM(cod_amount), 0) AS val
+      FROM tmp_m WHERE kategori = 'duit_hantu'`);
+
+    await client.query("ROLLBACK");
+
+    const tot: Record<string, { n: number; val: number }> = {};
+    for (const r of notCollTot.rows) tot[r.kategori] = { n: Number(r.n), val: toNum(r.val) };
+    const rows = mapNotColl(notColl.rows, key, cfg.courierLabel);
+    const gt = ghostTot.rows[0];
+    const overdueN = tot["hilang_lewat"]?.n ?? 0;
+    const awaitingN = tot["belum_remit"]?.n ?? 0;
+    const ghostN = Number(gt.n);
+
+    return {
+      streamKey: key, courier: cfg.courierLabel,
+      overdueRows: rows.filter((r) => r.kategori === "hilang_lewat"),
+      overdueN, overdueValue: tot["hilang_lewat"]?.val ?? 0,
+      awaitingRows: rows.filter((r) => r.kategori === "belum_remit"),
+      awaitingN, awaitingValue: tot["belum_remit"]?.val ?? 0,
+      ghostRows: mapGhost(ghost.rows, key, cfg.courierLabel),
+      ghostN, ghostValue: toNum(gt.val),
+      capped: overdueN + awaitingN > EXC_CAP || ghostN > EXC_CAP,
+    };
+  } catch (e) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+// Satu gateway prepaid (CHIP): tiada aging (dibayar online masa order), jadi
+// tiada overdue/awaiting-remit. Cuma duit hantu (bayaran tanpa order padan).
+export async function ghostPrepaid(key: PrepaidKey): Promise<UncollectedStream> {
+  const cfg = PREPAID[key];
+  const client = await getPool().connect();
+  try {
+    await client.query("BEGIN");
+    await buildTmpMPrepaid(client, key);
+    const ghost = await client.query(`
+      SELECT m.awb, m.cod_amount, m.bill_id,
+             COALESCE(p.paid_on, m.delivered_date) AS settlement_date,
+             p.source_file
+      FROM tmp_m m
+      LEFT JOIN prepaid_payments p ON p.order_ref = m.awb AND p.gateway = $1
+      WHERE m.kategori = 'duit_hantu'
+      ORDER BY settlement_date DESC NULLS LAST, m.awb LIMIT $2`, [key, EXC_CAP]);
+    const ghostTot = await client.query(`
+      SELECT COUNT(*) AS n, COALESCE(SUM(cod_amount), 0) AS val
+      FROM tmp_m WHERE kategori = 'duit_hantu'`);
+    await client.query("ROLLBACK");
+    const gt = ghostTot.rows[0];
+    const ghostN = Number(gt.n);
+    return {
+      streamKey: key, courier: cfg.name,
+      overdueRows: [], overdueN: 0, overdueValue: 0,
+      awaitingRows: [], awaitingN: 0, awaitingValue: 0,
+      ghostRows: mapGhost(ghost.rows, key, cfg.name),
+      ghostN, ghostValue: toNum(gt.val),
+      capped: ghostN > EXC_CAP,
+    };
+  } catch (e) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+// Tarikh rujukan aging sebagai "YYYY-MM-DD" (jam KL). Dari reconToday() yang SAMA
+// dipakai enjin recon, supaya cap "As of" jujur dengan kiraan.
+export function reconTodayYmd(): string {
+  const t = reconToday();
+  return `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, "0")}-`
+    + `${String(t.getDate()).padStart(2, "0")}`;
+}
+
+// ====================================================================
 // Cache lapisan data: agregat berat di-cache dgn tag "recon", dibatalkan
 // (revalidateTag "recon") masa upload / simpan SKU / reset. revalidate 3600s =
 // jaring keselamatan kalau ada tulisan terlepas invalidate. Drill/search/bank

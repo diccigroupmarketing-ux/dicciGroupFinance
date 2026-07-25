@@ -39,6 +39,11 @@ const ICONS: Record<string, React.ReactNode> = {
       <path d="M3 16.5h14M4.5 8.5v5M8.2 8.5v5M11.8 8.5v5M15.5 8.5v5M2.5 8.5 10 3.5l7.5 5z" />
     </svg>
   ),
+  notCollected: (
+    <svg className="navIcon" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.7">
+      <circle cx="9" cy="9" r="6" /><path d="m13.5 13.5 3 3" /><path d="M9 6.5v3M9 11.6v.1" />
+    </svg>
+  ),
   commission: (
     <svg className="navIcon" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.7">
       <circle cx="10" cy="6.5" r="3" /><path d="M3.5 16.5c.8-3 3.4-4.5 6.5-4.5s5.7 1.5 6.5 4.5" />
@@ -102,6 +107,7 @@ const GROUPS: NavGroupDef[] = [
       { key: "dhl", name: "DHL", icon: "dhl", href: "/impact/streams/dhl" },
       { key: "ninja", name: "Ninja Van", icon: "ninja", href: "/impact/streams/ninja" },
       { key: "chip", name: "CHIP", icon: "chip", href: "/impact/streams/chip" },
+      { key: "notCollected", name: "Not collected", icon: "notCollected", href: "/impact/uncollected" },
       { key: "bankTransfer", name: "Bank Transfer", icon: "bank", disabled: true, badge: "Soon" },
     ],
   },
