@@ -334,11 +334,12 @@ def render_upload_popover(label="⬆  Upload"):
             conn = db.get_conn()
             for f in files:
                 try:
-                    kind, n = ingest.ingest_buffer(f, f.name, conn)
-                    if kind:
-                        st.success(f"{f.name}: **{kind}** · {n} rows")
+                    res = ingest.ingest_buffer(f, f.name, conn)
+                    if res.kind:
+                        st.success(f"{f.name}: **{res.kind}** · {res.rows} rows")
                     else:
-                        st.warning(f"{f.name}: unrecognized format")
+                        # Fail ditolak: mesej jujur (rosak / bukan bil / tak kenal).
+                        st.warning(f"{f.name}: {res.message}")
                 except Exception as e:
                     conn.rollback()
                     st.error(f"{f.name}: failed · {e}")

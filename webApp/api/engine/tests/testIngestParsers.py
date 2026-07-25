@@ -924,5 +924,174 @@ class TestJntPdfSample(unittest.TestCase):
             conn.close()
 
 
+# =====================================================================
+# 11. Decode DHL TOLERAN + kod sebab jujur (audit /timbang, item 1 & 2).
+#     Fail DHL sebenar kadang terpotong 1 byte padding di hujung masa download,
+#     decode utf-16 ketat gagal. Pemulihan bedah (potong byte ganjil hujung)
+#     mesti selamat (baris data terakhir utuh). Data sintetik = data-safe.
+# =====================================================================
+class TestDhlTolerantDecode(unittest.TestCase):
+    def test_truncated_padding_byte_still_parses(self):
+        # Bytes DHL sah + SATU byte tambahan (saiz jadi ganjil, meniru terpotong
+        # di padding hujung). Decode ketat penuh gagal; pemulihan bedah (buang 1
+        # byte hujung) mesti pulihkan, baris data kekal utuh.
+        good = make_dhl_bytes(
+            [(1, "18.06.2026", "TESTREF001", "150.00"),
+             (2, "19.06.2026", "TESTREF002", "220.50")])
+        truncated = good + b"\x00"          # saiz ganjil = simulasi terpotong
+        self.assertTrue(len(truncated) % 2 == 1)
+        parsed = ingest.parse_dhl(truncated)
+        self.assertIsNotNone(parsed)
+        self.assertEqual(len(parsed["rows"]), 2)
+        idx = {n: i for i, n in enumerate(parsed["header"])}
+        self.assertEqual(parsed["rows"][-1][idx["CoD Amount"]], "220.50")
+
+    def test_recognized_dhl_but_no_rows_raises_corrupt(self):
+        # Dikenali DHL (tandatangan ada) tapi TIADA baris data = rosak, mesti
+        # lempar IngestError(corrupt_known), bukan pulang bil kosong senyap.
+        empty = make_dhl_bytes([])          # header sahaja, tiada baris item
+        with self.assertRaises(ingest.IngestError) as cm:
+            ingest.parse_dhl(empty)
+        self.assertEqual(cm.exception.reason, ingest.REASON_CORRUPT_KNOWN)
+
+    def test_non_dhl_still_returns_none_not_raise(self):
+        # Bukan DHL langsung (tiada tandatangan) TETAP pulang None (biar pintu
+        # lain cuba), BUKAN lempar corrupt.
+        self.assertIsNone(ingest.parse_dhl(b"just,a,plain,csv\n1,2,3,4"))
+
+
+class TestStatusReportRecognizer(unittest.TestCase):
+    def test_status_report_signature(self):
+        df = pd.DataFrame(columns=["Shipment ID", "Tracking ID", "Last Status",
+                                   "Consignee Name", "COD Amount"])
+        self.assertTrue(ingest.is_status_report(df))
+
+    def test_plain_table_is_not_status_report(self):
+        df = pd.DataFrame(columns=["Foo", "Bar", "Baz"])
+        self.assertFalse(ingest.is_status_report(df))
+
+    def test_bill_columns_are_not_status_report(self):
+        # Bil sebenar (ada AWB No.) BUKAN laporan status.
+        df = pd.DataFrame(columns=["AWB No.", "COD Amount"])
+        self.assertFalse(ingest.is_status_report(df))
+
+
+class TestSafeFingerprint(unittest.TestCase):
+    def test_fingerprint_has_only_metadata_no_row_values(self):
+        # Header ada nama lajur; baris ada nilai RAHSIA. Cap jari mesti simpan
+        # nama lajur SAHAJA, TIADA nilai baris (selamat PII).
+        data = make_table_bytes(["Foo", "Bar"], [["SECRETVALUE", "12345"]])
+        fp = ingest.safe_fingerprint(data, "mystery.csv", ingest.REASON_UNKNOWN)
+        self.assertEqual(fp["reason"], ingest.REASON_UNKNOWN)
+        self.assertEqual(fp["extension"], "csv")
+        self.assertEqual(fp["size_bytes"], len(data))
+        self.assertEqual(len(fp["magic_hex"]), 32)          # 16 byte = 32 hex
+        self.assertEqual(len(fp["sha256"]), 64)
+        self.assertIn("Foo", fp["columns_json"])
+        # HARAM ada nilai baris di mana mana dalam cap jari.
+        blob = repr(fp)
+        self.assertNotIn("SECRETVALUE", blob)
+        self.assertNotIn("12345", blob)
+
+
+class TestRejectionLogging(unittest.TestCase):
+    def setUp(self):
+        self.eng = create_engine("sqlite://")
+        self.conn = self.eng.connect()
+        db.init_db(self.conn)
+
+    def tearDown(self):
+        self.conn.close()
+
+    def test_unknown_file_logs_one_rejection(self):
+        data = make_table_bytes(["Foo", "Bar"], [["a", "b"]])
+        res = ingest.ingest_bytes(data, "mystery.csv", self.conn)
+        self.assertIsNone(res.kind)
+        self.assertEqual(res.reason, ingest.REASON_UNKNOWN)
+        rows = self.conn.execute(
+            text("SELECT reason, extension, columns_json FROM ingest_rejections")
+        ).fetchall()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0][0], "unknown")
+        self.assertEqual(rows[0][1], "csv")
+        self.assertIn("Foo", rows[0][2])
+
+    def test_rejection_table_survives_reset(self):
+        # ingest_rejections SENGAJA tak masuk reset_db (sejarah tolakan kekal).
+        ingest.ingest_bytes(make_table_bytes(["X"], [["y"]]), "m.csv", self.conn)
+        db.reset_db(self.conn)
+        n = self.conn.execute(
+            text("SELECT COUNT(*) FROM ingest_rejections")).scalar()
+        self.assertEqual(n, 1)
+
+
+# =====================================================================
+# 12. Ujian sampel SEBENAR (gitignored) untuk dua fail pencetus audit:
+#     - CODSupportDoc.xls = bil DHL SAH terpotong 1 byte -> mesti ingest OK.
+#     - total_prealert_report.xlsx = laporan status DHL -> mesti not_a_bill.
+#     Dilangkau automatik kalau sampel tiada (repo public / CI), TAPI bila ada
+#     mesti betul betul JALAN (bukan skip senyap).
+# =====================================================================
+_SAMPLE_NONBILL = os.path.abspath(
+    os.path.join(ENGINE_DIR, "..", "..", "..", "data", "sampel", "nonbill"))
+_CODSUPPORT = os.path.join(_SAMPLE_DHL, "0084729585_CODSupportDoc.xls")
+_PREALERT = os.path.join(_SAMPLE_NONBILL, "total_prealert_report-2607241112.xlsx")
+
+
+@unittest.skipUnless(os.path.exists(_CODSUPPORT),
+                     "sampel DHL CODSupportDoc (gitignored) tiada, langkau")
+class TestCodSupportDocSample(unittest.TestCase):
+    def test_truncated_bill_ingests_clean(self):
+        with open(_CODSUPPORT, "rb") as fh:
+            data = fh.read()
+        self.assertTrue(len(data) % 2 == 1, "sampel dijangka saiz ganjil (terpotong)")
+        eng = create_engine("sqlite://")
+        conn = eng.connect()
+        db.init_db(conn)
+        try:
+            res = ingest.ingest_bytes(data, os.path.basename(_CODSUPPORT), conn)
+            self.assertEqual(res.kind, "dhl")
+            self.assertGreater(res.rows, 0)
+            row = conn.execute(
+                text("SELECT COUNT(*), ROUND(SUM(cod_amount),2) FROM cod_bill_lines")
+            ).fetchone()
+            self.assertEqual(row[0], res.rows)
+            self.assertGreater(row[1], 0)          # ada nilai COD sebenar
+            # Tiada baris tolakan (fail SAH, cuma terpotong padding).
+            nrej = conn.execute(
+                text("SELECT COUNT(*) FROM ingest_rejections")).scalar()
+            self.assertEqual(nrej, 0)
+        finally:
+            conn.close()
+
+
+@unittest.skipUnless(os.path.exists(_PREALERT),
+                     "sampel pre-alert (gitignored) tiada, langkau")
+class TestPrealertNotABill(unittest.TestCase):
+    def test_status_report_recognized_not_a_bill(self):
+        with open(_PREALERT, "rb") as fh:
+            data = fh.read()
+        eng = create_engine("sqlite://")
+        conn = eng.connect()
+        db.init_db(conn)
+        try:
+            res = ingest.ingest_bytes(data, os.path.basename(_PREALERT), conn)
+            self.assertIsNone(res.kind)
+            self.assertEqual(res.reason, ingest.REASON_NOT_A_BILL)
+            self.assertEqual(res.detected_type, "delivery_status_report")
+            # TIADA data ditulis ke jadual bil/order.
+            self.assertEqual(
+                conn.execute(text("SELECT COUNT(*) FROM cod_bill_lines")).scalar(), 0)
+            self.assertEqual(
+                conn.execute(text("SELECT COUNT(*) FROM orders")).scalar(), 0)
+            # SATU baris tolakan dilog, sebab not_a_bill.
+            rej = conn.execute(
+                text("SELECT reason FROM ingest_rejections")).fetchall()
+            self.assertEqual(len(rej), 1)
+            self.assertEqual(rej[0][0], "not_a_bill")
+        finally:
+            conn.close()
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

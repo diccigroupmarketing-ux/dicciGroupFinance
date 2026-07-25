@@ -8,12 +8,13 @@ Laluan: POST /api/pyIngest
 
 Keselamatan: endpoint ni TIDAK dipanggil terus dari browser. Browser -> route
 handler Next (/api/upload) -> sini, dengan token yang duduk server-side sahaja.
-Enjin: salinan setia db.py + ingest.py dalam api/engine/ (sync via
-scripts/syncEngine.sh , jangan edit salinan terus).
+Enjin: salinan setia db.py + ingest.py dalam api/engine/ (sync AUTOMATIK via
+scripts/syncEngine.mjs pada prebuild , jangan edit salinan terus).
 """
 import json
 import os
 import sys
+import traceback
 import urllib.parse
 from http.server import BaseHTTPRequestHandler
 
@@ -59,21 +60,33 @@ class handler(BaseHTTPRequestHandler):
         try:
             _ensure_schema()
             conn = db.get_conn()
-            kind, n = ingest.ingest_bytes(data, filename, conn)
-            if not kind:
-                # Format tak dikenali = TIADA apa ditulis (ingest_bytes tak sentuh DB).
-                return self._json(200, {"kind": None, "rows": 0})
-            # Bilangan baris bil dikuarantin (double-billed) untuk fail ni; 0
-            # untuk feed bukan-bil (fighter/wallet/chip tiada baris konflik).
-            q = ingest.conflicts_count(conn, filename)
-            return self._json(200, {"kind": kind, "rows": n, "quarantined": q})
-        except Exception as e:  # rollback supaya fail rosak tak tinggalkan separuh tulis
+            res = ingest.ingest_bytes(data, filename, conn)
+            if not res.kind:
+                # Fail ditolak (rosak / bukan bil / tak dikenali). TIADA apa
+                # ditulis ke jadual data; respons berstruktur dengan sebab +
+                # mesej plain (BUKAN error mentah bocor ke user).
+                return self._json(200, {
+                    "kind": None, "rows": 0, "reason": res.reason,
+                    "message": res.message, "detectedType": res.detected_type,
+                })
+            return self._json(200, {
+                "kind": res.kind, "rows": res.rows,
+                "quarantined": res.quarantined, "reason": res.reason,
+            })
+        except Exception:  # rollback supaya fail rosak tak tinggalkan separuh tulis
             if conn is not None:
                 try:
                     conn.rollback()
                 except Exception:
                     pass
-            return self._json(500, {"error": str(e)[:300]})
+            # Ralat sebenar server (bukan klasifikasi). Log penuh ke stderr untuk
+            # debug, tapi JANGAN bocor dalaman ke user , beri mesej generik.
+            traceback.print_exc()
+            return self._json(500, {
+                "reason": "server_error",
+                "message": ("Upload failed due to a server error. Please try "
+                            "again, or send the file to the owner."),
+            })
         finally:
             if conn is not None:
                 conn.close()

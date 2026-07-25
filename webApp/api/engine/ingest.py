@@ -11,16 +11,81 @@ Guna: python ingest.py
 import warnings
 warnings.filterwarnings("ignore")
 
+import hashlib
 import io
+import json
 import re
 import shutil
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
 
 import pandas as pd
 from sqlalchemy import bindparam, text
 
 import db
+
+
+# =====================================================================
+# Kod sebab ingest + hasil kaya + ralat mesra
+# ---------------------------------------------------------------------
+# Setiap fail upload berakhir dengan SATU sebab (enum kecil, sengaja tak
+# dikembangkan jadi sistem klasifikasi berlapis). UI papar mesej plain ikut
+# sebab ni, bukan error mentah. "Apa maksudnya": daripada bagi user error
+# teknikal yang bocor, kita bagi ayat biasa yang beritahu dia nak buat apa.
+# =====================================================================
+REASON_OK = "ok"                       # berjaya diproses
+REASON_CORRUPT_KNOWN = "corrupt_known"  # bil dikenali tapi fail rosak/terpotong
+REASON_NOT_A_BILL = "not_a_bill"        # dokumen dikenali tapi BUKAN bil bayaran
+REASON_UNKNOWN = "unknown"              # betul betul tak dikenali
+
+REASON_MESSAGE = {
+    REASON_CORRUPT_KNOWN: ("This bill looks damaged. Please download it again "
+                           "from the courier and re-upload."),
+    REASON_NOT_A_BILL: ("This is a delivery status report, not a payment bill. "
+                        "Nothing to upload here."),
+    REASON_UNKNOWN: ("This file isn't recognised as a bill from any courier "
+                     "(J&T, DHL, Ninja, CHIP). If you're sure it's a bill, send "
+                     "it to the owner."),
+}
+
+
+def reason_message(reason):
+    """Mesej mesra English untuk satu kod sebab (fallback ke unknown)."""
+    return REASON_MESSAGE.get(reason, REASON_MESSAGE[REASON_UNKNOWN])
+
+
+class IngestError(Exception):
+    """Ralat ingest yang bawa kod sebab + mesej mesra English. Dilempar bila
+    fail dikenali tapi tak boleh diproses (rosak) atau dikenali tapi bukan bil.
+    ingest_bytes tangkap ni dan tukar jadi IngestResult (satu jenis pulangan),
+    jadi pemanggil cuma perlu baca .reason , bukan tangkap error mentah."""
+
+    def __init__(self, reason, message=None, detected_type=None):
+        self.reason = reason
+        self.detected_type = detected_type
+        self.message = message or reason_message(reason)
+        super().__init__(self.message)
+
+
+@dataclass
+class IngestResult:
+    """Hasil satu ingest. Medan minimum yang UI/log betul betul guna sahaja.
+
+    Backward-compat: banyak pemanggil lama buat `kind, n = ingest_bytes(...)`.
+    __iter__ pulang (kind, rows) supaya unpack dua-nilai tu kekal jalan tanpa
+    ubah pemanggil tu."""
+
+    kind: str = None           # fighter/jnt/dhl/ninja/chip/wallet, None kalau tak ditulis
+    rows: int = 0              # baris di-upsert
+    reason: str = REASON_OK    # kod sebab (enum di atas)
+    detected_type: str = None  # apa fail dikesan (cth "delivery_status_report")
+    quarantined: int = 0       # baris bil dikuarantin (double-billed) untuk fail ni
+    message: str = ""          # mesej plain untuk UI (kosong bila ok)
+
+    def __iter__(self):
+        # Shim: `kind, n = result` kekal berfungsi (unpack dua nilai).
+        return iter((self.kind, self.rows))
 
 # Lajur sumber , Fighter
 F_ORDER = "Order ID"
@@ -99,6 +164,23 @@ def detect(df):
     return None
 
 
+# Cap jari NEGATIF: laporan status / pre-alert kurier (BUKAN bil bayaran). Ia ada
+# lajur STATUS penghantaran + pengenalan kiriman, tapi TIADA tandatangan bil mana
+# mana feed. Sengaja SEMPIT (status/tracking sahaja): apa apa lain jatuh ke
+# 'unknown', bukan dikelaskan sebagai laporan status. Dipakai HANYA lepas detect()
+# pulang None (fail dengan tandatangan bil sebenar dikelas dulu, tak sampai sini).
+_STATUS_REPORT_SIGNATURES = [
+    {"Shipment ID", "Last Status"},
+    {"Tracking ID", "Last Status", "Number Of Delivery Attempts"},
+]
+
+
+def is_status_report(df):
+    """True kalau lajur df padan cap jari laporan status kurier (bukan bil)."""
+    cols = {str(c).strip() for c in df.columns}
+    return any(sig <= cols for sig in _STATUS_REPORT_SIGNATURES)
+
+
 def _load_df(data, filename):
     if filename.lower().endswith(".csv"):
         try:
@@ -116,47 +198,162 @@ def _load_df(data, filename):
     return df
 
 
-def ingest_bytes(data, filename, conn):
-    """Ingest dari bytes mentah. Pulang (kind, bilangan_baris)."""
-    dhl = parse_dhl(data)
+def _ingest_ok(kind, rows, filename, conn):
+    """Bungkus hasil BERJAYA jadi IngestResult + kira baris dikuarantin (untuk
+    feed bil sahaja; fighter/wallet/chip tiada baris konflik)."""
+    q = conflicts_count(conn, filename) if kind in ("jnt", "dhl", "ninja") else 0
+    return IngestResult(kind=kind, rows=rows, reason=REASON_OK, quarantined=q)
+
+
+def _ingest_bytes_inner(data, filename, conn):
+    """Laluan klasifikasi + ingest. Pulang IngestResult (reason=ok) bila berjaya;
+    LEMPAR IngestError(reason) bila fail ditolak (corrupt/not_a_bill/unknown)."""
+    dhl = parse_dhl(data)              # boleh lempar IngestError(corrupt_known)
     if dhl is not None:
-        return "dhl", ingest_dhl(dhl, filename, conn)
-    # PDF: team finance boleh upload DHL Payment Advice terus dalam bentuk PDF
-    # (bukan lagi .xls kembar sahaja). Kesan ikut magic byte %PDF, hantar ke
-    # parser PDF. Kalau PDF tapi BUKAN DHL advice, pulang (None, 0) terus, JANGAN
-    # biar jatuh ke _load_df (pd.read_excel atas bytes PDF akan crash).
+        return _ingest_ok("dhl", ingest_dhl(dhl, filename, conn), filename, conn)
+    # PDF: team finance boleh upload DHL Payment Advice / bil J&T terus dalam PDF.
+    # Kesan ikut magic byte %PDF, hantar ke parser PDF. Kalau PDF tapi BUKAN advice
+    # yang dikenali, ia 'unknown' (JANGAN biar jatuh ke _load_df , read_excel atas
+    # bytes PDF crash).
     if data[:5].startswith(b"%PDF"):
         dhl_pdf = parse_dhl_pdf(data)
         if dhl_pdf is not None:
-            return "dhl", ingest_dhl(dhl_pdf, filename, conn)
+            return _ingest_ok("dhl", ingest_dhl(dhl_pdf, filename, conn),
+                              filename, conn)
         jnt_pdf = parse_jnt_pdf(data)
         if jnt_pdf is not None:
             jnt_df, jnt_settlement = jnt_pdf
-            return "jnt", ingest_jnt(jnt_df, filename, conn,
-                                     settlement_override=jnt_settlement)
-        return None, 0
+            return _ingest_ok("jnt", ingest_jnt(jnt_df, filename, conn,
+                                                settlement_override=jnt_settlement),
+                              filename, conn)
+        raise IngestError(REASON_UNKNOWN, detected_type="pdf")
     chip = parse_chip(data, filename)
     if chip is not None:
-        return "chip", ingest_chip(chip, filename, conn)
-    df = _load_df(data, filename)
+        return _ingest_ok("chip", ingest_chip(chip, filename, conn), filename, conn)
+    # Fail berbentuk jadual (Excel/CSV). Kalau tak boleh baca langsung = unknown
+    # (bukan crash mentah), supaya user dapat mesej jujur, bukan error pandas.
+    try:
+        df = _load_df(data, filename)
+    except IngestError:
+        raise
+    except Exception:
+        raise IngestError(REASON_UNKNOWN)
     kind = detect(df)
     if kind == "fighter":
-        return kind, ingest_fighter(df, filename, conn)
+        return _ingest_ok(kind, ingest_fighter(df, filename, conn), filename, conn)
     if kind == "jnt":
-        return kind, ingest_jnt(df, filename, conn)
+        return _ingest_ok(kind, ingest_jnt(df, filename, conn), filename, conn)
     if kind == "ninja":
-        return kind, ingest_ninja(df, filename, conn)
+        return _ingest_ok(kind, ingest_ninja(df, filename, conn), filename, conn)
     if kind == "wallet":
-        return kind, ingest_wallet(df, filename, conn)
-    return None, 0
+        return _ingest_ok(kind, ingest_wallet(df, filename, conn), filename, conn)
+    # Tak kenal ikut tandatangan bil. Cap jari NEGATIF: kalau ia laporan status
+    # kurier (bukan bil), beri sebab jelas; selain tu 'unknown'.
+    if is_status_report(df):
+        raise IngestError(REASON_NOT_A_BILL, detected_type="delivery_status_report")
+    raise IngestError(REASON_UNKNOWN)
+
+
+def ingest_bytes(data, filename, conn):
+    """Pintu masuk tunggal ingest dari bytes mentah. Pulang IngestResult.
+
+    Fail ditolak (rosak / bukan bil / tak dikenali) TIDAK melempar , ia jadi
+    IngestResult dengan reason + message plain. Ini beri pemanggil SATU jenis
+    pulangan untuk semak (result.reason), bukan campur return + raise. Fail
+    ditolak turut dilog SATU baris ke ingest_rejections (cap jari selamat PII).
+    Ralat TAK dijangka (pepijat sebenar / DB) kekal dilempar naik."""
+    try:
+        result = _ingest_bytes_inner(data, filename, conn)
+    except IngestError as e:
+        result = IngestResult(kind=None, rows=0, reason=e.reason,
+                              detected_type=e.detected_type, message=e.message)
+    if result.reason != REASON_OK and conn is not None:
+        try:
+            log_rejection(conn, data, filename, result)
+        except Exception:
+            pass  # gagal log TAK boleh halang respons ke user
+    return result
 
 
 def ingest_buffer(fileobj, filename, conn):
-    """Ingest satu fail upload (untuk UI web). Pulang (kind, bilangan_baris)."""
+    """Ingest satu fail upload (untuk UI web). Pulang IngestResult."""
     data = fileobj.read()
     if isinstance(data, str):
         data = data.encode()
     return ingest_bytes(data, filename, conn)
+
+
+# =====================================================================
+# Log tolakan (item 5): satu baris per fail ditolak, cap jari SELAMAT PII.
+# ---------------------------------------------------------------------
+# "Apa maksudnya": bila satu fail ditolak, kita nak tahu KENAPA tanpa simpan isi
+# fail (repo public + data pelanggan). Jadi kita ambil cap jari sahaja , nama
+# LAJUR (bukan nilai), 16 byte pertama, saiz, encoding, sha256, extension, sebab,
+# masa. TIADA nilai baris/isi disimpan. Jadual ingest_rejections TAK masuk
+# RESET_TABLES (kekal bila store direset) supaya sejarah tolakan tak hilang.
+# =====================================================================
+_ENCODING_MAGIC = [
+    (b"\xff\xfe", "utf-16-le"),
+    (b"\xfe\xff", "utf-16-be"),
+    (b"\xef\xbb\xbf", "utf-8-sig"),
+    (b"PK\x03\x04", "zip/xlsx"),
+    (b"%PDF-", "pdf"),
+    (b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1", "ole/xls"),
+]
+
+
+def _detect_encoding(data):
+    """Teka encoding/format ikut magic byte (metadata, bukan isi). 'unknown'
+    kalau tiada padanan."""
+    for magic, name in _ENCODING_MAGIC:
+        if data[:len(magic)] == magic:
+            return name
+    return "unknown"
+
+
+def _safe_columns(data, filename):
+    """Senarai NAMA lajur (bukan nilai) secara best-effort; [] kalau tak boleh
+    baca. Hanya label header, tiada isi baris (selamat PII)."""
+    try:
+        df = _load_df(data, filename)
+        return [str(c) for c in df.columns]
+    except Exception:
+        return []
+
+
+def safe_fingerprint(data, filename, reason):
+    """Cap jari SELAMAT PII satu fail ditolak. HANYA metadata: nama lajur, magic
+    16 byte (hex), saiz, encoding, sha256, extension, reason, ts. HARAM simpan
+    sebarang nilai baris/isi."""
+    ext = ""
+    if "." in filename:
+        ext = filename.rsplit(".", 1)[-1].lower()
+    return {
+        "id": str(uuid.uuid4()),
+        "ts": now_iso(),
+        "reason": reason,
+        "extension": ext,
+        "size_bytes": len(data),
+        "magic_hex": data[:16].hex(),
+        "encoding": _detect_encoding(data),
+        "sha256": hashlib.sha256(data).hexdigest(),
+        "columns_json": json.dumps(_safe_columns(data, filename)),
+    }
+
+
+REJECTION_INSERT = text("""
+    INSERT INTO ingest_rejections (id, ts, reason, extension, size_bytes,
+                                   magic_hex, encoding, sha256, columns_json)
+    VALUES (:id, :ts, :reason, :extension, :size_bytes,
+            :magic_hex, :encoding, :sha256, :columns_json)
+""")
+
+
+def log_rejection(conn, data, filename, result):
+    """Tulis SATU baris cap jari selamat ke ingest_rejections untuk fail ditolak."""
+    fp = safe_fingerprint(data, filename, result.reason)
+    conn.execute(REJECTION_INSERT, fp)
+    conn.commit()
 
 
 def iso(s):
@@ -651,14 +848,38 @@ def parse_jnt_pdf(data):
 
 
 # ---------- DHL Payment Advice (UTF-16 tab-text dalam .xls) ----------
+def _decode_dhl(data):
+    """Decode bytes DHL Payment Advice (UTF-16 tab-text) secara TOLERAN.
+
+    Fail sebenar kadang terpotong 1 byte di HUJUNG masa download (padding null),
+    jadi decode utf-16 KETAT gagal 'truncated data'. Pemulihan BEDAH: kalau saiz
+    ganjil, potong 1 byte padding hujung dan cuba semula (baris data terakhir
+    kekal utuh, cuma padding hilang). Cuba utf-16 auto dulu, pastu utf-16-le /
+    utf-16-be ikut giliran. SENGAJA tak guna errors='ignore' menyeluruh , itu
+    boleh telan digit tengah nombor duit senyap. Pulang teks atau None (bukan
+    UTF-16 langsung)."""
+    candidates = [data]
+    if len(data) % 2:                 # saiz ganjil = kemungkinan terpotong 1 byte
+        candidates.append(data[:-1])
+    for codec in ("utf-16", "utf-16-le", "utf-16-be"):
+        for cand in candidates:
+            try:
+                return cand.decode(codec)
+            except Exception:
+                continue
+    return None
+
+
 def parse_dhl(data):
-    """Pulang {meta, header, rows} kalau `data` ialah DHL Payment Advice, else None."""
-    try:
-        txt = data.decode("utf-16")
-    except Exception:
+    """Pulang {meta, header, rows} kalau `data` ialah DHL Payment Advice, else
+    None (bukan DHL). LEMPAR IngestError(corrupt_known) kalau ia DIKENALI DHL
+    tapi tiada baris data yang boleh dibaca (fail rosak/terpotong di tengah),
+    supaya ia tak jatuh senyap ke read_excel."""
+    txt = _decode_dhl(data)
+    if txt is None:
         return None
     if "DHL Parcel ID" not in txt and "Payment Reference" not in txt:
-        return None
+        return None                    # bukan DHL langsung , biar pintu lain cuba
     meta, rows, header = {}, [], None
     for line in txt.splitlines():
         cells = [c.strip() for c in line.split("\t")]
@@ -672,6 +893,18 @@ def parse_dhl(data):
             header = cells
         elif header and packed and packed[0].isdigit():
             rows.append(cells)
+    # Fail DIKENALI DHL (lepas gate di atas). Kalau tiada baris data, atau baris
+    # data TERAKHIR tiada nilai COD selepas pulih terpotong, anggap ROSAK , jangan
+    # simpan bil separa senyap. (Fail sah: byte terpotong di padding hujung, baris
+    # terakhir utuh dengan COD, jadi check ni lepas.)
+    if not rows:
+        raise IngestError(REASON_CORRUPT_KNOWN, detected_type="dhl_payment_advice")
+    idx = {name: i for i, name in enumerate(header or [])}
+    ci = idx.get(D_COD)
+    last = rows[-1]
+    last_cod = last[ci] if ci is not None and ci < len(last) else None
+    if last_cod is None or str(last_cod).strip() == "":
+        raise IngestError(REASON_CORRUPT_KNOWN, detected_type="dhl_payment_advice")
     return {"meta": meta, "header": header, "rows": rows}
 
 
@@ -1019,17 +1252,18 @@ def run():
 
     for p in files:
         try:
-            kind, n = ingest_bytes(p.read_bytes(), p.name, conn)
+            res = ingest_bytes(p.read_bytes(), p.name, conn)
         except Exception as e:
             # Rollback wajib: kalau tak, transaksi Postgres kekal aborted dan
             # SEMUA fail selepas ni gagal senyap (atau baris separa ter-commit).
             conn.rollback()
             print(f"[SKIP] {p.name}: {e}")
             continue
-        if not kind:
-            print(f"[SKIP] {p.name}: tak kenal format")
+        if not res.kind:
+            # Fail ditolak: reason + mesej jujur (bukan sekadar "tak kenal").
+            print(f"[SKIP] {p.name}: {res.reason} , {res.message}")
             continue
-        print(f"[{kind}] {p.name}: {n} baris di-upsert")
+        print(f"[{res.kind}] {p.name}: {res.rows} baris di-upsert")
         dest = db.ARCHIVE / p.name
         if dest.exists():
             dest.unlink()

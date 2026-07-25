@@ -295,6 +295,25 @@ CREATE TABLE IF NOT EXISTS app_meta (
     value TEXT
 );
 
+-- Log tolakan ingest: SATU baris per fail yang GAGAL/DITOLAK (rosak, bukan bil,
+-- tak dikenali). Cap jari SELAMAT PII sahaja , nama LAJUR (bukan nilai), 16 byte
+-- pertama (hex), saiz, encoding, sha256, extension, sebab, masa. HARAM simpan
+-- nilai baris/isi (repo public + data pelanggan). SENGAJA TAK masuk RESET_TABLES
+-- / reset_db (sejarah tolakan kekal walau data direset). Additive, tiada kesan
+-- logik recon.
+CREATE TABLE IF NOT EXISTS ingest_rejections (
+    id           TEXT PRIMARY KEY,
+    ts           TEXT,
+    reason       TEXT,
+    extension    TEXT,
+    size_bytes   INTEGER,
+    magic_hex    TEXT,
+    encoding     TEXT,
+    sha256       TEXT,
+    columns_json TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_rejections_ts ON ingest_rejections(ts);
+
 CREATE TABLE IF NOT EXISTS order_skus (
     order_id TEXT,
     sku      TEXT,

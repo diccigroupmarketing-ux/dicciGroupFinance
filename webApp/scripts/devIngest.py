@@ -23,12 +23,26 @@ def main():
     db.init_db()
     conn = db.get_conn()
     try:
-        kind, n = ingest.ingest_bytes(data, filename, conn)
-        q = ingest.conflicts_count(conn, filename) if kind else 0
-        print(json.dumps({"kind": kind, "rows": n, "quarantined": q}))
+        res = ingest.ingest_bytes(data, filename, conn)
+        if not res.kind:
+            # Fail ditolak: sebab + mesej plain (bukan error mentah).
+            print(json.dumps({
+                "kind": None, "rows": 0, "reason": res.reason,
+                "message": res.message, "detectedType": res.detected_type,
+            }))
+        else:
+            print(json.dumps({
+                "kind": res.kind, "rows": res.rows,
+                "quarantined": res.quarantined, "reason": res.reason,
+            }))
     except Exception as e:
         conn.rollback()
-        print(json.dumps({"error": str(e)[:300]}))
+        print(json.dumps({
+            "reason": "server_error",
+            "message": ("Upload failed due to a server error. Please try again, "
+                        "or send the file to the owner."),
+            "detail": str(e)[:300],
+        }))
         sys.exit(1)
     finally:
         conn.close()
