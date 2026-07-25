@@ -65,6 +65,10 @@ const results = [];
 const record = (name, ok) => { results.push({ name, ok }); return ok; };
 
 async function main() {
+  // 0) Gate drift enjin (tanpa DB, murah): salinan api/engine mesti identik
+  //    dengan rujukan root. Tangkap kes lupa selaras SEBELUM suite lain jalan.
+  record("check:engine", run("check:engine", "node", ["scripts/checkEngineSync.mjs"]));
+
   // 1) Restore awal.
   record("restore (awal)", restore("awal"));
 

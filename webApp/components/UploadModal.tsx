@@ -63,9 +63,15 @@ export default function UploadModal() {
         });
         const j = await res.json();
         if (!res.ok) {
-          out[i] = { ...out[i], state: "error", detail: j.error ?? "failed" };
+          out[i] = { ...out[i], state: "error", detail: j.message ?? j.error ?? "failed" };
         } else if (!j.kind) {
-          out[i] = { ...out[i], state: "unknown", detail: "format not recognised · nothing written" };
+          // Fail ditolak (tiada apa ditulis). Bil rosak = merah (boleh cuba
+          // muat turun semula); bukan-bil / tak dikenali = amber (neutral).
+          const rejectState = j.reason === "corrupt_known" ? "error" : "unknown";
+          out[i] = {
+            ...out[i], state: rejectState,
+            detail: j.message ?? "format not recognised · nothing written",
+          };
         } else {
           const q = Number(j.quarantined ?? 0);
           const qNote = q > 0 ? ` · ${q} quarantined (see Uploads)` : "";

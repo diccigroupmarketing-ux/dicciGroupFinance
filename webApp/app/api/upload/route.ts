@@ -59,10 +59,15 @@ export async function POST(req: Request) {
           await logEvent(actor, "upload", `${filename}: ${parsed.kind} · ${parsed.rows} rows${qNote}`);
           revalidateTag("recon", { expire: 0 });
         }
-        return NextResponse.json(parsed, { status: parsed.error ? 500 : 200 });
+        // server_error (pepijat sebenar) -> 500; fail ditolak (reason lain) atau
+        // berjaya -> 200 (respons berstruktur, UI papar mesej ikut reason).
+        const status = parsed.reason === "server_error" || parsed.error ? 500 : 200;
+        return NextResponse.json(parsed, { status });
       } catch {
         return NextResponse.json(
-          { error: (res.stderr ?? "ingest gagal").slice(-300) }, { status: 500 });
+          { reason: "server_error",
+            message: "Upload failed due to a server error. Please try again." },
+          { status: 500 });
       }
     } finally {
       rmSync(dir, { recursive: true, force: true });
