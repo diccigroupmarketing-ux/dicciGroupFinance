@@ -10,6 +10,32 @@ Tarikh mula: 2026-06-18
 - nota Jarvis (2026-07-19): KEPUTUSAN ARCHITECTURE DIKUNCI owner lepas 2x /timbang: multi syarikat = SATU database Neon dikongsi, company_id + RLS FORCE fail closed, BUKAN database per syarikat. Tangga kerja 0 sampai 7 (0 = rotate Neon, selaras dengan gate sedia ada; 2 = satukan enjin recon 3 salinan jadi 1 SEBELUM company label; WAJIB akaun app berkuasa rendah sebab RLS tak terpakai pada owner role). Detail penuh: knowledgeVault decisions/dicciFinanceSatuGudang20260718.md. PETA ARCHITECTURE interaktif: `peta/` kini LOKAL SAHAJA (22 Jul: di-gitignore + dikeluarkan dari git atas keputusan owner, repo public + peta ada info dalaman bisnes; backup rasmi = knowledgeVault/raw/petaDicciFinanceV*.html). Peta v1.4 (skema versi titik mulai 22 Jul): 8 flow (+ swimlane "Berlapis" 4 lorong), drill L0 sampai L3, mod Semasa vs Sasaran, ujian 190 pass. Buka: peta/buka.command port 4100; refresh: /petaDicci. JANGAN edit renderer masa refresh, ganti blok PETA_DATA sahaja, dan JANGAN commit/push peta.
 - kemaskini: 2026-07-25
 
+## Sesi 25 Jul (page "Not collected" + Ghost money, audit /timbang, DEPLOY Vercel LIVE)
+
+Audit /timbang panel 5 lensa lahirkan satu page baru read-only untuk team finance kejar
+order yang duitnya belum masuk, silang semua kurier dalam satu tempat. Logik recon TAK
+disentuh, tiada schema baru, angka disahkan selari streamSummary (overdueN === agedN,
+ghostN === duit_hantu) untuk jnt/dhl/ninja/chip. npm test parity intact + check:engine +
+tsc + build lulus.
+
+- **Tab "Not collected"**: order silang kurier yang duit belum collect, PISAH visual
+  overdue (hilang_lewat, merah, lewat betul betul) vs awaiting (belum_remit, neutral,
+  normal, masih dalam tempoh). Dua baldi TAK dijumlah jadi satu, sebab awaiting bukan
+  masalah, cuma belum sampai giliran remit.
+- **Tab "Ghost money"**: duit masuk silang kurier tanpa order padan (duit_hantu) + nota
+  jujur "selalunya order belum upload", bukan tuduh bocor.
+- **Pagar integriti**: guna RECON_TODAY + ambang aging SAMA macam page stream, banner aging
+  relatif pada bil yang diupload + cap "As of RECON_TODAY", TIADA KPI gabungan yang
+  campur baldi beza makna.
+- **Fungsi recon read-only**: uncollectedCourier() + ghostPrepaid() + reconTodayYmd() guna
+  semula buildTmpM/buildTmpMPrepaid yang SAMA macam streamSummary, jadi kategori
+  byte-identik, parity utuh. TIADA output fungsi sedia ada diubah. Tak di-cache (aging
+  mesti segar tiap request).
+- **Link sidebar** "Not collected" dalam group "Money in" + ikon baru. AgingControl tambah
+  mod opsional basePath/extraQuery (backward-compatible, page stream tak terjejas).
+- **Keputusan DITOLAK** (over-eng untuk skala ni): tiada carta/heatmap, tiada KPI gabungan
+  merentas baldi, tiada laluan kategori kedua. Kekal jadual + drill ke /impact/search.
+
 ## Sesi 24-25 Jul (audit /timbang + hardening ingestion, DEPLOY Vercel LIVE)
 
 Audit /timbang penuh atas laluan ingestion, 6 item hardening dilaksana + deploy Vercel
@@ -808,8 +834,8 @@ Borak owner pasal butang reset data + nasib app Streamlit lama. Keputusan dikunc
   6 jadual transaksi, KEKAL `sku_bottles`/`sku_gifts`. Neon Console TIADA butang wipe satu klik.
 - **Nota automation (kenapa Claude tak boleh delete Streamlit sendiri):** app Streamlit dimiliki
   akaun `diccigroupmarketing@gmail.com`, tapi extension Claude-in-Chrome TIADA dalam profile
-  Chrome DC Group Marketing tu (dan takde versi Safari langsung). Yang ada extension: profile
-  Chrome DC Impact di Mac (akaun impactdicci, 0 app Streamlit) + satu Chrome Windows. Jadi
+  Chrome Dicci Group Marketing tu (dan takde versi Safari langsung). Yang ada extension: profile
+  Chrome Dicci Impact di Mac (akaun impactdicci, 0 app Streamlit) + satu Chrome Windows. Jadi
   untuk apa apa tindakan pada app Streamlit, Adi kena buat sendiri (Claude pandu sahaja).
 
 ### Prod Neon bersih + PERATURAN KERJA data-safe (8 Jul 2026)
