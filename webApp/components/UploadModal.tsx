@@ -19,6 +19,16 @@ const KIND_LABEL: Record<string, string> = {
   wallet: "Fighter Wallet",
 };
 
+// Sebab tolakan yang dipapar MERAH (bukan amber): fail ni memang sepatutnya
+// boleh diproses, cuma ada masalah untuk dibetulkan. Mesej penuh datang dari
+// enjin (ingest.py), UI cuma pilih warna , jadi reason baru tak perlu teks baru
+// di sini, cuma masuk set ini kalau ia "boleh dibetulkan".
+const HARD_REJECT = new Set([
+  "corrupt_known",     // bil dikenali tapi fail rosak/terpotong
+  "missing_columns",   // lajur wajib hilang (format export berubah)
+  "suspect_values",    // sel duit tak boleh dibaca (akan jadi RM0 senyap)
+]);
+
 export default function UploadModal() {
   const [open, setOpen] = useState(false);
   const [files, setFiles] = useState<File[]>([]);
@@ -65,9 +75,10 @@ export default function UploadModal() {
         if (!res.ok) {
           out[i] = { ...out[i], state: "error", detail: j.message ?? j.error ?? "failed" };
         } else if (!j.kind) {
-          // Fail ditolak (tiada apa ditulis). Bil rosak = merah (boleh cuba
-          // muat turun semula); bukan-bil / tak dikenali = amber (neutral).
-          const rejectState = j.reason === "corrupt_known" ? "error" : "unknown";
+          // Fail ditolak (tiada apa ditulis). Merah = fail SEPATUTNYA sah tapi
+          // ada masalah yang perlu dibetulkan (bil rosak, lajur hilang, sel duit
+          // tak boleh dibaca); amber = bukan-bil / tak dikenali (neutral).
+          const rejectState = HARD_REJECT.has(j.reason) ? "error" : "unknown";
           out[i] = {
             ...out[i], state: rejectState,
             detail: j.message ?? "format not recognised · nothing written",

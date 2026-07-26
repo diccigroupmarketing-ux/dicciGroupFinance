@@ -1093,5 +1093,221 @@ class TestPrealertNotABill(unittest.TestCase):
             conn.close()
 
 
+# =====================================================================
+# 15. Guard ingest Fighter (schema + amountGuard). Dua lubang laten yang ditutup:
+#     K1 = sel duit berisi teks ("PENDING", "-") jadi RM0 SENYAP,
+#     K5 = lajur "Sales Commission"/"Item Count"/"SKUs" HILANG diganti 0/None.
+#     Guard mesti tolak fail macam tu dengan sebab berkod, TANPA menulis apa apa,
+#     tapi JANGAN sensitif berlebihan: sel kosong tulen + sifar tulen ("0.00")
+#     mesti kekal lulus (export Fighter sebenar ada 16% Sales Commission kosong).
+#     Semua fixture SINTETIK.
+# =====================================================================
+_FIGHTER_COLS = {
+    ingest.F_ORDER: ["O1", "O2", "O3", "O4"],
+    ingest.F_DATE: ["2026-06-18"] * 4,
+    ingest.F_STATUS: ["Completed"] * 4,
+    ingest.F_SELLER: ["Rekaan Stockist"] * 4,
+    ingest.F_PAYMENT: ["COD"] * 4,
+    ingest.F_PROVIDER: ["J&T Express"] * 4,
+    ingest.F_TRACK: ["12345678%02d" % i for i in range(4)],
+    ingest.F_AMOUNT: ["100.00"] * 4,
+    ingest.F_COMM: ["10.00"] * 4,
+    ingest.F_SKUS: ["JAG-MY-1"] * 4,
+    ingest.F_ITEMCOUNT: ["1"] * 4,
+}
+
+
+def _guard_df(drop=None, **override):
+    """DataFrame Fighter 4 baris (nilai rekaan). `drop` = senarai lajur dibuang,
+    `override` = ganti isi satu lajur (guna kunci konstan F_*)."""
+    data = {k: list(v) for k, v in _FIGHTER_COLS.items()}
+    data.update(override)
+    for col in (drop or []):
+        data.pop(col, None)
+    return pd.DataFrame(data)
+
+
+class TestFighterSchemaGuard(unittest.TestCase):
+    def setUp(self):
+        self.eng = create_engine("sqlite://")
+        self.conn = self.eng.connect()
+        db.init_db(self.conn)
+
+    def tearDown(self):
+        self.conn.close()
+
+    def _orders(self):
+        return self.conn.execute(text("SELECT COUNT(*) FROM orders")).scalar()
+
+    def test_normal_file_still_ingests(self):
+        n = ingest.ingest_fighter(_guard_df(), "ok.xlsx", self.conn)
+        self.assertEqual(n, 4)
+        self.assertEqual(self._orders(), 4)
+
+    def test_missing_commission_rejected(self):
+        with self.assertRaises(ingest.IngestError) as cm:
+            ingest.ingest_fighter(_guard_df(drop=[ingest.F_COMM]), "bad.xlsx", self.conn)
+        self.assertEqual(cm.exception.reason, ingest.REASON_MISSING_COLUMNS)
+        self.assertIn(ingest.F_COMM, cm.exception.message)
+        self.assertEqual(self._orders(), 0)      # TIADA apa ditulis
+
+    def test_missing_item_count_rejected(self):
+        with self.assertRaises(ingest.IngestError) as cm:
+            ingest.ingest_fighter(_guard_df(drop=[ingest.F_ITEMCOUNT]),
+                                  "bad.xlsx", self.conn)
+        self.assertEqual(cm.exception.reason, ingest.REASON_MISSING_COLUMNS)
+        self.assertIn(ingest.F_ITEMCOUNT, cm.exception.message)
+
+    def test_missing_skus_rejected(self):
+        with self.assertRaises(ingest.IngestError) as cm:
+            ingest.ingest_fighter(_guard_df(drop=[ingest.F_SKUS]), "bad.xlsx", self.conn)
+        self.assertEqual(cm.exception.reason, ingest.REASON_MISSING_COLUMNS)
+        self.assertIn(ingest.F_SKUS, cm.exception.message)
+
+    def test_missing_several_columns_all_named(self):
+        with self.assertRaises(ingest.IngestError) as cm:
+            ingest.ingest_fighter(
+                _guard_df(drop=[ingest.F_COMM, ingest.F_ITEMCOUNT, ingest.F_SKUS]),
+                "bad.xlsx", self.conn)
+        msg = cm.exception.message
+        for col in (ingest.F_COMM, ingest.F_ITEMCOUNT, ingest.F_SKUS):
+            self.assertIn(col, msg)
+
+
+class TestFighterAmountGuard(unittest.TestCase):
+    def setUp(self):
+        self.eng = create_engine("sqlite://")
+        self.conn = self.eng.connect()
+        db.init_db(self.conn)
+
+    def tearDown(self):
+        self.conn.close()
+
+    def _orders(self):
+        return self.conn.execute(text("SELECT COUNT(*) FROM orders")).scalar()
+
+    def test_text_in_selling_price_rejected(self):
+        df = _guard_df(**{ingest.F_AMOUNT: ["100.00", "PENDING", "-", "50.00"]})
+        with self.assertRaises(ingest.IngestError) as cm:
+            ingest.ingest_fighter(df, "bad.xlsx", self.conn)
+        self.assertEqual(cm.exception.reason, ingest.REASON_SUSPECT_VALUES)
+        self.assertIn(ingest.F_AMOUNT, cm.exception.message)
+        self.assertIn("PENDING", cm.exception.message)
+        self.assertEqual(self._orders(), 0)
+
+    def test_text_in_commission_rejected(self):
+        df = _guard_df(**{ingest.F_COMM: ["10.00", "PENDING", "5.00", "1.00"]})
+        with self.assertRaises(ingest.IngestError) as cm:
+            ingest.ingest_fighter(df, "bad.xlsx", self.conn)
+        self.assertEqual(cm.exception.reason, ingest.REASON_SUSPECT_VALUES)
+        self.assertIn(ingest.F_COMM, cm.exception.message)
+
+    def test_message_caps_examples_at_three(self):
+        df = _guard_df(**{ingest.F_AMOUNT: ["a", "b", "c", "d"]})
+        with self.assertRaises(ingest.IngestError) as cm:
+            ingest.ingest_fighter(df, "bad.xlsx", self.conn)
+        msg = cm.exception.message
+        self.assertIn("4 money cell(s)", msg)     # kiraan penuh dilapor
+        self.assertNotIn("'d'", msg)              # contoh dihad 3
+
+    def test_whole_price_column_empty_rejected(self):
+        df = _guard_df(**{ingest.F_AMOUNT: [None] * 4})
+        with self.assertRaises(ingest.IngestError) as cm:
+            ingest.ingest_fighter(df, "bad.xlsx", self.conn)
+        self.assertEqual(cm.exception.reason, ingest.REASON_SUSPECT_VALUES)
+        self.assertIn("empty", cm.exception.message)
+        self.assertEqual(self._orders(), 0)
+
+    def test_majority_empty_price_rejected(self):
+        # 3 daripada 4 kosong = lebih 50% = tolak.
+        df = _guard_df(**{ingest.F_AMOUNT: ["100.00", "", None, float("nan")]})
+        with self.assertRaises(ingest.IngestError) as cm:
+            ingest.ingest_fighter(df, "bad.xlsx", self.conn)
+        self.assertEqual(cm.exception.reason, ingest.REASON_SUSPECT_VALUES)
+
+    def test_minority_empty_price_still_ingests(self):
+        # 1 daripada 4 kosong = bawah ambang = lulus (behavior lama dikekalkan).
+        df = _guard_df(**{ingest.F_AMOUNT: ["100.00", "100.00", "100.00", None]})
+        self.assertEqual(ingest.ingest_fighter(df, "ok.xlsx", self.conn), 4)
+
+    def test_true_zero_values_do_not_trip_guard(self):
+        df = _guard_df(**{ingest.F_AMOUNT: ["0.00", "0", "RM 0.00", "100.00"],
+                          ingest.F_COMM: ["0.00", "0", "(0.00)", "10.00"]})
+        self.assertEqual(ingest.ingest_fighter(df, "ok.xlsx", self.conn), 4)
+        zeros = self.conn.execute(text(
+            "SELECT COUNT(*) FROM orders WHERE selling_price = 0")).scalar()
+        self.assertEqual(zeros, 3)
+
+    def test_blank_commission_cells_still_allowed(self):
+        # Export Fighter sebenar biar Sales Commission KOSONG untuk order tanpa
+        # komisen; guard tak boleh tolak fail sah macam ni.
+        df = _guard_df(**{ingest.F_COMM: ["10.00", None, "", float("nan")]})
+        self.assertEqual(ingest.ingest_fighter(df, "ok.xlsx", self.conn), 4)
+
+    def test_pure_zero_helper(self):
+        for raw in ("0", "00", "0.0", "0.00", "RM 0.00", "(0.00)", "-0", "0,000.00"):
+            self.assertTrue(ingest._looks_pure_zero(raw), raw)
+        for raw in ("PENDING", "-", "n/a", "", "nan", "1.00", "abc"):
+            self.assertFalse(ingest._looks_pure_zero(raw), raw)
+
+    def test_rejection_logged_and_nothing_written(self):
+        # Laluan penuh ingest_bytes (macam upload sebenar): fail Fighter dengan
+        # sel duit teks mesti jadi IngestResult ditolak + SATU baris cap jari.
+        df = _guard_df(**{ingest.F_AMOUNT: ["100.00", "PENDING", "50.00", "20.00"]})
+        res = ingest.ingest_bytes(df.to_csv(index=False).encode(),
+                                  "fighterBroken.csv", self.conn)
+        self.assertIsNone(res.kind)
+        self.assertEqual(res.rows, 0)
+        self.assertEqual(res.reason, ingest.REASON_SUSPECT_VALUES)
+        self.assertEqual(res.detected_type, "fighter")
+        self.assertEqual(self._orders(), 0)
+        rej = self.conn.execute(text(
+            "SELECT reason, columns_json FROM ingest_rejections")).fetchall()
+        self.assertEqual(len(rej), 1)
+        self.assertEqual(rej[0][0], ingest.REASON_SUSPECT_VALUES)
+        # Cap jari simpan NAMA lajur sahaja, tiada nilai baris (selamat PII).
+        self.assertIn(ingest.F_AMOUNT, rej[0][1])
+        self.assertNotIn("PENDING", rej[0][1])
+
+    def test_missing_column_rejection_logged(self):
+        df = _guard_df(drop=[ingest.F_COMM])
+        res = ingest.ingest_bytes(df.to_csv(index=False).encode(),
+                                  "fighterNoComm.csv", self.conn)
+        self.assertIsNone(res.kind)
+        self.assertEqual(res.reason, ingest.REASON_MISSING_COLUMNS)
+        rej = self.conn.execute(text(
+            "SELECT reason FROM ingest_rejections")).fetchall()
+        self.assertEqual([r[0] for r in rej], [ingest.REASON_MISSING_COLUMNS])
+
+
+# Fail Fighter SEBENAR (data/fighterSample.xlsx, gitignored) mesti LULUS guard ,
+# bukti guard tak terlalu ketat. Sengaja TIADA angka sebenar di-assert (repo
+# public, data-safe): hanya "tidak ditolak" + ada baris + ada duit.
+_SAMPLE_FIGHTER = os.path.abspath(
+    os.path.join(ENGINE_DIR, "..", "..", "..", "data", "fighterSample.xlsx"))
+
+
+@unittest.skipUnless(os.path.exists(_SAMPLE_FIGHTER),
+                     "sampel Fighter (gitignored) tiada, langkau")
+class TestFighterRealSamplePassesGuard(unittest.TestCase):
+    def test_real_export_not_rejected(self):
+        with open(_SAMPLE_FIGHTER, "rb") as fh:
+            data = fh.read()
+        eng = create_engine("sqlite://")
+        conn = eng.connect()
+        db.init_db(conn)
+        try:
+            res = ingest.ingest_bytes(data, os.path.basename(_SAMPLE_FIGHTER), conn)
+            self.assertEqual(res.kind, "fighter")
+            self.assertEqual(res.reason, ingest.REASON_OK)
+            self.assertGreater(res.rows, 0)
+            total = conn.execute(text("SELECT SUM(selling_price) FROM orders")).scalar()
+            self.assertGreater(total, 0)          # duit betul betul masuk
+            self.assertEqual(conn.execute(text(
+                "SELECT COUNT(*) FROM ingest_rejections")).scalar(), 0)
+        finally:
+            conn.close()
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -38,6 +38,8 @@ REASON_OK = "ok"                       # berjaya diproses
 REASON_CORRUPT_KNOWN = "corrupt_known"  # bil dikenali tapi fail rosak/terpotong
 REASON_NOT_A_BILL = "not_a_bill"        # dokumen dikenali tapi BUKAN bil bayaran
 REASON_UNKNOWN = "unknown"              # betul betul tak dikenali
+REASON_MISSING_COLUMNS = "missing_columns"  # feed dikenali tapi lajur wajib hilang
+REASON_SUSPECT_VALUES = "suspect_values"    # lajur duit ada sel yang tak boleh dibaca
 
 REASON_MESSAGE = {
     REASON_CORRUPT_KNOWN: ("This bill looks damaged. Please download it again "
@@ -47,6 +49,12 @@ REASON_MESSAGE = {
     REASON_UNKNOWN: ("This file isn't recognised as a bill from any courier "
                      "(J&T, DHL, Ninja, CHIP). If you're sure it's a bill, send "
                      "it to the owner."),
+    REASON_MISSING_COLUMNS: ("This file is missing expected column(s). The export "
+                             "format may have changed, please check the file or "
+                             "contact admin."),
+    REASON_SUSPECT_VALUES: ("Some money cells in this file can't be read as "
+                            "numbers, so they would be counted as RM 0. Nothing "
+                            "was saved, please check the file and upload again."),
 }
 
 
@@ -522,11 +530,122 @@ def _log_price_changes(conn, order_ids, new_prices, source_file):
     return len(events)
 
 
+# =====================================================================
+# Guard ingest Fighter , schema + nilai duit (amountGuard)
+# ---------------------------------------------------------------------
+# "Apa maksudnya": dulu kalau lajur duit HILANG dari export, atau sel duit berisi
+# teks pelik ("PENDING", "-"), sistem senyap tukar jadi RM0 dan fail lulus macam
+# sah. Duit hilang tanpa bunyi. Tiga guard ni buat fail macam tu DITOLAK dengan
+# sebab jelas, jadi finance nampak masalah SEBELUM angka masuk kira kira.
+#
+#   Guard 1 (schema): lajur wajib mesti ada. Hilang = tolak, bukan ganti 0 senyap.
+#   Guard 2 (kosong): Selling Price lebih separuh kosong = export rosak / sel
+#                     merged, bukan fail duit yang boleh dipercayai.
+#   Guard 3 (nilai) : sel yang ADA isi tapi jadi 0 selepas db.to_num, sedangkan
+#                     isinya bukan rupa sifar tulen ("0", "0.00", "RM 0.00") =
+#                     tak boleh dipercayai. Sel KOSONG tulen KEKAL dibenarkan,
+#                     Fighter memang biar Sales Commission kosong untuk order
+#                     tanpa komisen (16% baris dalam export sebenar).
+#
+# db.to_num TIDAK diubah (ia dipakai semua feed + laluan recon); guard ni duduk
+# di LUAR, khas laluan Fighter sahaja.
+# =====================================================================
+F_REQUIRED_COLUMNS = [F_AMOUNT, F_COMM, F_ITEMCOUNT, F_SKUS]
+
+# Ambang lajur duit kosong: lebih daripada ini = fail ditolak.
+F_EMPTY_RATIO_MAX = 0.5
+
+# Teks mentah yang dianggap KOSONG tulen (sel blank / sentinel pandas).
+_BLANK_RAW = {"", "nan", "none", "nat", "null", "<na>"}
+
+# Sifar yang ditulis manusia: "0", "00", "0.0", "0.00", "-0", ".0".
+_ZERO_LIKE_RE = re.compile(r"^[+-]?0*(?:\.0*)?$")
+
+
+def _raw_is_blank(raw):
+    return str(raw).strip().lower() in _BLANK_RAW
+
+
+def _looks_pure_zero(raw):
+    """True kalau teks mentah ni memang sifar yang ditulis orang ("0", "0.00",
+    "RM 0.00", "(0.00)"), bukan teks yang KEBETULAN jadi 0 selepas dibersihkan."""
+    t = str(raw).strip().replace(",", "")
+    t = re.sub(r"(?i)^(rm|myr)\s*", "", t).strip()
+    if t.startswith("(") and t.endswith(")"):
+        t = t[1:-1].strip()
+    return (bool(t) and any(ch.isdigit() for ch in t)
+            and bool(_ZERO_LIKE_RE.match(t)))
+
+
+def _suspect_money_cells(series, numeric):
+    """Senarai teks mentah sel yang ADA isi + bukan rupa sifar tulen tapi jadi 0
+    selepas db.to_num , iaitu duit yang akan hilang senyap."""
+    out = []
+    for raw, num in zip(series.astype(str).tolist(), numeric.tolist()):
+        if float(num) != 0.0:
+            continue
+        if _raw_is_blank(raw) or _looks_pure_zero(raw):
+            continue
+        out.append(str(raw).strip())
+    return out
+
+
+def guard_fighter_columns(df):
+    """Guard 1: lajur wajib Fighter mesti ada. Lempar IngestError(missing_columns)
+    dengan nama lajur yang hilang (nama LAJUR sahaja, tiada nilai baris)."""
+    missing = [c for c in F_REQUIRED_COLUMNS if c not in df.columns]
+    if missing:
+        raise IngestError(
+            REASON_MISSING_COLUMNS,
+            message=("File is missing expected column(s): " + ", ".join(missing)
+                     + ". The Fighter export format may have changed, please "
+                       "check the file or contact admin."),
+            detected_type="fighter")
+
+
+def guard_fighter_values(df, price_num, comm_num):
+    """Guard 2 + 3: lajur Selling Price majoriti kosong, atau ada sel duit yang
+    jadi RM0 senyap. Lempar IngestError(suspect_values) dengan kiraan + contoh."""
+    n = len(df)
+    if n:
+        blank = sum(1 for raw in df[F_AMOUNT].astype(str).tolist()
+                    if _raw_is_blank(raw))
+        if blank > n * F_EMPTY_RATIO_MAX:
+            raise IngestError(
+                REASON_SUSPECT_VALUES,
+                message=(f"{blank} of {n} rows have an empty '{F_AMOUNT}'. The "
+                         "file may be damaged or the amounts may sit in merged "
+                         "cells. Nothing was saved, please re-export it from "
+                         "Fighter and upload again."),
+                detected_type="fighter")
+    bad = []
+    for col, nums in ((F_AMOUNT, price_num), (F_COMM, comm_num)):
+        bad += [(col, sample) for sample in _suspect_money_cells(df[col], nums)]
+    if bad:
+        cols = sorted({col for col, _ in bad})
+        examples = ", ".join(f"'{s}'" for _, s in bad[:3])
+        raise IngestError(
+            REASON_SUSPECT_VALUES,
+            message=(f"{len(bad)} money cell(s) in {', '.join(cols)} could not be "
+                     f"read as a number (for example {examples}), so they would "
+                     "have been counted as RM 0. Nothing was saved, please fix "
+                     "the file and upload again."),
+            detected_type="fighter")
+
+
 def ingest_fighter(df, source_file, conn):
+    # Guard schema DULU: lajur wajib hilang = tolak fail (dulu diganti 0/None
+    # senyap, duit dan botol boleh hilang tanpa bunyi).
+    guard_fighter_columns(df)
     # Buang baris tanpa Order ID (baris total/blank export). Satu sel kosong buat
     # pandas baca lajur sebagai float, jadi buang juga suffix ".0" (macam wallet
     # txn_id dan norm_trk), kalau tak "6479145.0" duduk sebelah "6479145" (double count).
     df = df[df[F_ORDER].notna()].copy()
+    # Guard nilai duit SEBELUM upsert (baris tanpa Order ID dah dibuang, jadi
+    # baris total/blank export tak mencetuskan penggera palsu).
+    price_num = db.to_num(df[F_AMOUNT])
+    comm_num = db.to_num(df[F_COMM])
+    guard_fighter_values(df, price_num, comm_num)
     o = pd.DataFrame({
         "order_id": df[F_ORDER].astype(str).str.replace(r"\.0$", "", regex=True).str.strip(),
         "order_date": iso(db.parse_dt(df[F_DATE], dayfirst=True)),
@@ -535,10 +654,10 @@ def ingest_fighter(df, source_file, conn):
         "payment_method": df[F_PAYMENT],
         "shipping_provider": df[F_PROVIDER],
         "tracking": db.norm_trk(df[F_TRACK]),
-        "selling_price": db.to_num(df[F_AMOUNT]),
-        "sales_commission": db.to_num(df[F_COMM]) if F_COMM in df.columns else 0,
-        "skus": df[F_SKUS] if F_SKUS in df.columns else None,
-        "item_count": db.to_num(df[F_ITEMCOUNT]).astype(int) if F_ITEMCOUNT in df.columns else 0,
+        "selling_price": price_num,
+        "sales_commission": comm_num,
+        "skus": df[F_SKUS],
+        "item_count": db.to_num(df[F_ITEMCOUNT]).astype(int),
         "source_file": source_file,
         "ingested_at": now_iso(),
     })
