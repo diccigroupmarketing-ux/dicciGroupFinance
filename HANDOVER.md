@@ -11,7 +11,20 @@ Tarikh mula: 2026-06-18
 - seterusnya: (0) SIAP 23 Jul malam: push + deploy Vercel LIVE (dpl BdJwkhXH, commit 39e61ee). Owner masih perlu BERITAHU team: angka aging kini hidup, order lama belum remit naik hilang_lewat, itu jangkaan bukan bug. (1) Rotate kredential Neon = GATE terakhir sebelum jemput finance upload data BETUL, runbook siap (runbookRotateNeon.md), bila rotate update env Vercel SAHAJA, owner tangguh lagi 22 Jul. (2) Minta CSV export Google Sheet team finance, lepas tu Fasa 0 Sheet check (skrip gate luar app: sahkan ada order ID + semak lajur botol/komisen, design penuh dikunci, lihat seksyen "Sesi 22 Jul"). (3) Owner beritahu team: BERHENTI adjust tarikh PDF J&T, guna medan Actual deposit date masa Confirm. (4) Push 3 commit tertunggak ke GitHub (deploy dah jalan, decoupled). (5) Owner sahkan takrif kempen botol KJS-3-1 & KJS-4-2. (6) Clerk production (perlu domain custom, runbook siap). (7) Upload statement CHIP tally penuh (Batch D) tangguh sampai finance nak. Export Fasa B + komisen enrich = HOLD. Backlog baru: butang "Report mismatch" (lepas Sheet check terbukti).
 - nota (2026-07-09): peta Arkitektur (Understand-Anything) untuk projek ni DAH wujud di `.understand-anything/knowledge-graph.json` (221 node, 451 edge, 7 layer nama Melayu, tour 12 langkah, output BM), sudah di-gitignore jadi repo public selamat (52 fail data peribadi/secrets/build di-skip sengaja). HUD modul Arkitektur render terus (endpoint `/api/arch/ua` terima root). Refresh bila kod berubah: run `/understand` dalam projek ni (incremental, fingerprint baseline dah ada).
 - nota Jarvis (2026-07-19): KEPUTUSAN ARCHITECTURE DIKUNCI owner lepas 2x /timbang: multi syarikat = SATU database Neon dikongsi, company_id + RLS FORCE fail closed, BUKAN database per syarikat. Tangga kerja 0 sampai 7 (0 = rotate Neon, selaras dengan gate sedia ada; 2 = satukan enjin recon 3 salinan jadi 1 SEBELUM company label; WAJIB akaun app berkuasa rendah sebab RLS tak terpakai pada owner role). Detail penuh: knowledgeVault decisions/dicciFinanceSatuGudang20260718.md. PETA ARCHITECTURE interaktif: `peta/` kini LOKAL SAHAJA (22 Jul: di-gitignore + dikeluarkan dari git atas keputusan owner, repo public + peta ada info dalaman bisnes; backup rasmi = knowledgeVault/raw/petaDicciFinanceV*.html). Peta v1.4 (skema versi titik mulai 22 Jul): 8 flow (+ swimlane "Berlapis" 4 lorong), drill L0 sampai L3, mod Semasa vs Sasaran, ujian 190 pass. Buka: peta/buka.command port 4100; refresh: /petaDicci. JANGAN edit renderer masa refresh, ganti blok PETA_DATA sahaja, dan JANGAN commit/push peta.
-- kemaskini: 2026-07-25
+- nota Jarvis (2026-07-26 malam): GRAPH ENGINEERING sedia guna untuk projek ni, mod MATA sahaja
+  (fleet subagent baca dan lapor, HARAM tulis kod, repo ni zon haram tulis sebab pegang duit
+  dan hampir tiada jaring ujian). 3 kerja siasat sedia spec, panggil dalam sesi projek ni dengan
+  perkataan "workflow": (1) duitAnchor, audit 7 parser feed x 6 kelas kerosakan nilai, anchor =
+  jumlah fail mentah mesti sama dengan SUM DB, ini JAWAPAN kepada gate (A) amountGuard, ukur dulu
+  besar lubang sebelum owner putus; (2) reconTrust, fixture sintetik sengaja pecahkan 10 kelas
+  logik atas 3 enjin recon, sebab docs/enjinReconDivergen.md mengaku D2/D4 lulus parity palsu
+  atas data dev, baseline RM 63,912.00 (369 order) WAJIB kekal byte identik; (3) proposal
+  ca4b4a (kunci fix AWB kongsi + sentinel NONE dengan ujian) diluluskan Jarvis, tunggu user
+  jalankan skrip decide. JALAN untuk buka mod TANGAN (fleet boleh tulis) nanti: pasang penggera
+  (ujian dari kerja 1 dan 2), buktikan penggera berbunyi (sengaja rosakkan, ujian mesti merah),
+  kunci baseline. Doktrin wajib: ~/.claude/doktrinOrkestrasi.md. Keputusan penuh + senarai
+  giliran: knowledgeVault decisions/timbangGraphEngineeringPortfolio20260726.md.
+- kemaskini: 2026-07-26
 
 ## Sesi 25 Jul (page "Not collected" + Ghost money, audit /timbang, DEPLOY Vercel LIVE)
 
