@@ -1280,6 +1280,103 @@ class TestFighterAmountGuard(unittest.TestCase):
         self.assertEqual([r[0] for r in rej], [ingest.REASON_MISSING_COLUMNS])
 
 
+# =====================================================================
+# 15b. Guard tarikh Fighter (FIX C, audit reconTrust 2026-07-27).
+#      Tarikh order dikemas DI PINTU supaya tiga enjin recon tak boleh lari:
+#      reconcile.py parse tarikh dengan pandas, reconSql.py + recon.ts BANDING
+#      TEKS. Selagi order_date kanonik ("YYYY-MM-DD HH:MM:SS") atau NULL, dua
+#      cara tu bagi jawapan sama. Sel yang tak boleh diparse dulu jatuh senyap
+#      ke NULL (order hilang umur, tak pernah jadi hilang_lewat = bocor duit
+#      tersorok); sekarang fail DITOLAK, sebab sama dengan guard duit.
+#      Semua fixture SINTETIK.
+# =====================================================================
+class TestFighterDateGuard(unittest.TestCase):
+    def setUp(self):
+        self.eng = create_engine("sqlite://")
+        self.conn = self.eng.connect()
+        db.init_db(self.conn)
+
+    def tearDown(self):
+        self.conn.close()
+
+    def _dates(self):
+        rows = self.conn.execute(text(
+            "SELECT order_id, order_date FROM orders ORDER BY order_id")).fetchall()
+        return {r[0]: r[1] for r in rows}
+
+    def _orders(self):
+        return self.conn.execute(text("SELECT COUNT(*) FROM orders")).scalar()
+
+    def test_mixed_formats_normalised_to_canonical(self):
+        # Empat format berbeza yang pandas faham -> SATU bentuk kanonik.
+        df = _guard_df(**{ingest.F_DATE: [
+            "01/06/2026",            # dd/mm/yyyy (dayfirst)
+            "2026-06-03",            # tarikh sahaja
+            "2026-06-02T10:00:00",   # ISO dengan T
+            "2026-06-04 08:30:00",   # sudah kanonik
+        ]})
+        self.assertEqual(ingest.ingest_fighter(df, "ok.xlsx", self.conn), 4)
+        self.assertEqual(self._dates(), {
+            "O1": "2026-06-01 00:00:00",
+            "O2": "2026-06-03 00:00:00",
+            "O3": "2026-06-02 10:00:00",
+            "O4": "2026-06-04 08:30:00",
+        })
+
+    def test_blank_date_stored_as_null_not_empty_string(self):
+        # Rentetan KOSONG dalam order_date = satu satunya kes tarikh yang masih
+        # buat reconcile.py dan reconSql.py bercanggah (lihat testReconEdgeCases
+        # kelas TestGapTarikhBukanKanonik). Jadi ia WAJIB jadi NULL, bukan ''.
+        df = _guard_df(**{ingest.F_DATE: [
+            "2026-06-01 10:00:00", "", None, float("nan")]})
+        self.assertEqual(ingest.ingest_fighter(df, "ok.xlsx", self.conn), 4)
+        d = self._dates()
+        self.assertEqual(d["O1"], "2026-06-01 10:00:00")
+        for oid in ("O2", "O3", "O4"):
+            self.assertIsNone(d[oid], oid)
+        kosong = self.conn.execute(text(
+            "SELECT COUNT(*) FROM orders WHERE order_date = ''")).scalar()
+        self.assertEqual(kosong, 0)
+
+    def test_unparseable_date_rejects_file(self):
+        df = _guard_df(**{ingest.F_DATE: [
+            "2026-06-01 10:00:00", "tarikh rosak", "2026-06-02", "31/13/2026"]})
+        with self.assertRaises(ingest.IngestError) as cm:
+            ingest.ingest_fighter(df, "bad.xlsx", self.conn)
+        self.assertEqual(cm.exception.reason, ingest.REASON_SUSPECT_VALUES)
+        self.assertIn(ingest.F_DATE, cm.exception.message)
+        self.assertIn("tarikh rosak", cm.exception.message)
+        self.assertEqual(self._orders(), 0)      # TIADA apa ditulis
+
+    def test_missing_date_column_rejected_not_crash(self):
+        with self.assertRaises(ingest.IngestError) as cm:
+            ingest.ingest_fighter(_guard_df(drop=[ingest.F_DATE]),
+                                  "bad.xlsx", self.conn)
+        self.assertEqual(cm.exception.reason, ingest.REASON_MISSING_COLUMNS)
+        self.assertIn(ingest.F_DATE, cm.exception.message)
+        self.assertEqual(self._orders(), 0)
+
+    def test_date_rejection_logged_via_ingest_bytes(self):
+        df = _guard_df(**{ingest.F_DATE: [
+            "2026-06-01", "2026-06-02", "bukan tarikh", "2026-06-04"]})
+        res = ingest.ingest_bytes(df.to_csv(index=False).encode(),
+                                  "fighterBadDate.csv", self.conn)
+        self.assertIsNone(res.kind)
+        self.assertEqual(res.reason, ingest.REASON_SUSPECT_VALUES)
+        self.assertEqual(res.detected_type, "fighter")
+        self.assertEqual(self._orders(), 0)
+        rej = self.conn.execute(text(
+            "SELECT reason, columns_json FROM ingest_rejections")).fetchall()
+        self.assertEqual([r[0] for r in rej], [ingest.REASON_SUSPECT_VALUES])
+        # Cap jari simpan NAMA lajur sahaja, tiada nilai baris (selamat PII).
+        self.assertNotIn("bukan tarikh", rej[0][1])
+
+    def test_suspect_date_helper(self):
+        raw = pd.Series(["2026-06-01", "", None, "rosak", float("nan")])
+        parsed = db.parse_dt(raw, dayfirst=True)
+        self.assertEqual(ingest._suspect_date_cells(raw, parsed), ["rosak"])
+
+
 # Fail Fighter SEBENAR (data/fighterSample.xlsx, gitignored) mesti LULUS guard ,
 # bukti guard tak terlalu ketat. Sengaja TIADA angka sebenar di-assert (repo
 # public, data-safe): hanya "tidak ditolak" + ada baris + ada duit.

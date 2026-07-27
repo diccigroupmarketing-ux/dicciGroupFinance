@@ -4,9 +4,11 @@
 // Guna:  npm test   (atau: node scripts/testAll.mjs)
 //
 // Aliran:
+//   0. Gate murah tanpa dev PG: check:engine + dua suite Python (fixture sendiri).
 //   1. Restore bersih (loadDevDb) supaya mula dari data kenal.
 //   2. Jana rujukan parity (parityDump -> scripts/parityPython.json).
-//   3. Suite tak-memadam: parityCheck, testStockistDetail, testBank.
+//   3. Suite tak-memadam: parityCheck, testStockistDetail, testBank,
+//      testReconEdgeCases.ts (suntik+buang perangkap sendiri).
 //   4. Suite memadam: restore, testMutations, restore, testUploads, restore akhir.
 //   5. Ringkasan PASS/FAIL; exit 1 kalau mana mana suite ATAU restore gagal.
 //
@@ -69,6 +71,16 @@ async function main() {
   //    dengan rujukan root. Tangkap kes lupa selaras SEBELUM suite lain jalan.
   record("check:engine", run("check:engine", "node", ["scripts/checkEngineSync.mjs"]));
 
+  // 0b) Suite Python murni (fixture sendiri, TAK sentuh dev PG walaupun
+  //     DATABASE_URL dipaksa di atas , dua duanya bina engine sqlite sendiri).
+  //     testReconEdgeCases banding reconcile.py (RUJUKAN KEBENARAN) lawan
+  //     reconSql.py baris demi baris atas kes tepi duit; ia satu satunya gate
+  //     yang menyentuh reconcile.py, jadi ia jalan AWAL.
+  record("testReconEdgeCases.py", run("testReconEdgeCases.py (E1 lwn E2)",
+    "python3", ["api/engine/tests/testReconEdgeCases.py"]));
+  record("testIngestParsers.py", run("testIngestParsers.py (parser + guard)",
+    "python3", ["api/engine/tests/testIngestParsers.py"]));
+
   // 1) Restore awal.
   record("restore (awal)", restore("awal"));
 
@@ -80,6 +92,11 @@ async function main() {
   record("parityCheck", run("parityCheck", "npx", ["tsx", "scripts/parityCheck.ts"]));
   record("testStockistDetail", run("testStockistDetail", "npx", ["tsx", "scripts/testStockistDetail.ts"]));
   record("testBank", run("testBank", "npx", ["tsx", "scripts/testBank.ts"]));
+
+  // 3b) Kes tepi enjin TS: suntik baris perangkap, semak kategori, buang balik.
+  //     Ia bersihkan sendiri, tapi kita restore selepasnya sebagai jaring.
+  record("testReconEdgeCases.ts", run("testReconEdgeCases.ts (E3 kes tepi)",
+    "npx", ["tsx", "scripts/testReconEdgeCases.ts"]));
 
   // 4) Suite memadam , restore sebelum & selepas.
   record("restore (pra-mutations)", restore("pra-mutations"));

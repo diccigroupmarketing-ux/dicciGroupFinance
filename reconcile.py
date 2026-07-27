@@ -14,6 +14,7 @@ import warnings
 warnings.filterwarnings("ignore")
 
 import re
+from decimal import Decimal, ROUND_HALF_UP
 
 import pandas as pd
 
@@ -34,6 +35,33 @@ AGED = ["hilang_lewat"]
 # bukan kunci padanan sebenar. Satu baris bil junk (contoh baris total) dengan AWB
 # kosong TIDAK boleh dibenarkan padan dengan order tanpa tracking.
 SENTINEL_TRK = {"NAN", "NONE", ""}
+
+# Pembundaran duit untuk PERBANDINGAN (tally lawan amount_mismatch).
+# ---------------------------------------------------------------------
+# "Apa maksudnya": bila kita nak tahu dua jumlah duit sama atau tak, kita bundar
+# dua duanya ke sen dulu. Masalahnya round() Python bundar seri (tepat separuh
+# sen, contoh 100.125) ke nombor GENAP , 100.12 , sedangkan SQLite/Postgres dan
+# recon.ts bundar seri NAIK , 100.13. Baris yang sama jadi 'tally' di satu enjin
+# dan 'amount_mismatch' di enjin lain. Keputusan owner (2026-07-27): 5 sen NAIK
+# (ROUND_HALF_UP), jadi enjin rujukan ikut cara yang sama macam SQL.
+#
+# Decimal(str(x)) sengaja lalu TEKS: itu perangai Postgres bila float8 dicast ke
+# numeric (guna perwakilan teks terpendek), iaitu dialek PRODUKSI.
+_SEN = Decimal("0.01")
+
+
+def _r2(x):
+    """Nilai duit dibundar ke 2 titik perpuluhan, seri NAIK (half-up).
+
+    NaN dikekalkan sebagai NaN supaya nilai hilang TIDAK pernah dikira sama
+    (NaN != NaN), persis perangai round() lama."""
+    try:
+        f = float(x)
+    except (TypeError, ValueError):
+        return float("nan")
+    if f != f:                       # NaN
+        return float("nan")
+    return Decimal(str(f)).quantize(_SEN, rounding=ROUND_HALF_UP)
 
 
 def _no_match_keys(vals, prefix):
@@ -133,7 +161,7 @@ def reconcile(conn, pending_days=REMIT_PENDING_DAYS, courier="jnt"):
             if st == COMPLETED:
                 if r["awb_shared"]:
                     return "amount_mismatch"  # AWB dikongsi >1 order, duit tak boleh tally berganda
-                return "tally" if round(r["selling_price"], 2) == round(r["cod_amount"], 2) else "amount_mismatch"
+                return "tally" if _r2(r["selling_price"]) == _r2(r["cod_amount"]) else "amount_mismatch"
             if st == RETURNED:
                 return "duit_masuk_order_returned"
             if st == REJECTED:
@@ -220,7 +248,7 @@ def reconcile_prepaid(conn, gateway="chip", pending_days=REMIT_PENDING_DAYS):
         if side == "right_only":
             return "duit_hantu"            # bayaran masuk, takde order Fighter dimuat
         if side == "both":
-            return "tally" if round(r["selling_price"], 2) == round(r["amount"], 2) else "amount_mismatch"
+            return "tally" if _r2(r["selling_price"]) == _r2(r["amount"]) else "amount_mismatch"
         return "belum_bayar"               # order prepaid, takde rekod bayaran lagi
 
     m["kategori"] = m.apply(cat, axis=1)

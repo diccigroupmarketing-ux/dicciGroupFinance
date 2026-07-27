@@ -69,7 +69,24 @@ def to_num(s: pd.Series) -> pd.Series:
 
 
 def parse_dt(s: pd.Series, dayfirst: bool) -> pd.Series:
-    return pd.to_datetime(s, dayfirst=dayfirst, errors="coerce")
+    """Parse lajur tarikh feed jadi datetime, SETIAP SEL sendiri sendiri.
+
+    `format="mixed"` penting, bukan kosmetik. Tanpa ia, pandas teka SATU format
+    dari sel pertama lalu paksa ke seluruh lajur, dan itu bocor dua cara:
+      1. Lajur bercampur format ('01/06/2026' diikuti '2026-06-03') , sel yang
+         tak muat tekaan jatuh SENYAP jadi NaT, order hilang tarikh, hilang umur,
+         jadi ia tak pernah naik ke baldi hilang_lewat (duit bocor tersorok).
+      2. Tarikh ISO berjam ('2026-06-01 10:00:00') dengan dayfirst=True , pandas
+         teka "%Y-%d-%m" dan pulangkan 6 Januari, bulan dan hari BERTUKAR.
+    Dengan format="mixed" tiap sel diparse ikut bentuknya sendiri; sel yang betul
+    betul tak boleh dibaca kekal NaT (guard di ingest.py yang tolak fail).
+    Disahkan atas export Fighter sebenar: 0 beza berbanding perangai lama.
+    """
+    try:
+        return pd.to_datetime(s, dayfirst=dayfirst, errors="coerce", format="mixed")
+    except (ValueError, TypeError):
+        # Jaring keselamatan: pandas lama / bentuk input luar jangka.
+        return pd.to_datetime(s, dayfirst=dayfirst, errors="coerce")
 
 
 def is_real_awb(t: str) -> bool:

@@ -550,7 +550,11 @@ def _log_price_changes(conn, order_ids, new_prices, source_file):
 # db.to_num TIDAK diubah (ia dipakai semua feed + laluan recon); guard ni duduk
 # di LUAR, khas laluan Fighter sahaja.
 # =====================================================================
-F_REQUIRED_COLUMNS = [F_AMOUNT, F_COMM, F_ITEMCOUNT, F_SKUS]
+#   Guard 4 (tarikh) : sel Date yang ADA isi tapi TAK boleh diparse jadi tarikh.
+#                      Dulu ia jatuh senyap ke NULL, order tu hilang umur (tak
+#                      pernah jadi hilang_lewat) = bocor duit tersorok. Sekarang
+#                      fail ditolak, sebab sama dengan guard duit (suspect_values).
+F_REQUIRED_COLUMNS = [F_DATE, F_AMOUNT, F_COMM, F_ITEMCOUNT, F_SKUS]
 
 # Ambang lajur duit kosong: lebih daripada ini = fail ditolak.
 F_EMPTY_RATIO_MAX = 0.5
@@ -633,6 +637,37 @@ def guard_fighter_values(df, price_num, comm_num):
             detected_type="fighter")
 
 
+def _suspect_date_cells(series, parsed):
+    """Senarai teks mentah sel tarikh yang ADA isi tapi gagal diparse (jadi NaT).
+    Sel KOSONG tulen dibenarkan (ia disimpan NULL, semua enjin recon setuju)."""
+    out = []
+    for raw, dt in zip(series.astype(str).tolist(), parsed.tolist()):
+        if pd.notna(dt) or _raw_is_blank(raw):
+            continue
+        out.append(str(raw).strip())
+    return out
+
+
+def guard_fighter_dates(series, parsed):
+    """Guard 4: sel Date yang tak boleh dibaca sebagai tarikh = tolak fail.
+
+    Kenapa penting (bukan kosmetik): order tanpa tarikh tak boleh dikira umurnya,
+    jadi ia terperangkap kekal dalam baldi 'belum_remit' dan TIDAK PERNAH naik
+    jadi 'hilang_lewat'. Duit yang tak sampai jadi tak nampak. Sebelum ni ia
+    jatuh senyap ke NULL; sekarang kita berhenti di pintu, sama macam guard duit."""
+    bad = _suspect_date_cells(series, parsed)
+    if not bad:
+        return
+    examples = ", ".join(f"'{s}'" for s in bad[:3])
+    raise IngestError(
+        REASON_SUSPECT_VALUES,
+        message=(f"{len(bad)} date cell(s) in '{F_DATE}' could not be read as a "
+                 f"date (for example {examples}). Those orders would lose their "
+                 "ageing, so overdue money would stay hidden. Nothing was saved, "
+                 "please fix the file and upload again."),
+        detected_type="fighter")
+
+
 def ingest_fighter(df, source_file, conn):
     # Guard schema DULU: lajur wajib hilang = tolak fail (dulu diganti 0/None
     # senyap, duit dan botol boleh hilang tanpa bunyi).
@@ -646,9 +681,18 @@ def ingest_fighter(df, source_file, conn):
     price_num = db.to_num(df[F_AMOUNT])
     comm_num = db.to_num(df[F_COMM])
     guard_fighter_values(df, price_num, comm_num)
+    # Tarikh dikanonikkan DI PINTU: apa apa format yang pandas faham
+    # ('01/06/2026', '2026-06-03', '2026-06-03T10:00:00') keluar sebagai
+    # "YYYY-MM-DD HH:MM:SS" lewat iso(), dan sel kosong jadi NULL (bukan '').
+    # Ini prasyarat parity 3 enjin: reconcile.py parse tarikh dengan pandas
+    # manakala reconSql.py/recon.ts BANDING TEKS, jadi tarikh bukan kanonik
+    # boleh bagi dua jawapan berbeza untuk baris yang sama (audit reconTrust
+    # divergen #1). Enjin recon TIDAK diubah, data yang dikemas.
+    order_dt = db.parse_dt(df[F_DATE], dayfirst=True)
+    guard_fighter_dates(df[F_DATE], order_dt)
     o = pd.DataFrame({
         "order_id": df[F_ORDER].astype(str).str.replace(r"\.0$", "", regex=True).str.strip(),
-        "order_date": iso(db.parse_dt(df[F_DATE], dayfirst=True)),
+        "order_date": iso(order_dt),
         "status": df[F_STATUS],
         "seller_name": df[F_SELLER],
         "payment_method": df[F_PAYMENT],

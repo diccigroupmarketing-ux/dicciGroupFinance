@@ -153,13 +153,22 @@ function umurHari(orderDate: string | null): number | null {
 
 const R2 = (x: string) => `ROUND(CAST(${x} AS numeric), 2)`;
 
-// Port setia SENTINEL_TRK reconcile.py {"NAN","NONE",""} + isna: nilai sentinel
-// (sel tracking/AWB kosong yang di-stringify) TAK boleh jadi kunci padanan.
-// reconcile.py ganti sentinel dengan kunci unik masa merge (_no_match_keys); di
-// SQL kita halang JOIN sentinel-ke-sentinel dan keluarkan sentinel dari set
-// tracking dikenali (all_trk), supaya baris bil AWB sentinel jatuh duit_hantu.
+// Port setia _no_match_keys reconcile.py (reconcile.py:42): kunci merge
+// dinormalkan .strip().upper() dulu, jadi sentinel (sel tracking/AWB kosong yang
+// di-stringify jadi 'NAN'/'NONE') TAK boleh jadi kunci padanan. Dipakai untuk
+// JOIN + keahlian right_only.
 const NOT_SENTINEL = (col: string) =>
   `(${col} IS NOT NULL AND UPPER(TRIM(${col})) NOT IN ('NAN', 'NONE', ''))`;
+
+// Port setia all_trk reconcile.py:94 , `set(orders.tracking.dropna()) -
+// SENTINEL_TRK`. Beza HALUS dari NOT_SENTINEL: di sini reconcile.py TIDAK buat
+// strip/upper, jadi hanya padanan LITERAL 'NAN'/'NONE'/'' dibuang. Tracking
+// 'none' huruf kecil KEKAL "tracking dikenali", jadi baris bil AWB 'none' jatuh
+// match_luar_skop (duit ada tuannya, cuma order di luar skop stream), BUKAN
+// duit_hantu. Fix 2026-07-27 (audit reconTrust divergen #2), keputusan owner:
+// ikut reconcile.py. Kesan: angka Ghost money turun, itu memang dijangka.
+const NOT_SENTINEL_LITERAL = (col: string) =>
+  `(${col} IS NOT NULL AND ${col} NOT IN ('NAN', 'NONE', ''))`;
 
 // Salinan setia _m_sql_courier (cabang postgresql) dari reconSql.py.
 function mSqlCourier(key: StreamKey): string {
@@ -216,7 +225,7 @@ function mSqlCourier(key: StreamKey): string {
            l.awb, l.bill_id, l.cod_amount, l.fee, l.delivered_date,
            l.cod_amount - l.fee,
            CASE WHEN EXISTS (SELECT 1 FROM orders ao WHERE ao.tracking = l.awb
-                             AND ${NOT_SENTINEL("ao.tracking")})
+                             AND ${NOT_SENTINEL_LITERAL("ao.tracking")})
                 THEN 'match_luar_skop' ELSE 'duit_hantu' END
     FROM tmp_lines l
     WHERE NOT EXISTS (SELECT 1 FROM orders s WHERE s.tracking = l.awb

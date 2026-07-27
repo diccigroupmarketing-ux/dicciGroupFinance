@@ -55,19 +55,36 @@ def _frags(conn):
         return f"(TRIM(COALESCE({col}, '')) <> '' AND UPPER(TRIM({col})) <> 'NAN')"
 
     def not_sentinel(col):
-        # Port setia SENTINEL_TRK reconcile.py {"NAN","NONE",""} + isna: nilai
-        # sentinel (sel tracking/AWB kosong yang di-stringify jadi 'NAN'/'NONE')
-        # TIDAK boleh jadi kunci padanan. reconcile.py ganti sentinel dengan kunci
-        # unik masa merge (_no_match_keys); di SQL kita halang JOIN sentinel-ke-
-        # sentinel dan keluarkan sentinel dari set tracking dikenali (all_trk).
+        # Port setia _no_match_keys reconcile.py (reconcile.py:42): kunci merge
+        # dinormalkan dengan .strip().str.upper() SEBELUM disemak lawan
+        # SENTINEL_TRK, jadi ' none ' pun tak boleh jadi kunci padanan.
+        # Dipakai untuk JOIN + keahlian right_only sahaja (BUKAN all_trk , lihat
+        # not_sentinel_literal di bawah).
         return f"({col} IS NOT NULL AND UPPER(TRIM({col})) NOT IN ('NAN', 'NONE', ''))"
 
+    def not_sentinel_literal(col):
+        # Port setia all_trk reconcile.py:94 , `set(orders.tracking.dropna())
+        # - SENTINEL_TRK`. Beza HALUS tapi penting: di sini reconcile.py TIDAK
+        # buat strip/upper, jadi ia buang padanan LITERAL 'NAN'/'NONE'/'' sahaja.
+        # Tracking 'none' huruf kecil KEKAL "tracking dikenali", jadi baris bil
+        # AWB 'none' jatuh match_luar_skop (benign), bukan duit_hantu.
+        # "Apa maksudnya": duit tu ADA tuannya (order wujud, cuma di luar skop
+        # stream ni), jadi jangan lapor ia sebagai duit hantu di page Ghost money.
+        # Fix 2026-07-27 (audit reconTrust divergen #2), keputusan owner: ikut E1.
+        return f"({col} IS NOT NULL AND {col} NOT IN ('NAN', 'NONE', ''))"
+
     def r2(x):
+        # NOTA dialek (gap didokumen, audit reconTrust 2026-07-27): dua dua
+        # bundar seri NAIK (half-up), selari reconcile._r2. Tapi Postgres bundar
+        # atas perwakilan TEKS float (100.005 -> 100.01) manakala SQLite bundar
+        # atas double mentah (100.005 tersimpan 100.00499... -> 100.00). Beza ni
+        # hanya muncul pada nilai dengan digit ke-3 selepas titik. Produksi =
+        # Postgres, dan reconcile._r2 sengaja ikut semantik Postgres.
         if d == "postgresql":
             return f"ROUND(CAST({x} AS numeric), 2)"
         return f"ROUND({x}, 2)"
 
-    return digit_ok, present_ok, r2, not_sentinel
+    return digit_ok, present_ok, r2, not_sentinel, not_sentinel_literal
 
 
 def _cutoff(pending_days):
@@ -119,7 +136,7 @@ TMP_DDL = """
 
 def _m_sql_courier(conn, courier):
     cfg = db.COURIERS[courier]
-    digit_ok, present_ok, r2, not_sentinel = _frags(conn)
+    digit_ok, present_ok, r2, not_sentinel, not_sentinel_literal = _frags(conn)
     awb_ok = digit_ok if cfg["awb_valid"] is db.is_real_awb else present_ok
     # Anti-join ikut dialek. SQLite: NOT EXISTS berkorelasi buat planner pilih
     # idx_orders_scope = scan ratusan ribu baris SETIAP baris bil (terbukti
@@ -130,16 +147,20 @@ def _m_sql_courier(conn, courier):
     # Sentinel-safe (port setia reconcile.py all_trk, _no_match_keys): baris bil
     # dengan AWB sentinel ('NAN'/'NONE'/kosong) TAK boleh padan order sentinel dan
     # TAK dikira "dikenali", supaya jatuh duit_hantu sama macam rujukan kebenaran.
+    # PENTING: known_trk guna not_sentinel_LITERAL (tiada UPPER/TRIM) sebab
+    # reconcile.py:94 bina all_trk dengan tolak set literal sahaja. anti + JOIN
+    # kekal guna not_sentinel (ADA UPPER/TRIM) sebab _no_match_keys memang
+    # normalkan kunci merge. Dua fragmen berbeza = dua tempat berbeza, disengajakan.
     if conn.engine.dialect.name == "postgresql":
         known_trk = ("EXISTS (SELECT 1 FROM orders ao WHERE ao.tracking = l.awb "
-                     f"AND {not_sentinel('ao.tracking')})")
+                     f"AND {not_sentinel_literal('ao.tracking')})")
         anti = f"""NOT EXISTS (SELECT 1 FROM orders s WHERE s.tracking = l.awb
                               AND {not_sentinel('s.tracking')}
                               AND s.payment_method IN :cods
                               AND s.shipping_provider IN :prov)"""
     else:
         known_trk = ("l.awb IN (SELECT tracking FROM orders "
-                     f"WHERE {not_sentinel('tracking')})")
+                     f"WHERE {not_sentinel_literal('tracking')})")
         anti = f"""l.awb NOT IN (SELECT tracking FROM orders
                                 WHERE {not_sentinel('tracking')}
                                   AND payment_method IN :cods
@@ -202,7 +223,7 @@ def _m_sql_courier(conn, courier):
 
 def _m_sql_prepaid(conn, gateway):
     cfg = db.PREPAID[gateway]
-    _, _, r2, _ = _frags(conn)
+    _, _, r2, _, _ = _frags(conn)
     assert cfg  # methods dibind sebagai param
     # Fork anti-join sama seperti _m_sql_courier (lihat nota di situ).
     if conn.engine.dialect.name == "postgresql":

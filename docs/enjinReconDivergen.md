@@ -74,7 +74,7 @@ Sisi padanan: order lawan baris bil di-merge ikut tracking = awb.
 | Takde bil + Completed + umur > pending_days | `hilang_lewat` (`reconcile.py:147`) | `hilang_lewat` (`reconSql.py:155`) | `hilang_lewat` (`recon.ts:152`) |
 | Takde bil + Completed + masih muda | `belum_remit` (`reconcile.py:149`) | sama (`reconSql.py:156`) | sama (`recon.ts:153`) |
 | Takde bil + Returned/Rejected/lain | `returned`/`rejected`/`pending` (`reconcile.py:151`) | sama (`reconSql.py:158`) | sama (`recon.ts:155`) |
-| Baris bil tanpa order, awb wujud sebagai tracking order | `match_luar_skop` (`reconcile.py:130`) | sama, `known_trk` (`reconSql.py:172`) | sama (`recon.ts:169`) |
+| Baris bil tanpa order, awb wujud sebagai tracking order | `match_luar_skop` (`reconcile.py:130`) | sama, `known_trk` guna `not_sentinel_literal` (lihat D6) | sama, `NOT_SENTINEL_LITERAL` (lihat D6) |
 | Baris bil tanpa order, awb tak dikenali | `duit_hantu` (`reconcile.py:130`) | sama (`reconSql.py:173`) | sama (`recon.ts:170`) |
 
 Ambang aging: ketiga tiga guna formula sama, `(TODAY - order_date).hari > pending_days`.
@@ -246,6 +246,96 @@ padanan palsu (`tally`), mengembang nilai tally dan sorok duit hantu. Data dev s
 tiada kes ni (parity lulus tanpa perubahan `parityPython.json`), jadi ia bug laten, kini
 ditutup sebelum penyatuan.
 
+### D5. Pembundaran sen: banker lawan half-up (DIBAIKI 2026-07-27, kini SAMA)
+
+> Ditemui audit reconTrust (2026-07-27), disahkan skeptik bebas dengan 23 perangkap.
+> Keputusan owner: **5 sen NAIK (half-up)**.
+
+`round()` Python bundar seri (tepat separuh sen) ke nombor GENAP: `round(100.125, 2)`
+= 100.12, `round(100.625, 2)` = 100.62. SQLite `ROUND` dan Postgres
+`ROUND(CAST(x AS numeric), 2)` bundar seri NAIK: 100.13 / 100.63. Baris duit yang sama
+jadi `tally` di satu enjin dan `amount_mismatch` di enjin lain, DUA ARAH (bukan satu
+enjin sekadar lebih ketat), jadi ia mengembang DAN mengecilkan nilai tally.
+
+Baik: `reconcile._r2()` (`reconcile.py`) guna `Decimal(str(x)).quantize(0.01,
+ROUND_HALF_UP)`, dipakai di kedua dua tempat perbandingan duit (COD + prepaid).
+`Decimal(str(x))` sengaja lalu TEKS sebab itu perangai Postgres bila `float8` dicast
+ke `numeric`, iaitu dialek PRODUKSI. NaN kekal NaN supaya nilai hilang tak pernah
+dikira sama. `reconSql.py` dan `recon.ts` TIDAK berubah (memang sudah half-up).
+
+Kesan pada data SEBENAR: **sifar**. Disahkan atas `data/baselineRecon.db`, `recon.db`
+(cermin live) dan snapshot backup dev: 0 daripada 1274 pasangan duit bertukar kategori,
+dan 0 daripada 13101 nilai duit ada lebih 2 titik perpuluhan. Baseline kekal
+byte-identik (`RM 63,912.00`, 369 order).
+
+BAKI DIDOKUMEN (gap dialek, dev sahaja): untuk nilai dengan digit KETIGA selepas titik
+yang tak boleh diwakili tepat dalam float (contoh 100.005 tersimpan 100.00499...),
+Postgres + `reconcile._r2` bundar ikut TEKS (100.01) manakala SQLite bundar ikut double
+mentah (100.00). Prod = Postgres, jadi E1/E2pg/E3 selari; hanya sqlite dev lokal beza.
+Diuji dan dikunci sebagai gap sedar dalam `TestGapDialekSen`.
+
+### D6. `all_trk` diport terlalu ketat: match_luar_skop jadi duit_hantu (DIBAIKI 2026-07-27)
+
+> Regresi yang masuk bersama baik D4. Keputusan owner: **ikut reconcile.py**.
+
+Masa D4 ditutup, fragmen `not_sentinel` (ADA `UPPER(TRIM(...))`) dipakai di TIGA tempat
+dalam `reconSql._m_sql_courier`, termasuk `known_trk`. Tapi `reconcile.py` layan nilai
+sentinel dengan DUA cara berbeza dalam satu fungsi:
+
+- `reconcile.py:42` `_no_match_keys` , kunci merge, ADA `.str.strip().str.upper()`.
+- `reconcile.py:94` `all_trk` , `set(orders.tracking.dropna()) - SENTINEL_TRK`,
+  TIADA strip/upper, jadi ia buang padanan LITERAL `'NAN'/'NONE'/''` sahaja.
+
+Akibatnya tracking `'none'` huruf kecil KEKAL "tracking dikenali" dalam `reconcile.py`,
+jadi baris bil AWB `'none'` = `match_luar_skop` (benign: duit ada tuannya, cuma ordernya
+di luar skop stream ini). `reconSql.py` + `recon.ts` buang ia dari set dikenali, jadi
+baris sama dilabel `duit_hantu` , membesarkan angka page Not collected / Ghost money
+dengan duit yang sebenarnya ada tuan.
+
+Baik: fragmen KEDUA, `not_sentinel_literal(col)` / `NOT_SENTINEL_LITERAL(col)` (tiada
+UPPER/TRIM), dipakai HANYA pada `known_trk` dalam dua dua dialek `reconSql.py` dan dalam
+`recon.ts`. JOIN + anti-join (keahlian right_only) KEKAL guna `not_sentinel`, sebab di
+situ `reconcile.py` memang normalkan kunci. `reconcile.py` TIDAK disentuh.
+
+Kesan yang dijangka pada UI: bilangan `duit_hantu` TURUN (baris berpindah ke
+`match_luar_skop`). Itu pembetulan, bukan kehilangan data , dua dua kategori kekal dalam
+`INTEGRITY_EXC` jadi jumlah exception tak berubah.
+
+### D7. Tarikh bukan kanonik: pandas parse lawan banding teks (DITUTUP DI PINTU 2026-07-27)
+
+> Keputusan owner: **kemas di pintu ingest, enjin recon TIDAK diubah**.
+
+`reconcile.py` kira umur dengan `pd.to_datetime(order_date)`; `reconSql.py:179` dan
+`recon.ts` BANDING TEKS (`order_date <= cutoff`). Selagi `orders.order_date` kanonik
+(`YYYY-MM-DD HH:MM:SS`) atau NULL, dua cara tu bagi jawapan sama. Kalau tidak, ia lari:
+rentetan KOSONG `''` bagi `belum_remit` di E1 (pandas -> NaT) tapi `hilang_lewat` di
+E2/E3 (`'' <= cutoff` benar), iaitu duit tertunggak dilaporkan dua cara bertentangan.
+
+Punca sebenar disiasat di pintu, dan ia LEBIH TERUK daripada yang dilaporkan:
+
+1. `db.parse_dt` lama teka SATU format dari sel pertama lalu paksa ke seluruh lajur.
+   Lajur bercampur format (`'01/06/2026'` diikuti `'2026-06-03'`) buat sel yang tak muat
+   tekaan jatuh SENYAP jadi NaT. Order hilang tarikh, hilang umur, jadi ia tak pernah
+   naik ke `hilang_lewat` , duit bocor tersorok.
+2. Lebih teruk: tarikh ISO berjam (`'2026-06-01 10:00:00'`) dengan `dayfirst=True`
+   ditekakan sebagai `%Y-%d-%m`, jadi ia pulang **6 Januari**. Bulan dan hari BERTUKAR.
+
+Baik: `db.parse_dt` guna `format="mixed"` (tiap sel diparse ikut bentuk sendiri, dengan
+jaring `try/except` ke perangai lama), dan laluan Fighter dapat guard keempat,
+`ingest.guard_fighter_dates`: sel Date yang ADA isi tapi tak boleh diparse = fail
+DITOLAK dengan `REASON_SUSPECT_VALUES` (sebab sama dengan guard duit), bukan disimpan
+NULL senyap. `F_DATE` juga masuk `F_REQUIRED_COLUMNS`, jadi lajur Date hilang = mesej
+mesra, bukan crash. Sel kosong tulen KEKAL dibenarkan dan disimpan NULL (bukan `''`),
+dan semua enjin setuju pada NULL.
+
+Disahkan atas export Fighter SEBENAR: 0 beza berbanding perangai lama (852 baris).
+Keempat empat bentuk tarikh perangkap audit (`'2026-06-03'`, `'2026-06-02T10:00:00'`,
+`''`, `'01/06/2026'`) kini keluar dari pintu sebagai kanonik atau NULL, dan E1 lawan E2
+PADAN atas data yang masuk lewat ingest.
+
+BAKI DIDOKUMEN: kalau baris ditulis TERUS ke DB (bukan lewat ingest), divergen tarikh
+masih boleh wujud. Ia dikunci sebagai gap sedar dalam `TestGapTarikhBukanKanonik`.
+
 ### Ringkasan kiraan
 
 - Konstan/takrif dibanding: 10 baris.
@@ -254,6 +344,23 @@ ditutup sebelum penyatuan.
 - LARI asal: 4. DITUTUP: D2 (guard AWB), D3 (skop prepaid), D4 (sentinel NONE,
   disahkan divergen sebenar lalu diport 2026-07-23). BAKI: D1 TODAY (sedang dibaiki
   sesi 2026-07-23).
+- Pusingan kedua (audit reconTrust 2026-07-27): D5 (pembundaran half-up), D6
+  (`all_trk` terlalu ketat), D7 (tarikh, ditutup di pintu ingest) , SEMUA DITUTUP.
+
+### Penggera kekal (jangan buang)
+
+Sebelum 2026-07-27, TIADA ujian automatik yang banding `reconcile.py` lawan
+`reconSql.py`: `scripts/parityDump.py` import `reconSql` sahaja, jadi gelung parity
+rasmi banding E2 lawan E3 , dua dua di sebelah teks-mentah yang sama , dan boleh
+"LULUS" atas nombor yang bercanggah dengan rujukan kebenaran. Lubang tu kini ditutup:
+
+| Fail | Apa dijaga |
+|---|---|
+| `webApp/api/engine/tests/testReconEdgeCases.py` | E1 lawan E2 (sqlite) baris demi baris atas fixture kes tepi sintetik + dua gap didokumen |
+| `webApp/scripts/testReconEdgeCases.ts` | E3 atas dev PG: suntik baris perangkap, semak kategori, buang balik |
+| `webApp/api/engine/tests/testIngestParsers.py` (`TestFighterDateGuard`) | tarikh dikanonikkan / ditolak di pintu |
+
+Ketiga tiga dijalankan oleh `npm test` (`scripts/testAll.mjs`).
 
 ---
 
