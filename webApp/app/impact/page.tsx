@@ -1,9 +1,19 @@
-import { COURIERS, StreamKey, streamSummary, storeCounts, lastIngest, giftCostSummary, paymentBuckets } from "@/lib/recon";
+import {
+  COURIERS, REMIT_PENDING_DAYS, StreamKey, streamSummary, storeCounts, lastIngest,
+  giftCostSummary, paymentBuckets, reconTodayYmd,
+  type GiftCostSummary, type StreamSummary,
+} from "@/lib/recon";
+import { streamSummaryRanged } from "@/lib/streamRange";
+import {
+  giftCostRanged, paymentBucketsRanged, rollupStreams, type RangedPayBuckets,
+} from "@/lib/dashboardRange";
+import { isAllTime, parseDateRange, presetRanges } from "@/lib/dateRange";
 import { fmtDate, fmtInt, fmtRM, GRAIN_LABEL, groupByGrain, parseGrain } from "@/lib/format";
 import { Chip } from "@/components/Chip";
 import GrainSwitcher from "@/components/GrainSwitcher";
 import WeeklyChart from "@/components/WeeklyChart";
 import PaymentBuckets from "@/components/PaymentBuckets";
+import DateRangeFilter from "@/components/DateRangeFilter";
 import InfoTip from "@/components/InfoTip";
 import Link from "next/link";
 
@@ -12,12 +22,21 @@ export const dynamic = "force-dynamic";
 const ACTIVE: StreamKey[] = ["jnt", "dhl", "ninja"];
 
 export default async function Dashboard(
-  { searchParams }: { searchParams: Promise<{ grain?: string }> },
+  { searchParams }: {
+    searchParams: Promise<{ grain?: string; from?: string; to?: string }>;
+  },
 ) {
-  const grain = parseGrain((await searchParams).grain);
-  const [counts, asOf, gift, buckets] = await Promise.all([
-    storeCounts(), lastIngest(), giftCostSummary(), paymentBuckets(),
-  ]);
+  const sp = await searchParams;
+  const grain = parseGrain(sp.grain);
+  // Julat tarikh ORDER, peraturan sama macam page stream. Tiada param = All time
+  // = laluan enjin lama yang di-cache, angka identik macam sebelum ciri ni wujud.
+  const range = parseDateRange(sp);
+  const scoped = !isAllTime(range);
+  const presets = presetRanges(reconTodayYmd());
+  // Param lain yang WAJIB dikekalkan bila julat ditukar (dan sebaliknya).
+  const keep = { grain: grain === "weekly" ? undefined : grain };
+
+  const [counts, asOf] = await Promise.all([storeCounts(), lastIngest()]);
 
   if (counts.orders === 0) {
     return (
@@ -32,38 +51,60 @@ export default async function Dashboard(
     );
   }
 
-  const summaries = await Promise.all(ACTIVE.map((k) => streamSummary(k)));
-  const rows = ACTIVE.map((k, i) => {
-    const s = summaries[i];
-    return {
-      key: k, name: COURIERS[k].name,
-      collected: s.linesCod, fee: s.linesFee,
-      net: Math.round((s.linesCod - s.linesFee) * 100) / 100,
-      parcels: s.linesN, exc: s.integN,
-      hasBills: s.bills.length > 0,
-    };
-  });
+  // Bertapis = lapisan read-only atas tmp_m yang SAMA (lib/streamRange +
+  // lib/dashboardRange). Tiada julat = fungsi enjin lama, sifar perubahan.
+  const summaryOf = (k: StreamKey): Promise<StreamSummary & { undatedRows: number }> =>
+    scoped
+      ? streamSummaryRanged(k, REMIT_PENDING_DAYS, range)
+      : streamSummary(k).then((x) => ({ ...x, undatedRows: 0 }));
+  const giftP: Promise<GiftCostSummary> = scoped ? giftCostRanged(range) : giftCostSummary();
+  const bucketsP: Promise<RangedPayBuckets> = scoped
+    ? paymentBucketsRanged(range)
+    : paymentBuckets().then((b) => ({
+        buckets: b, totalOrders: 0, filteredOrders: 0, undatedOrders: 0,
+      }));
 
-  const totNet = rows.reduce((a, r) => a + r.net, 0);
-  const totParcels = rows.reduce((a, r) => a + r.parcels, 0);
-  const totExc = rows.reduce((a, r) => a + r.exc, 0);
-  const totCollected = rows.reduce((a, r) => a + r.collected, 0);
-  const totFee = rows.reduce((a, r) => a + r.fee, 0);
-  const withMoney = rows.filter((r) => r.parcels > 0).length;
+  const [summaries, gift, pay] = await Promise.all([
+    Promise.all(ACTIVE.map(summaryOf)), giftP, bucketsP,
+  ]);
 
-  const totBottles = summaries.reduce(
-    (a, s) => a + s.daily.reduce((x, d) => x + d.botol, 0), 0);
+  // Roll-up = fungsi TULEN yang dipakai oleh KEDUA dua mod, jadi All time memang
+  // matematik yang sama macam dulu (lihat scripts/testDateRange.ts bahagian C).
+  const roll = rollupStreams(ACTIVE.map((k, i) => ({
+    key: k, name: COURIERS[k].name, summary: summaries[i],
+  })));
+  const { rows, totNet, totParcels, totExc, totCollected, totFee, withMoney, totBottles } = roll;
+  const buckets = pay.buckets;
+  // Item tanpa tarikh order (baris bil tanpa order + order tanpa tarikh dalam
+  // feed): tak pernah disorok, dikira supaya nota jujur boleh sebut jumlahnya.
+  const undated = roll.undatedRows + pay.undatedOrders;
 
-  const weekly = groupByGrain(summaries.flatMap((s) => s.daily), grain);
+  const weekly = groupByGrain(roll.daily, grain);
 
   const [rm, cents] = fmtRM(totNet).split(".");
 
   return (
     <>
       <Header asOf={asOf} />
+
+      <DateRangeFilter basePath="/impact" range={range} presets={presets}
+        keep={keep} undatedRows={undated} />
+
+      {scoped && (
+        <div className="cauPanel" style={{ marginBottom: 14 }}>
+          <WarnIcon />
+          <div><b>Every figure on this page covers only the orders placed inside
+            the selected range.</b>
+            <p>A courier bill can carry parcels from several months, so these
+              amounts can be smaller than the full bills, and smaller than what
+              landed in the bank. Switch to All time to reconcile against the bank.</p>
+          </div>
+        </div>
+      )}
+
       <div className="hero">
         <div className="heroTop">
-          <div className="heroLabel">Net remit · All streams
+          <div className="heroLabel">Net remit · All streams{scoped ? " · selected range" : ""}
             <InfoTip text="The money we expect to land in the bank after the courier takes its delivery fee out of what the customer paid (COD collected minus courier fee)." />
           </div>
           {totExc === 0 ? (
@@ -93,7 +134,9 @@ export default async function Dashboard(
             <InfoTip text="COD means Cash On Delivery: the customer pays the courier when the parcel arrives. This is the total cash the courier collected on our behalf." />
           </div>
           <div className="kpiValue"><small>RM</small> {fmtRM(totCollected).replace("RM ", "")}</div>
-          <div className="kpiNote">across all settled bills</div>
+          <div className="kpiNote">
+            {scoped ? "settled bills, orders in range only" : "across all settled bills"}
+          </div>
         </div>
         <div className="kpi">
           <div className="kpiLabel">Courier fees
@@ -107,7 +150,9 @@ export default async function Dashboard(
             <InfoTip text="Parcels that now appear on a courier bill, so we know the money for them has been accounted for. One parcel is one delivery." />
           </div>
           <div className="kpiValue">{fmtInt(totParcels)}</div>
-          <div className="kpiNote">{fmtInt(counts.orders)} orders in store</div>
+          <div className="kpiNote">
+            {fmtInt(counts.orders)} orders in store{scoped ? ", all time" : ""}
+          </div>
         </div>
         <div className="kpi">
           <div className="kpiLabel">Bottles confirmed
@@ -123,7 +168,8 @@ export default async function Dashboard(
           <div className="cardHead">
             <div className="cardTitle">Net remit by {GRAIN_LABEL[grain]}</div>
             <div className="cardHint">delivery-signature date · all streams</div>
-            <GrainSwitcher grain={grain} basePath="/impact" />
+            <GrainSwitcher grain={grain} basePath="/impact"
+              extra={{ from: range.from, to: range.to }} />
           </div>
           {weekly.length ? (
             <>
@@ -134,7 +180,9 @@ export default async function Dashboard(
             </>
           ) : (
             <div className="cardHint" style={{ padding: "30px 0" }}>
-              No settled bills yet. The trend appears once courier bills are uploaded.
+              {scoped
+                ? "No settled parcel belongs to an order placed in this range. Widen the range to see the trend."
+                : "No settled bills yet. The trend appears once courier bills are uploaded."}
             </div>
           )}
         </div>
@@ -201,7 +249,10 @@ export default async function Dashboard(
         </div>
       </div>
 
-      <PaymentBuckets buckets={buckets} title="Payment confirmation · all Completed orders" showBottles />
+      <PaymentBuckets buckets={buckets} showBottles
+        title={scoped
+          ? "Payment confirmation · Completed orders in range"
+          : "Payment confirmation · all Completed orders"} />
 
       <div className="footNote">
         Data: Neon Postgres <span className="sep">·</span> reconciliation runs in SQL

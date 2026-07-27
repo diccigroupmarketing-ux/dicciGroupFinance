@@ -3,8 +3,13 @@ import Link from "next/link";
 import {
   AGED, COURIERS, INTEGRITY_EXC, KAT_LABEL, PREPAID, REMIT_PENDING_DAYS,
   PrepaidKey, StreamKey, streamSummary, streamPrepaidSummary,
-  storeCounts, lastIngest, type ExcRow,
+  storeCounts, lastIngest, reconTodayYmd, type ExcRow, type StreamSummary,
 } from "@/lib/recon";
+import { streamSummaryRanged, streamPrepaidSummaryRanged } from "@/lib/streamRange";
+import {
+  isAllTime, parseDateRange, presetRanges, streamQuery,
+  type DateRange, type RangePresets,
+} from "@/lib/dateRange";
 import {
   fmtDate, fmtInt, fmtRM, type Grain, GRAIN_LABEL, groupByGrain, parseGrain,
   trackingOrDash,
@@ -15,6 +20,7 @@ import WeeklyChart from "@/components/WeeklyChart";
 import BillsTable, { type BillRow } from "@/components/BillsTable";
 import ExportCsv from "@/components/ExportCsv";
 import AgingControl from "@/components/AgingControl";
+import DateRangeFilter from "@/components/DateRangeFilter";
 import InfoTip from "@/components/InfoTip";
 import { getBankDeposits } from "@/lib/bank";
 
@@ -52,21 +58,35 @@ const KAT_ORDER = [
 export default async function StreamPage(
   { params, searchParams }: {
     params: Promise<{ stream: string }>;
-    searchParams: Promise<{ grain?: string; pending?: string }>;
+    searchParams: Promise<{ grain?: string; pending?: string; from?: string; to?: string }>;
   },
 ) {
   const { stream } = await params;
   const sp = await searchParams;
   const grain = parseGrain(sp.grain);
   const pending = parsePending(sp.pending);
+  // Julat tarikh ORDER. Tiada param = All time = laluan lama, angka identik.
+  const range = parseDateRange(sp);
+  const scoped = !isAllTime(range);
+  const presets = presetRanges(reconTodayYmd());
   // Prepaid gateway (CHIP) = laluan berasingan: padan ikut order_id, tiada fi
   // courier, duit masuk bank Dicci Group (bukan Dicci Impact).
   if (stream in PREPAID) {
-    return <PrepaidStreamPage streamKey={stream as PrepaidKey} grain={grain} />;
+    return (
+      <PrepaidStreamPage streamKey={stream as PrepaidKey} grain={grain}
+        range={range} presets={presets} />
+    );
   }
   if (!(stream in COURIERS)) notFound();
   const key = stream as StreamKey;
   const cfg = COURIERS[key];
+  const basePath = `/impact/streams/${key}`;
+  // Param yang WAJIB dikekalkan bila julat ditukar (dan sebaliknya). Nilai lalai
+  // sengaja ditinggalkan supaya URL kekal bersih.
+  const keep = {
+    grain: grain === "weekly" ? undefined : grain,
+    pending: pending === REMIT_PENDING_DAYS ? undefined : pending,
+  };
 
   const counts = await storeCounts();
   if (counts.orders === 0) {
@@ -81,8 +101,14 @@ export default async function StreamPage(
     );
   }
 
+  // Julat aktif = lapisan tapis read-only atas tmp_m yang SAMA (lib/streamRange).
+  // Tiada julat = fungsi enjin lama yang di-cache, sifar perubahan (undatedRows 0
+  // sebab nota "tiada tarikh" cuma bermakna bila ada tapisan).
+  const summaryP: Promise<StreamSummary & { undatedRows: number }> = scoped
+    ? streamSummaryRanged(key, pending, range)
+    : streamSummary(key, pending).then((x) => ({ ...x, undatedRows: 0 }));
   const [s, deposits, asOf] = await Promise.all([
-    streamSummary(key, pending), getBankDeposits(), lastIngest(),
+    summaryP, getBankDeposits(), lastIngest(),
   ]);
   const net = Math.round((s.linesCod - s.linesFee) * 100) / 100;
   const weekly = groupByGrain(s.daily, grain);
@@ -109,6 +135,9 @@ export default async function StreamPage(
   return (
     <>
       <Header name={cfg.name} asOf={asOf} />
+
+      <DateRangeFilter basePath={basePath} range={range} presets={presets}
+        keep={keep} undatedRows={s.undatedRows} />
 
       <div className="kpis">
         <div className="kpi">
@@ -145,8 +174,26 @@ export default async function StreamPage(
         </div>
       </div>
 
+      {scoped && s.bills.length > 0 && (
+        <div className="cauPanel" style={{ marginBottom: 14 }}>
+          <WarnIcon />
+          <div><b>These bill figures cover only the parcels whose order falls in
+            the selected range.</b>
+            <p>A bill can carry parcels from several months, so the amounts here
+              can be smaller than the full bill, and smaller than what landed in
+              the bank. Switch to All time to reconcile a bill against the bank.</p>
+          </div>
+        </div>
+      )}
+
       {s.bills.length > 0 ? (
         <BillsTable rows={billRows} courierName={cfg.name} streamKey={key} />
+      ) : scoped ? (
+        <div className="emptyCard">
+          <div className="big">No {cfg.name} bill in this date range</div>
+          No settled parcel on this courier belongs to an order placed in the
+          selected range. Widen the range to see more bills.
+        </div>
       ) : (
         <div className="emptyCard">
           <div className="big">No {cfg.name} bill loaded yet</div>
@@ -194,7 +241,8 @@ export default async function StreamPage(
               <InfoTip text="Rows that do not add up and need a person to look. Tier 1 are integrity issues (real leaks until proven otherwise, like money paid on a returned order). Tier 2 are simply orders that have gone too long with no bill yet." />
             </div>
             <div className="cardHint">what needs a human · aging</div>
-            <AgingControl pending={pending} grain={grain} streamKey={key} />
+            <AgingControl pending={pending} basePath={basePath}
+              extraQuery={streamQuery({ grain: keep.grain }, range)} />
           </div>
           {s.integN === 0 ? (
             <div className="posPanel">
@@ -290,7 +338,8 @@ export default async function StreamPage(
             <div className="cardHead">
               <div className="cardTitle">Net remit by {GRAIN_LABEL[grain]}</div>
               <div className="cardHint">delivery-signature date</div>
-              <GrainSwitcher grain={grain} basePath={`/impact/streams/${key}`} pending={pending} />
+              <GrainSwitcher grain={grain} basePath={basePath} pending={pending}
+                extra={{ from: range.from, to: range.to }} />
             </div>
             <WeeklyChart bars={weekly} />
           </div>
@@ -530,9 +579,14 @@ function StatementsTable({ rows }: { rows: StatementRow[] }) {
 }
 
 async function PrepaidStreamPage(
-  { streamKey, grain }: { streamKey: PrepaidKey; grain: Grain },
+  { streamKey, grain, range, presets }: {
+    streamKey: PrepaidKey; grain: Grain; range: DateRange; presets: RangePresets;
+  },
 ) {
   const cfg = PREPAID[streamKey];
+  const scoped = !isAllTime(range);
+  const basePath = `/impact/streams/${streamKey}`;
+  const keep = { grain: grain === "weekly" ? undefined : grain };
 
   const counts = await storeCounts();
   if (counts.orders === 0) {
@@ -548,7 +602,10 @@ async function PrepaidStreamPage(
     );
   }
 
-  const [s, asOf] = await Promise.all([streamPrepaidSummary(streamKey), lastIngest()]);
+  const summaryP: Promise<StreamSummary & { undatedRows: number }> = scoped
+    ? streamPrepaidSummaryRanged(streamKey, range)
+    : streamPrepaidSummary(streamKey).then((x) => ({ ...x, undatedRows: 0 }));
+  const [s, asOf] = await Promise.all([summaryP, lastIngest()]);
   const net = Math.round((s.linesCod - s.linesFee) * 100) / 100;
   const weekly = groupByGrain(s.daily, grain);
 
@@ -571,6 +628,9 @@ async function PrepaidStreamPage(
     <>
       <PrepaidHeader name={cfg.name} asOf={asOf} />
       <GroupBankNote name={cfg.name} />
+
+      <DateRangeFilter basePath={basePath} range={range} presets={presets}
+        keep={keep} undatedRows={s.undatedRows} />
 
       <div className="kpis">
         <div className="kpi">
@@ -601,8 +661,25 @@ async function PrepaidStreamPage(
         </div>
       </div>
 
+      {scoped && stmtRows.length > 0 && (
+        <div className="cauPanel" style={{ marginBottom: 14 }}>
+          <WarnIcon />
+          <div><b>These statement figures cover only the payments whose order
+            falls in the selected range.</b>
+            <p>One statement can settle payments from several months, so the
+              amounts here can be smaller than the full statement.</p>
+          </div>
+        </div>
+      )}
+
       {stmtRows.length > 0 ? (
         <StatementsTable rows={stmtRows} />
+      ) : scoped ? (
+        <div className="emptyCard">
+          <div className="big">No {cfg.name} statement in this date range</div>
+          No settled payment belongs to an order placed in the selected range.
+          Widen the range to see more statements.
+        </div>
       ) : (
         <div className="emptyCard">
           <div className="big">No {cfg.name} statement loaded yet</div>
@@ -709,7 +786,8 @@ async function PrepaidStreamPage(
             <div className="cardHead">
               <div className="cardTitle">Net settled by {GRAIN_LABEL[grain]}</div>
               <div className="cardHint">payment date</div>
-              <GrainSwitcher grain={grain} basePath={`/impact/streams/${streamKey}`} />
+              <GrainSwitcher grain={grain} basePath={basePath}
+                extra={{ from: range.from, to: range.to }} />
             </div>
             <WeeklyChart bars={weekly} />
           </div>

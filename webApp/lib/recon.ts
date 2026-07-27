@@ -47,9 +47,12 @@ export function reconToday(): Date {
   return computeToday();
 }
 
-const COD_VALUES = ["COD"];
-const EXC_CAP = 5000;
-const AUDIT_PREVIEW = 8;
+// Diekspot (bukan diubah) supaya lapisan tapis tarikh read-only di
+// lib/streamRange.ts boleh guna semula pemalam + pembina tmp_m yang SAMA. Tiada
+// logik kiraan disentuh di sini, cuma kata kunci `export` ditambah.
+export const COD_VALUES = ["COD"];
+export const EXC_CAP = 5000;
+export const AUDIT_PREVIEW = 8;
 
 export const INTEGRITY_EXC = [
   "duit_hantu", "amount_mismatch", "duit_masuk_order_returned",
@@ -144,7 +147,7 @@ function cutoff(pendingDays: number): string {
   return iso(d);
 }
 
-function umurHari(orderDate: string | null): number | null {
+export function umurHari(orderDate: string | null): number | null {
   if (!orderDate) return null;
   const d = new Date(orderDate.replace(" ", "T"));
   if (isNaN(d.getTime())) return null;
@@ -251,7 +254,7 @@ async function tmpMIndexes(c: PoolClient) {
   await c.query(`CREATE INDEX idx_tmp_m_kat ON tmp_m(kategori)`);
 }
 
-async function buildTmpM(c: PoolClient, key: StreamKey, pendingDays: number) {
+export async function buildTmpM(c: PoolClient, key: StreamKey, pendingDays: number) {
   const cfg = COURIERS[key];
   await c.query(`
     CREATE TEMPORARY TABLE tmp_lines ON COMMIT DROP AS
@@ -302,7 +305,7 @@ function mSqlPrepaid(): string {
   `;
 }
 
-async function buildTmpMPrepaid(c: PoolClient, key: PrepaidKey) {
+export async function buildTmpMPrepaid(c: PoolClient, key: PrepaidKey) {
   const cfg = PREPAID[key];
   await c.query(`
     CREATE TEMPORARY TABLE tmp_lines ON COMMIT DROP AS
@@ -684,7 +687,9 @@ const PREPAID_OK =
   "pp.amount > 0 AND LOWER(TRIM(pp.status)) IN " +
   "('paid','success','successful','completed','settled','cleared','captured')";
 
-const CONF_SQL = `
+// Diekspot (bukan diubah) supaya lapisan tapis tarikh read-only di
+// lib/dashboardRange.ts boleh guna semula ungkapan "duit disahkan" yang SAMA.
+export const CONF_SQL = `
   CASE WHEN EXISTS (SELECT 1 FROM cod_bill_lines cl WHERE cl.awb = o.tracking)
          OR EXISTS (SELECT 1 FROM prepaid_payments pp WHERE pp.order_ref = o.order_id
                     AND ${PREPAID_OK})
@@ -710,7 +715,7 @@ const PREPAID_OK_EXISTS =
 // Turunkan baldi jujur per order (Completed): mirror maksud CONF_SQL tapi dipecah
 // ikut kaedah bayaran. confirmed_cod ∪ confirmed_prepaid = set "confirmed" CONF_SQL,
 // jadi jumlah botol sepadan dengan lajur confirmed/unconfirmed sedia ada.
-function payBucketCase(): string {
+export function payBucketCase(): string {
   return `CASE
     WHEN ${COD_IN} AND ${COD_LINE_EXISTS} THEN 'confirmed_cod'
     WHEN ${COD_IN} THEN 'awaiting_cod'
@@ -740,7 +745,7 @@ export interface PayBucket {
 // no_feed (Bank Transfer) = satu provider, tiada pecahan.
 const COD_BUCKET_KEYS = new Set(["confirmed_cod", "awaiting_cod"]);
 
-const BOTTLES_SUBQ = `COALESCE((SELECT SUM(os.qty * (COALESCE(sb.paid, 0) + COALESCE(sb.free, 0)))
+export const BOTTLES_SUBQ = `COALESCE((SELECT SUM(os.qty * (COALESCE(sb.paid, 0) + COALESCE(sb.free, 0)))
              FROM order_skus os LEFT JOIN sku_bottles sb ON UPPER(TRIM(sb.sku)) = os.sku
              WHERE os.order_id = o.order_id), 0)`;
 
@@ -767,7 +772,7 @@ function bump(a: Acc, orders: number, bottles: number, expected: number, oldest:
   a.oldest = minDate(a.oldest, oldest);
 }
 
-function toBuckets(rows: Record<string, unknown>[]): PayBucket[] {
+export function toBuckets(rows: Record<string, unknown>[]): PayBucket[] {
   const byBucket = new Map<string, Acc & { providers: Map<string, Acc> }>();
   for (const r of rows) {
     const orders = Number(r.orders);

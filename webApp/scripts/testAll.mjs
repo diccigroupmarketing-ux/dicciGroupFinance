@@ -92,6 +92,9 @@ async function main() {
   record("parityCheck", run("parityCheck", "npx", ["tsx", "scripts/parityCheck.ts"]));
   record("testStockistDetail", run("testStockistDetail", "npx", ["tsx", "scripts/testStockistDetail.ts"]));
   record("testBank", run("testBank", "npx", ["tsx", "scripts/testBank.ts"]));
+  // Lapisan tapis julat tarikh (read-only): ujian tulen + bukti All time = output
+  // enjin. Tak menulis apa apa ke DB.
+  record("testDateRange", run("testDateRange", "npx", ["tsx", "scripts/testDateRange.ts"]));
 
   // 3b) Kes tepi enjin TS: suntik baris perangkap, semak kategori, buang balik.
   //     Ia bersihkan sendiri, tapi kita restore selepasnya sebagai jaring.
