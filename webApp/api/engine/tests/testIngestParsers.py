@@ -1327,12 +1327,14 @@ class TestFighterDateGuard(unittest.TestCase):
         # Rentetan KOSONG dalam order_date = satu satunya kes tarikh yang masih
         # buat reconcile.py dan reconSql.py bercanggah (lihat testReconEdgeCases
         # kelas TestGapTarikhBukanKanonik). Jadi ia WAJIB jadi NULL, bukan ''.
+        # Kekal 2 sel kosong sahaja (tepat pada ambang Guard 5, masih lulus);
+        # sentinel None yang ketiga diuji dalam test_minority_blank_dates_*.
         df = _guard_df(**{ingest.F_DATE: [
-            "2026-06-01 10:00:00", "", None, float("nan")]})
+            "2026-06-01 10:00:00", "2026-06-02 09:00:00", "", float("nan")]})
         self.assertEqual(ingest.ingest_fighter(df, "ok.xlsx", self.conn), 4)
         d = self._dates()
         self.assertEqual(d["O1"], "2026-06-01 10:00:00")
-        for oid in ("O2", "O3", "O4"):
+        for oid in ("O3", "O4"):
             self.assertIsNone(d[oid], oid)
         kosong = self.conn.execute(text(
             "SELECT COUNT(*) FROM orders WHERE order_date = ''")).scalar()
@@ -1375,6 +1377,42 @@ class TestFighterDateGuard(unittest.TestCase):
         raw = pd.Series(["2026-06-01", "", None, "rosak", float("nan")])
         parsed = db.parse_dt(raw, dayfirst=True)
         self.assertEqual(ingest._suspect_date_cells(raw, parsed), ["rosak"])
+
+    # --- Guard 5: lajur Date majoriti kosong (ambang sama macam guard duit) ---
+
+    def test_majority_blank_dates_rejected(self):
+        # 4 daripada 4 kosong = jauh lebih 50% = tolak. Kalau ini lulus, SEMUA
+        # order dalam fail tu hilang aging dan tak pernah naik hilang_lewat.
+        df = _guard_df(**{ingest.F_DATE: ["", None, float("nan"), ""]})
+        with self.assertRaises(ingest.IngestError) as cm:
+            ingest.ingest_fighter(df, "bad.xlsx", self.conn)
+        self.assertEqual(cm.exception.reason, ingest.REASON_SUSPECT_VALUES)
+        self.assertIn(ingest.F_DATE, cm.exception.message)   # mesej sebut tarikh
+        self.assertIn("empty", cm.exception.message)
+        self.assertEqual(self._orders(), 0)                  # TIADA apa ditulis
+
+    def test_minority_blank_dates_still_ingests_as_null(self):
+        # 1 daripada 4 kosong = bawah ambang = LULUS, dan sel kosong tu kekal
+        # NULL (Fighter memang ada order tanpa tarikh sekali sekala).
+        df = _guard_df(**{ingest.F_DATE: [
+            "2026-06-01", "2026-06-02", "2026-06-03", None]})
+        self.assertEqual(ingest.ingest_fighter(df, "ok.xlsx", self.conn), 4)
+        d = self._dates()
+        self.assertEqual(d["O1"], "2026-06-01 00:00:00")
+        self.assertIsNone(d["O4"])
+
+    def test_blank_date_threshold_boundary(self):
+        # Sempadan ambang, semantik SAMA dengan guard duit (blank > n * 0.5):
+        # tepat separuh (2 dari 4) LULUS, satu lagi melepasi (3 dari 4) TOLAK.
+        tepat = _guard_df(**{ingest.F_DATE: ["2026-06-01", "2026-06-02", "", None]})
+        self.assertEqual(ingest.ingest_fighter(tepat, "ok.xlsx", self.conn), 4)
+        self.assertEqual(self._orders(), 4)
+        lepas = _guard_df(**{ingest.F_DATE: ["2026-06-01", "", None, float("nan")]})
+        with self.assertRaises(ingest.IngestError) as cm:
+            ingest.ingest_fighter(lepas, "bad.xlsx", self.conn)
+        self.assertEqual(cm.exception.reason, ingest.REASON_SUSPECT_VALUES)
+        self.assertIn(ingest.F_DATE, cm.exception.message)
+        self.assertEqual(self._orders(), 4)   # kekal 4 dari fail pertama sahaja
 
 
 # Fail Fighter SEBENAR (data/fighterSample.xlsx, gitignored) mesti LULUS guard ,

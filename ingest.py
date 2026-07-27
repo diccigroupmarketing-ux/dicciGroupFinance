@@ -554,9 +554,15 @@ def _log_price_changes(conn, order_ids, new_prices, source_file):
 #                      Dulu ia jatuh senyap ke NULL, order tu hilang umur (tak
 #                      pernah jadi hilang_lewat) = bocor duit tersorok. Sekarang
 #                      fail ditolak, sebab sama dengan guard duit (suspect_values).
+#   Guard 5 (tarikh) : lajur Date lebih separuh KOSONG tulen = export rosak, sama
+#                      logik dengan Guard 2 tapi untuk tarikh. Sel kosong sikit
+#                      sikit KEKAL dibenarkan (disimpan NULL); yang ditolak cuma
+#                      fail yang majoriti ordernya akan hilang aging sekali gus.
 F_REQUIRED_COLUMNS = [F_DATE, F_AMOUNT, F_COMM, F_ITEMCOUNT, F_SKUS]
 
-# Ambang lajur duit kosong: lebih daripada ini = fail ditolak.
+# Ambang sel kosong satu lajur (duit dan tarikh kongsi ambang yang SAMA supaya
+# finance tak payah ingat dua nombor): LEBIH daripada ini = fail ditolak. Tepat
+# pada ambang masih lulus.
 F_EMPTY_RATIO_MAX = 0.5
 
 # Teks mentah yang dianggap KOSONG tulen (sel blank / sentinel pandas).
@@ -649,12 +655,29 @@ def _suspect_date_cells(series, parsed):
 
 
 def guard_fighter_dates(series, parsed):
-    """Guard 4: sel Date yang tak boleh dibaca sebagai tarikh = tolak fail.
+    """Guard 4 + 5: sel Date yang tak boleh dibaca sebagai tarikh, atau lajur Date
+    yang majoritinya kosong = tolak fail.
 
     Kenapa penting (bukan kosmetik): order tanpa tarikh tak boleh dikira umurnya,
     jadi ia terperangkap kekal dalam baldi 'belum_remit' dan TIDAK PERNAH naik
     jadi 'hilang_lewat'. Duit yang tak sampai jadi tak nampak. Sebelum ni ia
-    jatuh senyap ke NULL; sekarang kita berhenti di pintu, sama macam guard duit."""
+    jatuh senyap ke NULL; sekarang kita berhenti di pintu, sama macam guard duit.
+
+    Guard 5 (kosong) diperiksa DULU: kalau lajur tarikh memang kosong beramai
+    ramai, itu masalah fail secara keseluruhan, bukan sel sel nakal, jadi mesej
+    tu yang lebih berguna untuk finance."""
+    n = len(series)
+    if n:
+        blank = sum(1 for raw in series.astype(str).tolist() if _raw_is_blank(raw))
+        if blank > n * F_EMPTY_RATIO_MAX:
+            raise IngestError(
+                REASON_SUSPECT_VALUES,
+                message=(f"{blank} of {n} rows have an empty '{F_DATE}'. Those "
+                         "orders would have no age, so overdue money would stay "
+                         "hidden instead of showing up as late. Nothing was "
+                         "saved, please re-export it from Fighter and upload "
+                         "again."),
+                detected_type="fighter")
     bad = _suspect_date_cells(series, parsed)
     if not bad:
         return
