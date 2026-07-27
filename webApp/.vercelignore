@@ -1,0 +1,15 @@
+# Bila fail ni wujud, Vercel CLI guna DIA (bukan .gitignore) untuk tentukan apa
+# yang diupload. Builder function Python bundle semua fail projek, jadi folder
+# besar lokal WAJIB disenarai sini, kalau tidak bundle pecah had 225 MB
+# (insiden 27 Jul: devPgData 266 MB masuk bundle, deploy gagal).
+node_modules
+devPgData
+.next
+out
+build
+coverage
+.env*
+.vercel
+*.tsbuildinfo
+scripts/parityPython.json
+.DS_Store
