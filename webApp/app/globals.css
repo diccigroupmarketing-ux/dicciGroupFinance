@@ -86,6 +86,27 @@ button{font-family:var(--body)}
   color:#7FA3A6;border:1px solid rgba(255,255,255,.14);border-radius:999px;padding:1px 6px;flex:none;
 }
 .navScroll{flex:1;min-height:0;overflow-y:auto;display:flex;flex-direction:column}
+/* Scrollbar dua kontena scroll sidebar (.side + .navScroll). Windows/Linux masih
+   guna scrollbar klasik yang ikut color-scheme, jadi tanpa isyarat gelap Chrome
+   lukis track putih terang atas teal (macOS terlepas sebab overlay nipis).
+   color-scheme:dark = minta versi gelap UA, scrollbar-width/-color = versi halus
+   berjenama (Chrome 121+, Firefox), blok ::-webkit-scrollbar = fallback Chrome/
+   Safari lama. Sengaja skop pada sidebar sahaja supaya kandungan kanan yang
+   berlatar cerah kekal scrollbar default. */
+.side,.navScroll{
+  color-scheme:dark;
+  scrollbar-width:thin;
+  scrollbar-color:rgba(255,255,255,.2) transparent;
+}
+.side::-webkit-scrollbar,.navScroll::-webkit-scrollbar{width:8px;height:8px}
+.side::-webkit-scrollbar-track,.navScroll::-webkit-scrollbar-track{background:transparent}
+.side::-webkit-scrollbar-thumb,.navScroll::-webkit-scrollbar-thumb{
+  background:rgba(255,255,255,.18);border-radius:999px;
+  border:2px solid transparent;background-clip:padding-box;
+}
+.side::-webkit-scrollbar-thumb:hover,.navScroll::-webkit-scrollbar-thumb:hover{
+  background:rgba(255,255,255,.32);background-clip:padding-box;
+}
 .navGroup{margin-top:6px}
 .navGroupPinned{padding-top:8px;border-top:1px solid rgba(214,180,103,.14)}
 .navGroupHead{
