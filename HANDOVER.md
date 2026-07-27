@@ -56,9 +56,13 @@ knowledgeVault decisions/keputusanDivergenRecon20260727.md.
   TAK pernah down. Sisa 16 db recontrust_* dev PG dah dibuang (266MB -> 115MB).
 - **Peta v1.7**: driftCheck lapor 3 drift (page uncollected, kabinet
   ingest_rejections, 9 commit) -> re-mine + PETA_DATA sahaja, 202 ujian lulus,
-  backup vault petaDicciFinanceV1.7.html. Nota tertangguh: label renderer "11
-  kabinet data" (index.html ~1375) stale sejak v1.6, luar sentinel, tak disentuh,
-  keputusan owner sama ada nak fix berasingan.
+  backup vault petaDicciFinanceV1.7.html. SELESAI 27 Jul petang: peta v1.8
+  (drift commit guard tarikh c567fb4, PETA_DATA sahaja) + label renderer "11
+  kabinet data" kini DERIVE dari MANIFEST.counts.cabinets (takkan stale lagi)
+  + ujian VERSIONS derive had dari MANIFEST.version (refresh depan tak perlu
+  usik ujian.mjs), 202 ujian lulus, driftCheck selari, backup vault
+  petaDicciFinanceV1.8.html. Checklist browser manual (tema/keyboard/reduced
+  motion) tak diulang, renderer cuma berubah satu ekspresi label.
 - **Lapor Jarvis**: inbox laporanDicciFinanceGiliranGraph20260727.md, giliran 1+2
   siap, syarat mod tangan pada dasarnya LENGKAP, tunggu pengesahan Jarvis.
 - **Keputusan mini SELESAI (27 Jul petang, keputusan owner)**: (a) DIPASANG, guard
