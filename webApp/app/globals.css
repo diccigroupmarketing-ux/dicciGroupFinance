@@ -136,6 +136,13 @@ button{font-family:var(--body)}
   margin-left:auto;font-size:9.5px;font-weight:700;letter-spacing:.08em;
   color:#7FA3A6;border:1px solid rgba(255,255,255,.14);border-radius:999px;padding:1px 7px;
 }
+/* Lencana KIRAAN (bukan teks "Soon"): emas pekat supaya kerja menunggu nampak,
+   dan ia hanya dirender bila kiraan > 0 (isyarat jujur, bukan hiasan). */
+.navBadgeCount{
+  color:var(--tealDeep);background:var(--gold);border-color:var(--gold);
+  font-size:10px;letter-spacing:0;font-weight:800;padding:1px 8px;
+}
+.navItem.active .navBadgeCount{background:var(--tealDeep);color:var(--gold);border-color:transparent}
 .sideFoot{margin-top:auto;padding-top:18px;display:flex;flex-direction:column;gap:10px}
 .uploadBtn{
   display:flex;align-items:center;justify-content:center;gap:8px;
@@ -487,6 +494,123 @@ th.num{text-align:right}
   font-weight:700;color:var(--inkStrong);overflow:hidden;
   text-overflow:ellipsis;white-space:nowrap;
 }
+
+/* ---------- lapisan Resolution ----------
+   Nada sengaja TENANG: ini lapisan status di atas angka, bukan angka itu
+   sendiri. Baris yang sudah ditutup jadi kelabu tapi TAK PERNAH hilang. */
+.resolveBtn{
+  background:var(--card);border:1px solid var(--borderStrong);border-radius:8px;
+  font-size:11.5px;font-weight:700;color:var(--ink);padding:5px 12px;
+  cursor:pointer;white-space:nowrap;
+  transition:border-color .15s,color .15s,background .15s;
+}
+.resolveBtn:hover{border-color:var(--goldDark);color:var(--inkStrong);background:var(--sunken)}
+.resolveBtn.compact{padding:4px 10px;font-size:11px}
+.resolveCell{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.resolveCellMsg{font-size:11px;color:var(--danText);flex-basis:100%;max-width:260px}
+.resolveMini{padding:7px 14px;font-size:12px;border-radius:9px}
+
+tr.rowResolved td{opacity:.55}
+tr.rowResolved .cellMain{font-weight:600}
+
+.resolveToolbar{
+  display:flex;align-items:center;gap:14px;flex-wrap:wrap;
+  margin-top:10px;padding-top:10px;border-top:1px solid var(--border);
+}
+.resolveToggle{
+  display:inline-flex;align-items:center;gap:7px;font-size:12px;font-weight:600;
+  color:var(--ink);cursor:pointer;
+}
+.resolveToggle input{width:14px;height:14px;accent-color:var(--goldDark);cursor:pointer}
+.resolveToolbarNote{font-size:11.5px;color:var(--muted)}
+
+.resolveStrip{
+  display:flex;align-items:center;gap:8px;flex-wrap:wrap;
+  margin-top:10px;font-size:12px;color:var(--muted);
+}
+.resolveStrip .sep{color:var(--borderStrong)}
+.resolveStat{font-weight:700;color:var(--ink)}
+.resolveStat.pos{color:var(--posText)}
+.resolveStat.cau{color:var(--cau)}
+.resolveStat.dan{color:var(--danText)}
+.resolveStripNote{flex-basis:100%;font-size:11.5px;color:var(--faint);font-weight:400}
+
+.resolveBar{
+  position:sticky;top:8px;z-index:5;
+  display:flex;align-items:center;gap:12px;flex-wrap:wrap;
+  background:var(--inkStrong);color:#F4F1EA;border-radius:12px;
+  padding:11px 16px;margin-top:12px;box-shadow:var(--shadow);
+}
+.resolveBarText{font-size:12.5px}
+.resolveBarText b{color:var(--goldLight)}
+.resolveBarWarn{color:var(--goldLight)}
+.resolveBar .ghostBtn{margin-left:auto;background:transparent;color:#F4F1EA;border-color:rgba(255,255,255,.3)}
+.resolveBar .ghostBtn:hover:not(:disabled){color:#fff;border-color:var(--gold)}
+
+.pickCol{width:34px;text-align:center}
+.pickCol input{width:15px;height:15px;accent-color:var(--goldDark);cursor:pointer}
+.pickCol input:disabled{cursor:not-allowed}
+
+/* ---------- modal resolve ---------- */
+.resolveModal{width:min(560px,100%);max-height:86vh;overflow-y:auto}
+.resolveField{display:flex;flex-direction:column;gap:5px;margin-bottom:13px}
+.resolveLabel{
+  font-size:10px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--muted);
+}
+.resolveHelp{font-size:11.5px;color:var(--muted);line-height:1.45}
+.resolveNote{font-family:var(--body);resize:vertical;min-height:64px}
+.resolveBlock{
+  font-size:12px;color:var(--cau);background:var(--cauBg);
+  border:1px solid #EBDDB6;border-radius:9px;padding:8px 11px;margin-top:6px;
+}
+.resolveErr{
+  font-size:12px;color:var(--danText);background:var(--danBg);
+  border:1px solid #EFC9C4;border-radius:9px;padding:8px 11px;margin-top:8px;
+}
+.resolvePreview{
+  background:var(--sunken);border:1px solid var(--border);border-radius:11px;
+  padding:11px 13px;margin-bottom:15px;
+}
+.resolvePreviewHead{font-size:12.5px;color:var(--ink)}
+.resolvePreviewHead b{color:var(--inkStrong)}
+.resolveTargets{margin-top:8px;display:flex;flex-direction:column;gap:4px;max-height:150px;overflow-y:auto}
+.resolveTargetRow{
+  display:flex;align-items:center;gap:9px;font-size:11.5px;color:var(--muted);
+}
+.resolveTargetRow.more{color:var(--faint);font-style:italic}
+.resolveTargetId{font-weight:700;color:var(--inkStrong)}
+.resolveTargetMeta{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.resolveTargetVal{font-variant-numeric:tabular-nums;font-weight:700;color:var(--ink)}
+.resolveRejects{margin-top:8px;display:flex;flex-direction:column;gap:4px}
+.resolveRejectRow{font-size:11.5px;color:var(--danText)}
+
+/* ---------- kad kelulusan ---------- */
+.approvalUnit{
+  border:1px solid var(--border);border-radius:12px;padding:13px 15px;margin-top:12px;
+  background:var(--paper);
+}
+.approvalHead{display:flex;gap:14px;align-items:flex-start;flex-wrap:wrap}
+.approvalTitle{
+  font-family:var(--display);font-size:15px;font-weight:600;color:var(--inkStrong);
+  display:flex;align-items:center;flex-wrap:wrap;
+}
+.approvalMeta{font-size:11.5px;color:var(--muted);margin-top:4px}
+.approvalMeta .sep{color:var(--borderStrong)}
+.approvalNote{
+  font-size:12.5px;color:var(--ink);margin-top:7px;padding-left:10px;
+  border-left:2px solid var(--gold);
+}
+.approvalActions{margin-left:auto;display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+.approvalConfirm{
+  display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+  margin-top:11px;font-size:12px;color:var(--ink);
+}
+.approvalSeen{margin-top:7px}
+.approvalSeenHead{font-size:11px;font-weight:700;color:var(--posText);letter-spacing:.04em}
+.approvalSeenRow{font-size:11.5px;color:#3D6355;font-variant-numeric:tabular-nums}
+.approvalSeenRow .sep{color:#9FBCB0}
+.expiredOn{color:var(--danText);font-weight:700}
 
 /* ---------- info tooltip (?) ---------- */
 .infoTip{position:relative;display:inline-flex;vertical-align:middle;margin-left:5px;line-height:0}

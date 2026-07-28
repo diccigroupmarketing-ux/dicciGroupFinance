@@ -9,6 +9,7 @@ import { ensureOrderUploadsTable } from "./orderUploadsSchema";
 import { ensureBillConflictsTable } from "./billConflictsSchema";
 import { ensureAppEventsTable } from "./audit";
 import { ensureBankTable } from "./bank";
+import { ensureResolutionTables } from "./resolutionsSchema";
 
 export interface SkuInput {
   sku: string;
@@ -166,10 +167,17 @@ export async function saveGifts(sku: string, gifts: GiftInput[]): Promise<number
 // reset_db Python; selebihnya jadual era webApp (app_events log Activity,
 // order_uploads jejak vouch, bank_deposits pengesahan bank, bill_line_conflicts
 // baris kuarantin) ditambah supaya reset benar benar bersih, bukan tinggal baki.
+//
+// recon_resolutions + recon_resolution_events MASUK senarai ni (berbeza dari
+// deleteUpload, lihat nota di sana): reset = buang SEMUA data transaksi, jadi
+// subjek setiap resolution memang lenyap sepenuhnya. Tinggalkan ia = barisan
+// kes yatim yang menuding pada order yang dah tiada. Reset pula admin sahaja +
+// perlu ALLOW_STORE_RESET=1, jadi ia tindakan sengaja, bukan kemalangan.
 const RESET_TABLES = [
   "orders", "order_skus", "cod_bill_lines", "cod_bills",
   "wallet_txns", "prepaid_payments",
   "app_events", "order_uploads", "bank_deposits", "bill_line_conflicts",
+  "recon_resolution_events", "recon_resolutions",
 ];
 
 export async function resetStore(): Promise<void> {
@@ -180,6 +188,7 @@ export async function resetStore(): Promise<void> {
   await ensureOrderUploadsTable();
   await ensureBankTable();
   await ensureBillConflictsTable();
+  await ensureResolutionTables();
   const client = await getPool().connect();
   try {
     await client.query("BEGIN");
@@ -329,6 +338,24 @@ export async function deleteUpload(file: string): Promise<DeleteUploadResult> {
     // dgn cara cod_bill_lines/prepaid/wallet dipadam ikut source_file.
     const conflicts = await client.query(
       "DELETE FROM bill_line_conflicts WHERE source_file = $1", [f]);
+    // ---- LAPISAN RESOLUTION: SENGAJA TIADA CASCADE ----
+    // recon_resolutions / recon_resolution_events TIDAK dipadam di sini, walaupun
+    // subjeknya (order / awb) baru je lenyap bersama fail ni.
+    //
+    // Sebabnya: resolution ialah rekod KEPUTUSAN MANUSIA, bukan data fail. Padam
+    // fail tak boleh padam bukti siapa settle apa. Kalau ia cascade, wujud lubang
+    // yang boleh dipakai untuk sorok jejak sepenuhnya:
+    //   upload fail sampah -> settle baris pengecualiannya -> padam fail
+    //   -> semua bukti maker/checker lesap, macam tak pernah berlaku.
+    // Dengan tak cascade, kes tu jadi "orphan" (subjeknya tiada dalam populasi
+    // exception), dikira dan dilapor masa BACA (lihat ResolutionAggregate.orphanN
+    // dalam lib/resolutions.ts). Ia kekal boleh diaudit, tak dikira settled, dan
+    // tak menyorok apa apa duit.
+    //
+    // Kes ni BERBEZA dari bank_deposits di atas (yang memang dipadam): deposit
+    // bank ialah FAKTA duit yang terikat pada bil, dan kalau ia bangkit semula
+    // ia menyembunyikan variance. Resolution pula tak pernah menyentuh duit,
+    // jadi ia tak boleh menyorok apa apa dengan hidup lebih lama.
     await client.query("COMMIT");
     const n = (r: { rowCount: number | null }) => r.rowCount ?? 0;
     const out = {

@@ -1,6 +1,11 @@
 import Sidebar from "@/components/Sidebar";
+import { pendingApprovals } from "@/components/resolveServer";
 
-export default function ImpactLayout({ children }: { children: React.ReactNode }) {
+export default async function ImpactLayout({ children }: { children: React.ReactNode }) {
+  // Kiraan kes yang menunggu kelulusan, untuk lencana sidebar. Satu SELECT atas
+  // jadual kawalan yang kecil, dan ia menelan ralatnya sendiri (resolveServer),
+  // jadi lencana tak pernah boleh merosakkan render page.
+  const waiting = await pendingApprovals();
   return (
     <>
       {/* Set keadaan rail sebelum paint supaya sidebar tak "flash" buka -> tutup bila reload */}
@@ -11,7 +16,7 @@ export default function ImpactLayout({ children }: { children: React.ReactNode }
         }}
       />
       <div className="shell">
-        <Sidebar />
+        <Sidebar pendingApprovals={waiting.n} />
         <main className="main">
           <div className="pageWrap">{children}</div>
         </main>

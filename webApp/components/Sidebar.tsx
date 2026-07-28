@@ -44,6 +44,11 @@ const ICONS: Record<string, React.ReactNode> = {
       <circle cx="9" cy="9" r="6" /><path d="m13.5 13.5 3 3" /><path d="M9 6.5v3M9 11.6v.1" />
     </svg>
   ),
+  review: (
+    <svg className="navIcon" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.7">
+      <path d="M4.5 3.5h11v13l-5.5-2.6-5.5 2.6z" /><path d="m7.5 8.5 1.8 1.8 3.2-3.4" />
+    </svg>
+  ),
   commission: (
     <svg className="navIcon" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.7">
       <circle cx="10" cy="6.5" r="3" /><path d="M3.5 16.5c.8-3 3.4-4.5 6.5-4.5s5.7 1.5 6.5 4.5" />
@@ -108,6 +113,7 @@ const GROUPS: NavGroupDef[] = [
       { key: "ninja", name: "Ninja Van", icon: "ninja", href: "/impact/streams/ninja" },
       { key: "chip", name: "CHIP", icon: "chip", href: "/impact/streams/chip" },
       { key: "notCollected", name: "Not collected", icon: "notCollected", href: "/impact/uncollected" },
+      { key: "review", name: "Review", icon: "review", href: "/impact/review" },
       { key: "bankTransfer", name: "Bank Transfer", icon: "bank", disabled: true, badge: "Soon" },
     ],
   },
@@ -196,7 +202,9 @@ function subscribeGroups(cb: () => void) {
   return () => { groupListeners.delete(cb); window.removeEventListener("storage", cb); };
 }
 
-export default function Sidebar() {
+// `pendingApprovals` = bilangan kes resolution yang menunggu checker. Dikira di
+// server (layout) dan dihantar masuk, sebab sidebar ni komponen client.
+export default function Sidebar({ pendingApprovals = 0 }: { pendingApprovals?: number }) {
   const path = usePathname();
   const { user } = useUser();
   const email = user?.primaryEmailAddress?.emailAddress ?? "";
@@ -252,9 +260,14 @@ export default function Sidebar() {
         </span>
       );
     }
+    // Lencana kiraan hidup: hanya dipapar bila memang ada kerja menunggu, jadi
+    // isyarat UI kekal jujur (tiada nombor hiasan).
+    const count = link.key === "review" ? pendingApprovals : 0;
     return (
-      <Link key={link.key} href={link.href!} className={cls(isActive(link))} title={tip(link.name)}>
+      <Link key={link.key} href={link.href!} className={cls(isActive(link))}
+        title={count > 0 ? `${link.name} · ${count} awaiting approval` : tip(link.name)}>
         {ICONS[link.icon]} <span className="navText">{link.name}</span>
+        {count > 0 && <span className="navBadge navBadgeCount">{count}</span>}
       </Link>
     );
   };

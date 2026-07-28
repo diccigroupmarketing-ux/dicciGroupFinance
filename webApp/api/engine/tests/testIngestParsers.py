@@ -1444,5 +1444,222 @@ class TestFighterRealSamplePassesGuard(unittest.TestCase):
             conn.close()
 
 
+# =====================================================================
+# 18. Guard pintu lajur SEMUA feed (guard_feed_columns). Lubang yang ditutup:
+#     detect() kenal feed dengan SATU lajur tandatangan sahaja, jadi laporan LAIN
+#     dari kurier yang sama (contoh laporan "balance" Ninja: ada "Global Shipper
+#     ID", tiada "Tracking ID"/"COD Amount"/net) masuk ke parser bil dan meletup
+#     jadi KeyError MENTAH , kerani nampak "server error" tanpa sebab.
+#     Sekarang: reason=missing_columns, mesej sebut lajur mana hilang, TIADA baris
+#     ditulis, satu baris cap jari ke ingest_rejections.
+#     Semua fixture di bahagian ni SINTETIK.
+# =====================================================================
+# Bentuk lajur laporan balance Ninja (nama lajur SAHAJA disalin dari fail sebenar,
+# semua NILAI rekaan , repo public, data-safe).
+_NV_BALANCE_COLS = ["Week", "Date", "tracking_id", "granular_status",
+                    "goods_amount", "from_name", "Global Shipper ID", "to_name",
+                    "success_route_id", "Completed date", "Shipper name",
+                    "delivery_type", "Rate", "MYR_Amount", "Currency"]
+
+
+def _nv_balance_df(rows=2):
+    """DataFrame bentuk laporan balance Ninja (nilai rekaan sepenuhnya)."""
+    return pd.DataFrame({
+        "Week": [20260105] * rows,
+        "Date": [46027] * rows,                       # nombor siri Excel
+        "tracking_id": ["NVMYTESTNV%07d" % i for i in range(rows)],
+        "granular_status": ["Completed"] * rows,
+        "goods_amount": [100] * rows,
+        "from_name": ["Rekaan Sdn Bhd"] * rows,
+        "Global Shipper ID": [10000000] * rows,
+        "to_name": ["Nama Rekaan"] * rows,
+        "success_route_id": [80000000] * rows,
+        "Completed date": [46027] * rows,
+        "Shipper name": ["REKAAN SDN BHD"] * rows,
+        "delivery_type": ["Domestic"] * rows,
+        "Rate": [1] * rows,
+        "MYR_Amount": [100] * rows,
+        "Currency": ["MYR"] * rows,
+    })
+
+
+class TestNinjaBalanceRejected(unittest.TestCase):
+    """Fail dengan cap jari Ninja tapi lajur SALAH mesti ditolak sopan."""
+
+    def setUp(self):
+        self.eng = create_engine("sqlite://")
+        self.conn = self.eng.connect()
+        db.init_db(self.conn)
+
+    def tearDown(self):
+        self.conn.close()
+
+    def _counts(self):
+        n = lambda t: self.conn.execute(text("SELECT COUNT(*) FROM " + t)).scalar()
+        return n("cod_bills"), n("cod_bill_lines")
+
+    def test_detected_as_ninja_by_signature(self):
+        # Sahkan premis ujian ni: fail memang JATUH ke laluan ninja (bukan unknown),
+        # jadi guard pintu betul betul yang menyelamatkannya.
+        self.assertEqual(ingest.detect(_nv_balance_df()), "ninja")
+
+    def test_missing_columns_not_raw_keyerror(self):
+        with self.assertRaises(ingest.IngestError) as cm:
+            ingest.ingest_ninja(_nv_balance_df(), "NINJA BALANCE.xlsx", self.conn)
+        self.assertEqual(cm.exception.reason, ingest.REASON_MISSING_COLUMNS)
+        self.assertEqual(cm.exception.detected_type, "ninja")
+
+    def test_message_names_every_missing_column(self):
+        with self.assertRaises(ingest.IngestError) as cm:
+            ingest.ingest_ninja(_nv_balance_df(), "NINJA BALANCE.xlsx", self.conn)
+        msg = cm.exception.message
+        for col in (ingest.NV_TRACK, ingest.NV_COD, ingest.NV_NET,
+                    ingest.NV_COMPLETE, ingest.NV_PICKUP):
+            self.assertIn(col, msg)
+
+    def test_nothing_written_not_even_bill_header(self):
+        with self.assertRaises(ingest.IngestError):
+            ingest.ingest_ninja(_nv_balance_df(), "NINJA BALANCE.xlsx", self.conn)
+        self.assertEqual(self._counts(), (0, 0))
+
+    def test_ingest_bytes_returns_reason_and_logs_rejection(self):
+        # Laluan sebenar yang route upload guna: TIADA exception naik, hanya
+        # IngestResult berkod + satu baris tolakan.
+        buf = io.BytesIO()
+        _nv_balance_df().to_excel(buf, index=False)
+        res = ingest.ingest_bytes(buf.getvalue(), "NINJA BALANCE.xlsx", self.conn)
+        self.assertIsNone(res.kind)
+        self.assertEqual(res.rows, 0)
+        self.assertEqual(res.reason, ingest.REASON_MISSING_COLUMNS)
+        self.assertIn(ingest.NV_TRACK, res.message)
+        self.assertEqual(self._counts(), (0, 0))
+        rej = self.conn.execute(
+            text("SELECT reason, columns_json FROM ingest_rejections")).fetchall()
+        self.assertEqual(len(rej), 1)
+        self.assertEqual(rej[0][0], ingest.REASON_MISSING_COLUMNS)
+        # Cap jari simpan nama LAJUR sahaja, tiada nilai baris (selamat PII).
+        self.assertIn("tracking_id", rej[0][1])
+        self.assertNotIn("Nama Rekaan", rej[0][1])
+
+
+class TestFeedColumnGuardAllFeeds(unittest.TestCase):
+    """Guard sama dipasang untuk semua parser bil, bukan Ninja sahaja."""
+
+    def setUp(self):
+        self.eng = create_engine("sqlite://")
+        self.conn = self.eng.connect()
+        db.init_db(self.conn)
+
+    def tearDown(self):
+        self.conn.close()
+
+    def _bills(self):
+        return self.conn.execute(text("SELECT COUNT(*) FROM cod_bills")).scalar()
+
+    def test_jnt_missing_money_column_rejected(self):
+        df = _jnt_df([("1234567890", "100.00", "5.00")]).drop(columns=[ingest.J_COD])
+        with self.assertRaises(ingest.IngestError) as cm:
+            ingest.ingest_jnt(df, "JTMYAAA-20260618.xlsx", self.conn)
+        self.assertEqual(cm.exception.reason, ingest.REASON_MISSING_COLUMNS)
+        self.assertIn(ingest.J_COD, cm.exception.message)
+        self.assertEqual(self._bills(), 0)     # header bil pun tak ditulis
+
+    def test_dhl_header_without_amount_rejected(self):
+        parsed = {"meta": {"Payment Reference": "TESTPAYREF001",
+                           "Payment Date": "20260618"},
+                  "header": ["No.", "Delivery Date", "Customer Reference ID"],
+                  "rows": [["1", "18.06.2026", "TESTREF001"]]}
+        with self.assertRaises(ingest.IngestError) as cm:
+            ingest.ingest_dhl(parsed, "advice.xls", self.conn)
+        self.assertEqual(cm.exception.reason, ingest.REASON_MISSING_COLUMNS)
+        self.assertIn(ingest.D_COD, cm.exception.message)
+        self.assertEqual(self._bills(), 0)
+
+    def test_chip_without_type_column_rejected(self):
+        df = pd.DataFrame({ingest.C_REF: ["FIGHTER-1001"],
+                           ingest.C_AMOUNT: ["100.00"]})
+        with self.assertRaises(ingest.IngestError) as cm:
+            ingest.ingest_chip(df, "chipStatement2026-07-16.xlsx", self.conn)
+        self.assertEqual(cm.exception.reason, ingest.REASON_MISSING_COLUMNS)
+        self.assertIn(ingest.C_TYPE, cm.exception.message)
+
+    def test_wallet_without_amount_column_rejected(self):
+        df = pd.DataFrame({ingest.W_TXN: ["TXN1"], ingest.W_DATE: ["10:00:00 18/06/2026"],
+                           ingest.W_SELLER: ["Rekaan"], ingest.W_TYPE: ["IN"],
+                           ingest.W_SOURCE: ["Sales"], ingest.W_STATUS: ["Approved"]})
+        with self.assertRaises(ingest.IngestError) as cm:
+            ingest.ingest_wallet(df, "wallet.xlsx", self.conn)
+        self.assertEqual(cm.exception.reason, ingest.REASON_MISSING_COLUMNS)
+        self.assertIn(ingest.W_AMOUNT, cm.exception.message)
+
+    def test_full_column_files_still_pass(self):
+        # Guard tak boleh terlalu ketat: bil J&T lengkap mesti tetap masuk.
+        n = ingest.ingest_jnt(_jnt_df([("1234567890", "100.00", "5.00")]),
+                              "JTMYAAA-20260618.xlsx", self.conn)
+        self.assertEqual(n, 1)
+
+    def test_guard_is_silent_for_unregistered_kind(self):
+        # Kind tak berdaftar = guard tak campur (tiada kesan sampingan).
+        ingest.guard_feed_columns("tiada_feed_ni", ["apa apa"])
+
+    def test_guard_handles_none_columns(self):
+        # Header None (advice rosak) tak boleh crash guard itu sendiri.
+        with self.assertRaises(ingest.IngestError) as cm:
+            ingest.guard_feed_columns("dhl", None)
+        self.assertEqual(cm.exception.reason, ingest.REASON_MISSING_COLUMNS)
+
+
+# Fail Ninja balance SEBENAR (gitignored) mesti ditolak dengan sebab berkod, dan
+# SOA Ninja sebenar mesti tetap LULUS , bukti guard tepat, bukan sekadar ketat.
+_SAMPLE_NV_BALANCE = os.path.join(_SAMPLE_NONBILL, "ninjaBalance20260728.xlsx")
+_SAMPLE_NV_SOA = os.path.abspath(
+    os.path.join(ENGINE_DIR, "..", "..", "..", "data", "sampel",
+                 "ninjaSoa20260709.xlsx"))
+
+
+@unittest.skipUnless(os.path.exists(_SAMPLE_NV_BALANCE),
+                     "sampel Ninja balance (gitignored) tiada, langkau")
+class TestNinjaBalanceRealSample(unittest.TestCase):
+    def test_real_balance_file_rejected_cleanly(self):
+        with open(_SAMPLE_NV_BALANCE, "rb") as fh:
+            data = fh.read()
+        eng = create_engine("sqlite://")
+        conn = eng.connect()
+        db.init_db(conn)
+        try:
+            res = ingest.ingest_bytes(data, os.path.basename(_SAMPLE_NV_BALANCE), conn)
+            self.assertIsNone(res.kind)
+            self.assertEqual(res.reason, ingest.REASON_MISSING_COLUMNS)
+            self.assertEqual(res.detected_type, "ninja")
+            self.assertEqual(conn.execute(text(
+                "SELECT COUNT(*) FROM cod_bill_lines")).scalar(), 0)
+            self.assertEqual(conn.execute(text(
+                "SELECT COUNT(*) FROM cod_bills")).scalar(), 0)
+            self.assertEqual(conn.execute(text(
+                "SELECT COUNT(*) FROM ingest_rejections")).scalar(), 1)
+        finally:
+            conn.close()
+
+
+@unittest.skipUnless(os.path.exists(_SAMPLE_NV_SOA),
+                     "sampel Ninja SOA (gitignored) tiada, langkau")
+class TestNinjaSoaRealSamplePassesGuard(unittest.TestCase):
+    def test_real_soa_not_rejected(self):
+        with open(_SAMPLE_NV_SOA, "rb") as fh:
+            data = fh.read()
+        eng = create_engine("sqlite://")
+        conn = eng.connect()
+        db.init_db(conn)
+        try:
+            res = ingest.ingest_bytes(data, os.path.basename(_SAMPLE_NV_SOA), conn)
+            self.assertEqual(res.kind, "ninja")
+            self.assertEqual(res.reason, ingest.REASON_OK)
+            self.assertGreater(res.rows, 0)
+            self.assertEqual(conn.execute(text(
+                "SELECT COUNT(*) FROM ingest_rejections")).scalar(), 0)
+        finally:
+            conn.close()
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

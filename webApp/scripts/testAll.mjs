@@ -9,7 +9,8 @@
 //   2. Jana rujukan parity (parityDump -> scripts/parityPython.json).
 //   3. Suite tak-memadam: parityCheck, testStockistDetail, testBank,
 //      testReconEdgeCases.ts (suntik+buang perangkap sendiri).
-//   4. Suite memadam: restore, testMutations, restore, testUploads, restore akhir.
+//   4. Suite memadam: restore, testMutations, restore, testUploads, restore,
+//      testResolutions, restore akhir.
 //   5. Ringkasan PASS/FAIL; exit 1 kalau mana mana suite ATAU restore gagal.
 //
 // NOTA restore (deviasi dari resipi asal): restore = loadDevDb.py SAHAJA.
@@ -95,6 +96,9 @@ async function main() {
   // Lapisan tapis julat tarikh (read-only): ujian tulen + bukti All time = output
   // enjin. Tak menulis apa apa ke DB.
   record("testDateRange", run("testDateRange", "npx", ["tsx", "scripts/testDateRange.ts"]));
+  // Lapisan tapis julat tarikh untuk page Not collected (read-only, sama corak).
+  record("testUncollectedRange", run("testUncollectedRange",
+    "npx", ["tsx", "scripts/testUncollectedRange.ts"]));
 
   // 3b) Kes tepi enjin TS: suntik baris perangkap, semak kategori, buang balik.
   //     Ia bersihkan sendiri, tapi kita restore selepasnya sebagai jaring.
@@ -106,6 +110,11 @@ async function main() {
   record("testMutations", run("testMutations", "npx", ["tsx", "scripts/testMutations.ts"]));
   record("restore (pra-uploads)", restore("pra-uploads"));
   record("testUploads", run("testUploads", "npx", ["tsx", "scripts/testUploads.ts"]));
+  // Lapisan Resolution: menulis ke recon_resolutions dan mengubah SEMENTARA satu
+  // selling_price (untuk buktikan kes jadi stale), jadi ia duduk dalam kumpulan
+  // memadam dengan restore sebelum dan selepas.
+  record("restore (pra-resolutions)", restore("pra-resolutions"));
+  record("testResolutions", run("testResolutions", "npx", ["tsx", "scripts/testResolutions.ts"]));
   record("restore (akhir)", restore("akhir"));
 
   // 5) Ringkasan.

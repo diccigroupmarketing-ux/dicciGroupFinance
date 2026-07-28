@@ -1,14 +1,23 @@
 import Link from "next/link";
+import { currentUser } from "@clerk/nextjs/server";
 import {
-  COURIERS, PREPAID, REMIT_PENDING_DAYS, StreamKey, PrepaidKey,
+  COURIERS, KAT_LABEL, PREPAID, REMIT_PENDING_DAYS, StreamKey, PrepaidKey,
   uncollectedCourier, ghostPrepaid, storeCounts, lastIngest, reconTodayYmd,
   type UncollectedStream,
 } from "@/lib/recon";
+import { uncollectedCourierRanged, ghostPrepaidRanged } from "@/lib/uncollectedRange";
+import { isAllTime, parseDateRange, presetRanges, streamQuery } from "@/lib/dateRange";
+import { isAdmin } from "@/lib/mutations";
 import { fmtDate, fmtInt, fmtRM } from "@/lib/format";
 import AgingControl from "@/components/AgingControl";
+import DateRangeFilter from "@/components/DateRangeFilter";
 import InfoTip from "@/components/InfoTip";
 import NotCollectedTable from "@/components/NotCollectedTable";
 import GhostTable from "@/components/GhostTable";
+import {
+  contextsFor, ghostTargets, mergeContexts, notCollectedTargets, reasonOptionsUI,
+  resolveLimits,
+} from "@/components/resolveServer";
 
 export const dynamic = "force-dynamic";
 
@@ -24,12 +33,37 @@ function parseTab(v: string | undefined): "chase" | "ghost" {
   return v === "ghost" ? "ghost" : "chase";
 }
 
+// Bentuk yang page pakai: output enjin + dua kaunter "tiada tarikh order" untuk
+// nota jujur bar penapis. Laluan All time bekalkan 0 sebab tiada apa ditapis.
+type UncollectedView = UncollectedStream & {
+  undatedNotCollected: number; undatedGhost: number;
+};
+const withoutUndated = (s: UncollectedStream): UncollectedView =>
+  ({ ...s, undatedNotCollected: 0, undatedGhost: 0 });
+
 export default async function UncollectedPage(
-  { searchParams }: { searchParams: Promise<{ tab?: string; pending?: string }> },
+  { searchParams }: {
+    searchParams: Promise<{ tab?: string; pending?: string; from?: string; to?: string }>;
+  },
 ) {
   const sp = await searchParams;
   const tab = parseTab(sp.tab);
   const pending = parsePending(sp.pending);
+  // Julat tarikh ORDER, peraturan sama macam Dashboard + page stream. Tiada
+  // param = All time = laluan enjin lama, angka identik macam sebelum ni.
+  const range = parseDateRange(sp);
+  const scoped = !isAllTime(range);
+  // Param lain yang WAJIB dikekalkan bila julat ditukar (dan sebaliknya). Nilai
+  // lalai sengaja ditinggal supaya URL kekal bersih.
+  const keep = {
+    tab: tab === "chase" ? undefined : tab,
+    pending: pending === REMIT_PENDING_DAYS ? undefined : pending,
+  };
+  // Query untuk link dalam page (tab + aging) supaya tekan satu kawalan tak
+  // buang julat tarikh yang sedang aktif.
+  const qs = (t: "chase" | "ghost") =>
+    streamQuery({ tab: t, pending }, range);
+  const presets = presetRanges(reconTodayYmd());
 
   const counts = await storeCounts();
   if (counts.orders === 0) {
@@ -50,14 +84,35 @@ export default async function UncollectedPage(
   // gateway prepaid menyumbang ghost sahaja (tiada aging).
   const courierKeys = Object.keys(COURIERS) as StreamKey[];
   const prepaidKeys = Object.keys(PREPAID) as PrepaidKey[];
+  // Julat aktif = lapisan tapis read-only atas tmp_m yang SAMA
+  // (lib/uncollectedRange). Tiada julat = fungsi enjin lama, sifar perubahan
+  // (kiraan tanpa tarikh 0 sebab nota "tiada tarikh" cuma bermakna bila menapis).
+  const courierOf = (k: StreamKey): Promise<UncollectedView> => scoped
+    ? uncollectedCourierRanged(k, pending, range)
+    : uncollectedCourier(k, pending).then(withoutUndated);
+  const prepaidOf = (k: PrepaidKey): Promise<UncollectedView> => scoped
+    ? ghostPrepaidRanged(k, range)
+    : ghostPrepaid(k).then(withoutUndated);
   const [asOf, courierStreams, prepaidStreams] = await Promise.all([
     lastIngest(),
-    Promise.all(courierKeys.map((k) => uncollectedCourier(k, pending))),
-    Promise.all(prepaidKeys.map((k) => ghostPrepaid(k))),
+    Promise.all(courierKeys.map(courierOf)),
+    Promise.all(prepaidKeys.map(prepaidOf)),
   ]);
-  const allGhostStreams: UncollectedStream[] = [...courierStreams, ...prepaidStreams];
+  const allGhostStreams: UncollectedView[] = [...courierStreams, ...prepaidStreams];
 
   const asOfDate = reconTodayYmd();
+
+  // Lapisan Resolution. Satu konteks per stream, dicantum jadi satu supaya page
+  // silang kurier ni boleh mencari fakta hidup mana mana baris. Kalau tiada kes
+  // hidup langsung, ia murah (backbone tak menyentuh enjin recon).
+  const user = await currentUser();
+  const actor = user?.primaryEmailAddress?.emailAddress ?? "unknown";
+  const limits = resolveLimits(isAdmin(actor), asOfDate, actor);
+  const reasons = reasonOptionsUI();
+  const ctxs = await contextsFor(
+    [...courierKeys, ...prepaidKeys] as string[], asOfDate, pending);
+  const merged = mergeContexts(ctxs, asOfDate);
+  const katLabel = (k: string) => KAT_LABEL[k] ?? k;
 
   // Tab 1: overdue + awaiting (kurier sahaja).
   const overdueRows = courierStreams.flatMap((s) => s.overdueRows);
@@ -73,9 +128,25 @@ export default async function UncollectedPage(
   const ghostValue = allGhostStreams.reduce((a, s) => a + s.ghostValue, 0);
   const ghostLabels = allGhostStreams.filter((s) => s.ghostN > 0).map((s) => s.courier);
 
+  // Item tanpa tarikh order, dikira per tab supaya nota jujur bar penapis sebut
+  // jumlah yang betul untuk apa yang sedang dipandang. Tab chase = order yang
+  // feednya tiada tarikh. Tab ghost = SEMUA baris ghost (ia baris bil tanpa
+  // order, jadi memang tiada tarikh order langsung).
+  const undatedChase = courierStreams.reduce((a, s) => a + s.undatedNotCollected, 0);
+  const undatedGhost = allGhostStreams.reduce((a, s) => a + s.undatedGhost, 0);
+
+  // Sasaran resolve, dikunci supaya jadual client boleh mencarinya selepas
+  // menapis. Dikira lepas baris dikumpul supaya ia meliputi kedua dua tab.
+  const ncTargets = notCollectedTargets(
+    [...overdueRows, ...awaitingRows], merged, katLabel);
+  const gTargets = ghostTargets(ghostRows, merged, katLabel);
+
   return (
     <>
       <Header asOf={asOf} asOfDate={asOfDate} />
+
+      <DateRangeFilter basePath="/impact/uncollected" range={range} presets={presets}
+        keep={keep} undatedRows={tab === "chase" ? undatedChase : undatedGhost} />
 
       <div className="cauPanel" style={{ marginBottom: 14 }}>
         <div>
@@ -83,18 +154,23 @@ export default async function UncollectedPage(
           <p>An overdue order may just mean its courier bill has not been uploaded yet,
             not that money is missing. This page is read-only: use it to see what to
             chase, no editing.</p>
+          {scoped && (
+            <p>The date range picks which orders are listed. It does not change how
+              overdue is worked out: aging still runs from {fmtDate(asOfDate)} and the
+              same {pending} day threshold.</p>
+          )}
         </div>
       </div>
 
       <div className="segRow" role="tablist" aria-label="View" style={{ marginBottom: 14 }}>
         <Link role="tab" aria-selected={tab === "chase"}
           className={"segBtn" + (tab === "chase" ? " active" : "")}
-          href={`/impact/uncollected?tab=chase&pending=${pending}`}>
+          href={`/impact/uncollected?${qs("chase")}`}>
           Not collected
         </Link>
         <Link role="tab" aria-selected={tab === "ghost"}
           className={"segBtn" + (tab === "ghost" ? " active" : "")}
-          href={`/impact/uncollected?tab=ghost&pending=${pending}`}>
+          href={`/impact/uncollected?${qs("ghost")}`}>
           Ghost money
         </Link>
       </div>
@@ -107,7 +183,8 @@ export default async function UncollectedPage(
                 <InfoTip text="Completed orders past the aging threshold with no matching bill, counted per courier. Each courier is shown on its own, not blended into one figure." />
               </div>
               <div className="cardHint">expected from orders · past {pending} days, no bill</div>
-              <AgingControl pending={pending} basePath="/impact/uncollected" extraQuery="tab=chase" />
+              <AgingControl pending={pending} basePath="/impact/uncollected"
+                extraQuery={streamQuery({ tab: "chase" }, range)} />
             </div>
             <div className="tableWrap">
               <table>
@@ -151,11 +228,24 @@ export default async function UncollectedPage(
             <NotCollectedTable
               overdue={overdueRows} awaiting={awaitingRows}
               couriers={courierLabels}
-              overdueTotalN={overdueTotalN} awaitingTotalN={awaitingTotalN} />
+              overdueTotalN={overdueTotalN} awaitingTotalN={awaitingTotalN}
+              targets={ncTargets} reasons={reasons} limits={limits} />
           )}
         </>
       ) : (
         <>
+          {scoped && (
+            <div className="cauPanel" style={{ marginBottom: 14 }}>
+              <div>
+                <b>The date range does not narrow ghost money.</b>
+                <p>Every line here is money on a bill with no matching order, so it
+                  carries no order date at all. Hiding it inside a date range would
+                  make money disappear with no honest reason, so the full list stays
+                  visible whatever range you pick.</p>
+              </div>
+            </div>
+          )}
+
           <div className="card" style={{ marginBottom: 14 }}>
             <div className="cardHead">
               <div className="cardTitle">Ghost money total</div>
@@ -169,7 +259,8 @@ export default async function UncollectedPage(
             </div>
           </div>
 
-          <GhostTable rows={ghostRows} totalN={ghostTotalN} couriers={ghostLabels} />
+          <GhostTable rows={ghostRows} totalN={ghostTotalN} couriers={ghostLabels}
+            targets={gTargets} reasons={reasons} limits={limits} />
         </>
       )}
 

@@ -1,10 +1,15 @@
 "use client";
 
-import { useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { fmtDate, fmtDay, fmtInt, fmtRM, trackingOrDash } from "@/lib/format";
 import ExportCsv from "@/components/ExportCsv";
 import InfoTip from "@/components/InfoTip";
+import ResolveButton from "@/components/ResolveButton";
+import { badgeState } from "@/components/resolveTypes";
+import type {
+  ReasonOptionUI, ResolveLimits, ResolveTarget,
+} from "@/components/resolveTypes";
 
 const BILL_COLS = [
   { key: "bill_id", header: "Bill" }, { key: "settlement_date", header: "Settled" },
@@ -31,7 +36,7 @@ export type BillRow = {
 
 type Parcel = {
   awb: string | null; order_id: string | null; seller_name: string | null;
-  katLabel: string; katTone: "pos" | "cau" | "dan" | "mut";
+  kategori: string; katLabel: string; katTone: "pos" | "cau" | "dan" | "mut";
   selling_price: number | null; cod_amount: number | null;
   fee: number | null; remit: number | null;
 };
@@ -75,8 +80,15 @@ function DepositLabel({ depositedOn, settlementDate }: {
 }
 
 export default function BillsTable({
-  rows, courierName, streamKey,
-}: { rows: BillRow[]; courierName: string; streamKey: string }) {
+  rows, courierName, streamKey, reasons, limits,
+}: {
+  rows: BillRow[]; courierName: string; streamKey: string;
+  // Lapisan Resolution. Semua nilai ni dikira di server (reasonOptionsUI() /
+  // resolveLimits()) dan diturunkan sebagai data biasa, supaya fail "use client"
+  // ni tak pernah mengimport lib/resolutions (yang tarik `pg` masuk bundle).
+  reasons: ReasonOptionUI[];
+  limits: ResolveLimits;
+}) {
   const router = useRouter();
   const [editing, setEditing] = useState<string | null>(null);
   const [amount, setAmount] = useState("");
@@ -88,23 +100,40 @@ export default function BillsTable({
   // Drill parcel per bil (on-demand).
   const [openBill, setOpenBill] = useState<string | null>(null);
   const [parcels, setParcels] = useState<Record<string, Parcel[]>>({});
+  // Sasaran Resolution per bil, SEJAJAR indeks dengan parcels[bill_id].
+  // null = baris tu memang tak boleh diresolve (tally, atau tiada id).
+  const [targets, setTargets] = useState<Record<string, (ResolveTarget | null)[]>>({});
   const [loadingBill, setLoadingBill] = useState<string | null>(null);
+
+  const loadBill = useCallback(async (bill_id: string) => {
+    setLoadingBill(bill_id);
+    try {
+      const res = await fetch(`/api/billParcels?key=${encodeURIComponent(streamKey)}&bill=${encodeURIComponent(bill_id)}`);
+      const j = await res.json();
+      setParcels((p) => ({ ...p, [bill_id]: res.ok ? (j.rows ?? []) : [] }));
+      setTargets((t) => ({ ...t, [bill_id]: res.ok ? (j.targets ?? []) : [] }));
+    } catch {
+      setParcels((p) => ({ ...p, [bill_id]: [] }));
+      setTargets((t) => ({ ...t, [bill_id]: [] }));
+    }
+    setLoadingBill(null);
+  }, [streamKey]);
 
   const toggle = async (bill_id: string) => {
     if (openBill === bill_id) { setOpenBill(null); return; }
     setOpenBill(bill_id);
-    if (!parcels[bill_id]) {
-      setLoadingBill(bill_id);
-      try {
-        const res = await fetch(`/api/billParcels?key=${encodeURIComponent(streamKey)}&bill=${encodeURIComponent(bill_id)}`);
-        const j = await res.json();
-        setParcels((p) => ({ ...p, [bill_id]: res.ok ? (j.rows ?? []) : [] }));
-      } catch {
-        setParcels((p) => ({ ...p, [bill_id]: [] }));
-      }
-      setLoadingBill(null);
-    }
+    if (!parcels[bill_id]) await loadBill(bill_id);
   };
+
+  // Drill di-cache di client, jadi router.refresh() (dipanggil ResolveButton
+  // selepas satu kes dicadang atau ditarik balik) tak menyentuhnya. Bila data
+  // server disegarkan, prop `rows` jadi objek baru , itu isyarat kita muat
+  // semula bil yang sedang terbuka supaya chip keadaan muncul serta merta.
+  const openRef = useRef<string | null>(null);
+  useEffect(() => { openRef.current = openBill; }, [openBill]);
+  useEffect(() => {
+    if (openRef.current) void loadBill(openRef.current);
+  }, [rows, loadBill]);
 
   const open = (r: BillRow) => {
     setEditing(r.bill_id);
@@ -188,6 +217,7 @@ export default function BillsTable({
               const variance = has ? Math.round((r.net - r.actual!) * 100) / 100 : null;
               const isOpen = openBill === r.bill_id;
               const list = parcels[r.bill_id];
+              const tlist = targets[r.bill_id] ?? [];
               return (
                 <FragmentRow key={r.bill_id}>
                   <tr>
@@ -298,11 +328,21 @@ export default function BillsTable({
                                   <th>AWB</th><th>Order</th><th>Stockist</th><th>Status</th>
                                   <th className="num">Selling</th><th className="num">COD</th>
                                   <th className="num">Fee</th><th className="num">Remit</th>
+                                  <th>Resolution
+                                    <InfoTip text="Record why a parcel that does not tally can be closed. It only adds a label and an approval trail, it never changes the figures on this row." />
+                                  </th>
                                 </tr>
                               </thead>
                               <tbody>
-                                {list.map((p, i) => (
-                                  <tr key={`${p.awb ?? p.order_id}-${i}`}>
+                                {list.map((p, i) => {
+                                  // Sasaran datang SEJAJAR indeks dari server, jadi
+                                  // jadual ni tak pernah mengarang kunci subjek.
+                                  const t = tlist[i] ?? null;
+                                  const st = t?.badge ? badgeState(t.badge) : null;
+                                  const dim = st === "settled" || st === "snoozed";
+                                  return (
+                                  <tr key={`${p.awb ?? p.order_id}-${i}`}
+                                    className={dim ? "rowResolved" : undefined}>
                                     <td>{trackingOrDash(p.awb)}</td>
                                     <td className="cellMain">{p.order_id ?? "—"}</td>
                                     <td>{p.seller_name ?? "—"}</td>
@@ -312,8 +352,21 @@ export default function BillsTable({
                                     <td className="num">{p.cod_amount != null ? fmtRM(p.cod_amount) : "—"}</td>
                                     <td className="num">{p.fee != null ? fmtRM(p.fee) : "—"}</td>
                                     <td className="num">{p.remit != null ? fmtRM(p.remit) : "—"}</td>
+                                    <td>
+                                      {p.kategori === "tally" ? (
+                                        <span className="cellSub"
+                                          title="This parcel matched the order exactly, so there is nothing to resolve.">—</span>
+                                      ) : t ? (
+                                        <ResolveButton target={t} reasons={reasons}
+                                          limits={limits} compact />
+                                      ) : (
+                                        <span className="cellSub"
+                                          title="This row cannot be resolved on its own.">—</span>
+                                      )}
+                                    </td>
                                   </tr>
-                                ))}
+                                  );
+                                })}
                               </tbody>
                             </table>
                             <div className="drillNote">

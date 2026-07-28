@@ -11,6 +11,11 @@ import { fmtDate, fmtInt, fmtRM, trackingOrDash } from "@/lib/format";
 import TableFilter from "@/components/TableFilter";
 import ExportCsv from "@/components/ExportCsv";
 import InfoTip from "@/components/InfoTip";
+import ResolveButton from "@/components/ResolveButton";
+import { badgeState } from "@/components/resolveTypes";
+import type {
+  ReasonOptionUI, ResolveLimits, ResolveTarget,
+} from "@/components/resolveTypes";
 
 export interface NotCollectedRowUI {
   order_id: string | null; order_date: string | null; seller_name: string | null;
@@ -58,22 +63,36 @@ function toCsv(rows: NotCollectedRowUI[], section: string) {
 
 export default function NotCollectedTable({
   overdue, awaiting, couriers, overdueTotalN, awaitingTotalN,
+  targets, reasons, limits,
 }: {
   overdue: NotCollectedRowUI[];
   awaiting: NotCollectedRowUI[];
   couriers: string[];
   overdueTotalN: number;
   awaitingTotalN: number;
+  // Lapisan Resolution: dikunci ikut order_id supaya tapisan client tak
+  // memutuskan pautan antara baris dan kes.
+  targets: Record<string, ResolveTarget>;
+  reasons: ReasonOptionUI[];
+  limits: ResolveLimits;
 }) {
   const [q, setQ] = useState("");
   const [seller, setSeller] = useState("");
   const [courier, setCourier] = useState("all");
   const [cohort, setCohort] = useState("all");
+  const [hideDone, setHideDone] = useState(false);
 
   const apply = useCallback((rows: NotCollectedRowUI[]) => {
     const needle = q.trim().toLowerCase();
     const sneedle = seller.trim().toLowerCase();
     return rows.filter((r) => {
+      if (hideDone && r.order_id) {
+        const b = targets[r.order_id]?.badge;
+        if (b) {
+          const st = badgeState(b);
+          if (st === "settled" || st === "snoozed") return false;
+        }
+      }
       if (courier !== "all" && r.courier !== courier) return false;
       if (!inCohort(r.umur_hari, cohort)) return false;
       if (sneedle && !(r.seller_name ?? "").toLowerCase().includes(sneedle)) return false;
@@ -83,7 +102,7 @@ export default function NotCollectedTable({
       }
       return true;
     });
-  }, [q, seller, courier, cohort]);
+  }, [q, seller, courier, cohort, hideDone, targets]);
 
   // Overdue: umur menurun (tertua dulu). Awaiting: umur menurun juga (paling
   // hampir jadi overdue di atas), tapi nadanya neutral.
@@ -98,6 +117,12 @@ export default function NotCollectedTable({
 
   const csvRows = [...toCsv(vOverdue, "Overdue"), ...toCsv(vAwaiting, "Awaiting remit")];
   const filtering = q.trim() || seller.trim() || courier !== "all" || cohort !== "all";
+  const closedN = useMemo(() => [...overdue, ...awaiting].filter((r) => {
+    const b = r.order_id ? targets[r.order_id]?.badge : undefined;
+    if (!b) return false;
+    const st = badgeState(b);
+    return st === "settled" || st === "snoozed";
+  }).length, [overdue, awaiting, targets]);
 
   return (
     <>
@@ -122,6 +147,19 @@ export default function NotCollectedTable({
           <ExportCsv rows={csvRows} columns={CSV_COLS} filename="not-collected.csv"
             label="Download CSV" />
         </div>
+        {closedN > 0 && (
+          <div className="resolveToolbar">
+            <label className="resolveToggle">
+              <input type="checkbox" checked={hideDone}
+                onChange={(e) => setHideDone(e.target.checked)} />
+              Hide settled and snoozed ({fmtInt(closedN)})
+            </label>
+            <span className="resolveToolbarNote">
+              Closed rows stay listed by default, so the counts here always match the
+              raw engine figures.
+            </span>
+          </div>
+        )}
       </div>
 
       <div className="sectionGap" />
@@ -139,7 +177,8 @@ export default function NotCollectedTable({
             {" · oldest first"}
           </div>
         </div>
-        <NotCollectedRows rows={vOverdue} tone="dan"
+        <NotCollectedRows rows={vOverdue} tone="dan" targets={targets}
+          reasons={reasons} limits={limits}
           empty="No overdue orders match these filters." />
       </div>
 
@@ -164,7 +203,8 @@ export default function NotCollectedTable({
               if the aging threshold passes with still no bill.</p>
           </div>
         </div>
-        <NotCollectedRows rows={vAwaiting} tone="mut"
+        <NotCollectedRows rows={vAwaiting} tone="mut" targets={targets}
+          reasons={reasons} limits={limits}
           empty="No awaiting-remit orders match these filters." />
       </div>
     </>
@@ -172,8 +212,13 @@ export default function NotCollectedTable({
 }
 
 function NotCollectedRows({
-  rows, tone, empty,
-}: { rows: NotCollectedRowUI[]; tone: "dan" | "mut"; empty: string }) {
+  rows, tone, empty, targets, reasons, limits,
+}: {
+  rows: NotCollectedRowUI[]; tone: "dan" | "mut"; empty: string;
+  targets: Record<string, ResolveTarget>;
+  reasons: ReasonOptionUI[];
+  limits: ResolveLimits;
+}) {
   if (rows.length === 0) {
     return <div className="cellMuted">{empty}</div>;
   }
@@ -188,11 +233,17 @@ function NotCollectedRows({
             <th>Stockist</th>
             <th className="num">Expected from orders</th>
             <th>Tracking</th>
+            <th>Resolution</th>
           </tr>
         </thead>
         <tbody>
-          {rows.map((r, i) => (
-            <tr key={`${r.order_id ?? r.tracking}-${i}`}>
+          {rows.map((r, i) => {
+            const t = r.order_id ? targets[r.order_id] : undefined;
+            const st = t?.badge ? badgeState(t.badge) : null;
+            const dim = st === "settled" || st === "snoozed";
+            return (
+            <tr key={`${r.order_id ?? r.tracking}-${i}`}
+              className={dim ? "rowResolved" : undefined}>
               <td className="cellMain">{r.order_id ?? "—"}
                 <div className="cellSub">{fmtDate(r.order_date)}</div>
               </td>
@@ -211,8 +262,14 @@ function NotCollectedRows({
               </td>
               <td className="num">{r.selling_price != null ? fmtRM(r.selling_price) : "—"}</td>
               <td>{trackingOrDash(r.tracking)}</td>
+              <td>
+                {t
+                  ? <ResolveButton target={t} reasons={reasons} limits={limits} compact />
+                  : <span className="cellSub">—</span>}
+              </td>
             </tr>
-          ))}
+            );
+          })}
         </tbody>
       </table>
     </div>

@@ -172,6 +172,98 @@ def detect(df):
     return None
 
 
+# =====================================================================
+# Guard pintu lajur , feed DIKENALI tapi lajur wajib HILANG
+# ---------------------------------------------------------------------
+# "Apa maksudnya": detect() kenal satu feed dengan SATU lajur tandatangan sahaja.
+# Kurier hantar macam macam laporan lain yang kebetulan kongsi lajur tu. Contoh
+# sebenar (28 Jul 2026): laporan "balance" Ninja ada "Global Shipper ID"
+# (tandatangan feed Ninja) tapi TIADA "Tracking ID", "COD Amount", mahupun lajur
+# net. Parser terus capai lajur yang tak wujud, pandas lempar KeyError mentah, ia
+# naik sampai ke route upload, dan kerani cuma nampak "Upload failed due to a
+# server error" , sifar petunjuk apa yang salah dengan failnya.
+#
+# Sekarang setiap parser berhenti DI PINTU, sama corak dengan guard Fighter:
+# sebab berkod missing_columns, ayat English yang sebut lajur mana hilang + fail
+# ni dibaca sebagai apa, dan SATU baris cap jari selamat PII ke ingest_rejections
+# (nama lajur sahaja, tiada nilai baris). Tiada apa apa ditulis ke jadual duit.
+# Tambah kurier baru = tambah satu entri di sini, duduk sebelah FEEDS supaya tak
+# terlepas pandang.
+#
+# Senarai `required` SENGAJA hanya lajur yang parser betul betul capai TERUS.
+# Lajur yang parser dah handle lembut (`if X in df.columns`) TIDAK dimasukkan,
+# supaya guard tak jadi lebih ketat daripada parser sendiri dan tolak fail sah.
+# =====================================================================
+FEED_SCHEMA = {
+    "fighter": {
+        "label": "a Fighter orders export",
+        "hint": ("The Fighter export format may have changed, please check the "
+                 "file or contact admin."),
+        "required": [F_DATE, F_AMOUNT, F_COMM, F_ITEMCOUNT, F_SKUS],
+    },
+    "wallet": {
+        "label": "a Fighter Wallet export",
+        "hint": ("The Wallet export format may have changed, please check the "
+                 "file or contact admin."),
+        "required": [W_TXN, W_DATE, W_SELLER, W_TYPE, W_SOURCE, W_STATUS,
+                     W_AMOUNT],
+    },
+    "jnt": {
+        "label": "a J&T Express COD bill",
+        "hint": ("It looks like a different J&T report, not the COD bill this "
+                 "page reads. Please upload the COD bill (Excel or PDF "
+                 "statement), or contact admin."),
+        "required": [J_AWB, J_COD, J_FEE, J_DELIVERED, J_PICKUP],
+    },
+    "ninja": {
+        "label": "a Ninja Van COD statement of account",
+        "hint": ("It looks like a different Ninja Van report, for example a "
+                 "balance or parcel listing, not the COD statement of account "
+                 "this page reads. A balance listing has no payout amount, so "
+                 "it cannot prove money reached the bank. Please upload the COD "
+                 "statement of account, or contact admin."),
+        "required": [NV_TRACK, NV_COD, NV_NET, NV_COMPLETE, NV_PICKUP],
+    },
+    "dhl": {
+        "label": "a DHL eCommerce Payment Advice",
+        "hint": ("It looks like a different DHL document, not the Payment "
+                 "Advice this page reads. Please upload the Payment Advice, or "
+                 "contact admin."),
+        "required": [D_REF, D_COD, D_DELIVERED],
+    },
+    "chip": {
+        "label": "a CHIP payment statement",
+        "hint": ("The CHIP export format may have changed, please check the "
+                 "file or contact admin."),
+        "required": [C_TYPE, C_REF, C_AMOUNT],
+    },
+}
+
+
+def guard_feed_columns(kind, columns):
+    """Tolak fail yang padan cap jari `kind` tapi kurang lajur wajib.
+
+    `columns` = iterable nama lajur yang ADA dalam fail (df.columns untuk feed
+    jadual, senarai header untuk DHL). Lempar IngestError(missing_columns) yang
+    sebut nama LAJUR sahaja , tiada nilai baris, jadi selamat dilog. Senyap
+    (tiada kesan) bila semua lajur wajib hadir, atau bila `kind` tak berdaftar."""
+    spec = FEED_SCHEMA.get(kind)
+    if not spec:
+        return
+    # NOTA: jangan tulis `columns or []` , pandas Index lempar ValueError bila
+    # dinilai sebagai boolean. Semak None secara eksplisit.
+    have = {str(c).strip() for c in ([] if columns is None else columns)}
+    missing = [c for c in spec["required"] if c not in have]
+    if not missing:
+        return
+    raise IngestError(
+        REASON_MISSING_COLUMNS,
+        message=("This file was read as " + spec["label"] + ", but it is missing "
+                 "expected column(s): " + ", ".join(missing) + ". " + spec["hint"]
+                 + " Nothing was saved."),
+        detected_type=kind)
+
+
 # Cap jari NEGATIF: laporan status / pre-alert kurier (BUKAN bil bayaran). Ia ada
 # lajur STATUS penghantaran + pengenalan kiriman, tapi TIADA tandatangan bil mana
 # mana feed. Sengaja SEMPIT (status/tracking sahaja): apa apa lain jatuh ke
@@ -558,7 +650,10 @@ def _log_price_changes(conn, order_ids, new_prices, source_file):
 #                      logik dengan Guard 2 tapi untuk tarikh. Sel kosong sikit
 #                      sikit KEKAL dibenarkan (disimpan NULL); yang ditolak cuma
 #                      fail yang majoriti ordernya akan hilang aging sekali gus.
-F_REQUIRED_COLUMNS = [F_DATE, F_AMOUNT, F_COMM, F_ITEMCOUNT, F_SKUS]
+# Satu sumber kebenaran: senarai lajur wajib Fighter kini duduk dalam FEED_SCHEMA
+# (sebelah FEEDS) bersama semua feed lain. Alias ni dikekalkan sebab dokumen dan
+# kod sedia ada merujuk nama ni.
+F_REQUIRED_COLUMNS = FEED_SCHEMA["fighter"]["required"]
 
 # Ambang sel kosong satu lajur (duit dan tarikh kongsi ambang yang SAMA supaya
 # finance tak payah ingat dua nombor): LEBIH daripada ini = fail ditolak. Tepat
@@ -602,15 +697,11 @@ def _suspect_money_cells(series, numeric):
 
 def guard_fighter_columns(df):
     """Guard 1: lajur wajib Fighter mesti ada. Lempar IngestError(missing_columns)
-    dengan nama lajur yang hilang (nama LAJUR sahaja, tiada nilai baris)."""
-    missing = [c for c in F_REQUIRED_COLUMNS if c not in df.columns]
-    if missing:
-        raise IngestError(
-            REASON_MISSING_COLUMNS,
-            message=("File is missing expected column(s): " + ", ".join(missing)
-                     + ". The Fighter export format may have changed, please "
-                       "check the file or contact admin."),
-            detected_type="fighter")
+    dengan nama lajur yang hilang (nama LAJUR sahaja, tiada nilai baris).
+
+    Kini nipis sahaja di atas guard_feed_columns supaya SEMUA feed guna ayat dan
+    kod sebab yang sama; nama fungsi dikekalkan untuk pemanggil sedia ada."""
+    guard_feed_columns("fighter", df.columns)
 
 
 def guard_fighter_values(df, price_num, comm_num):
@@ -774,6 +865,9 @@ def _strip_dot0(series):
 
 
 def ingest_wallet(df, source_file, conn):
+    # Guard pintu DULU: lajur Wallet yang dicapai TERUS di bawah (tarikh, nama,
+    # jenis, sumber, status, amaun) mesti ada, kalau tak ia KeyError mentah.
+    guard_feed_columns("wallet", df.columns)
     w = pd.DataFrame({
         "txn_id": df[W_TXN].astype(str).str.replace(r"\.0$", "", regex=True).str.strip(),
         "txn_date": iso(db.parse_dt(df[W_DATE], dayfirst=True)),
@@ -899,6 +993,9 @@ def conflicts_count(conn, source_file):
 
 
 def ingest_jnt(df, source_file, conn, settlement_override=None):
+    # Guard pintu DULU (sebelum BILLS_UPSERT), supaya laporan J&T yang bukan bil
+    # tak tinggalkan baris bil kosong atau meletup jadi KeyError mentah.
+    guard_feed_columns("jnt", df.columns)
     # Buang baris AWB kosong (baris total/blank hujung bil), macam guard Ninja/DHL.
     # Kalau tak, NaN jadi string "NAN" dan padan dengan semua order tanpa tracking.
     df = df[df[J_AWB].notna()].copy()
@@ -1096,6 +1193,10 @@ def parse_dhl(data):
 
 def ingest_dhl(parsed, source_file, conn):
     meta, header, rows = parsed["meta"], parsed["header"], parsed["rows"]
+    # Guard pintu atas HEADER advice (bukan df): kalau lajur ref/amaun/tarikh tak
+    # ada, col() dulu pulang None senyap untuk setiap baris, jadi bil masuk penuh
+    # dengan RM0. Sekarang fail ditolak dengan sebab berkod.
+    guard_feed_columns("dhl", header)
     bill_id = meta.get("Payment Reference") or source_file.rsplit(".", 1)[0]
     settlement = _yyyymmdd(meta.get("Payment Date"))
     idx = {name: i for i, name in enumerate(header or [])}
@@ -1234,6 +1335,10 @@ def parse_nv_meta(filename):
 
 
 def ingest_ninja(df, source_file, conn):
+    # Guard pintu DULU, sebelum apa apa capaian lajur atau tulisan DB. Fail Ninja
+    # yang BUKAN COD SOA (contoh laporan balance) ada tandatangan "Global Shipper
+    # ID" tapi tiada lajur tracking/COD/net, dulu ia meletup jadi KeyError mentah.
+    guard_feed_columns("ninja", df.columns)
     df = df[df[NV_TRACK].notna()].copy()
     df = df[df[NV_TRACK].astype(str).str.upper().str.startswith("NV")]
     bill_id, settlement = parse_nv_meta(source_file)
@@ -1391,6 +1496,9 @@ def _dedup_chip_recs(recs):
 
 
 def ingest_chip(df, source_file, conn):
+    # Guard pintu DULU: statement CHIP tanpa lajur Type/Amount tak boleh dibaca
+    # sebagai bukti bayaran, tolak dengan sebab berkod bukan KeyError mentah.
+    guard_feed_columns("chip", df.columns)
     # Hanya baris 'purchase' = bayaran pelanggan masuk (disbursement diparkir).
     df = df[df[C_TYPE].astype(str).str.lower() == "purchase"].copy()
     df = df[df[C_REF].notna()]

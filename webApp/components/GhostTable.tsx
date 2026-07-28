@@ -10,6 +10,11 @@ import { fmtDate, fmtInt, fmtRM, trackingOrDash } from "@/lib/format";
 import TableFilter from "@/components/TableFilter";
 import ExportCsv from "@/components/ExportCsv";
 import InfoTip from "@/components/InfoTip";
+import ResolveButton from "@/components/ResolveButton";
+import { badgeState } from "@/components/resolveTypes";
+import type {
+  ReasonOptionUI, ResolveLimits, ResolveTarget,
+} from "@/components/resolveTypes";
 
 export interface GhostRowUI {
   awb: string | null; cod_amount: number | null; bill_id: string | null;
@@ -27,11 +32,15 @@ const CSV_COLS = [
 ];
 
 export default function GhostTable({
-  rows, totalN, couriers,
+  rows, totalN, couriers, targets, reasons, limits,
 }: {
   rows: GhostRowUI[];
   totalN: number;
   couriers: string[];
+  // Dikunci `${streamKey}:${awb}` (AWB sahaja tak unik merentas gateway).
+  targets: Record<string, ResolveTarget>;
+  reasons: ReasonOptionUI[];
+  limits: ResolveLimits;
 }) {
   const [q, setQ] = useState("");
   const [courier, setCourier] = useState("all");
@@ -104,12 +113,18 @@ export default function GhostTable({
                   <th>Bill</th>
                   <th>Settlement date</th>
                   <th className="num">Received from bill</th>
+                  <th>Resolution</th>
                   <th></th>
                 </tr>
               </thead>
               <tbody>
-                {visible.map((r, i) => (
-                  <tr key={`${r.awb ?? r.bill_id}-${i}`}>
+                {visible.map((r, i) => {
+                  const t = r.awb ? targets[`${r.streamKey}:${r.awb}`] : undefined;
+                  const st = t?.badge ? badgeState(t.badge) : null;
+                  const dim = st === "settled" || st === "snoozed";
+                  return (
+                  <tr key={`${r.awb ?? r.bill_id}-${i}`}
+                    className={dim ? "rowResolved" : undefined}>
                     <td className="cellMain">{trackingOrDash(r.awb)}</td>
                     <td>{r.courier}</td>
                     <td>{r.bill_id ?? "—"}
@@ -122,6 +137,11 @@ export default function GhostTable({
                     <td>{fmtDate(r.settlement_date)}</td>
                     <td className="num"><b>{r.cod_amount != null ? fmtRM(r.cod_amount) : "—"}</b></td>
                     <td>
+                      {t
+                        ? <ResolveButton target={t} reasons={reasons} limits={limits} compact />
+                        : <span className="cellSub">—</span>}
+                    </td>
+                    <td>
                       {r.awb && (
                         <Link className="cardLink"
                           href={`/impact/search?q=${encodeURIComponent(r.awb)}`}>
@@ -130,7 +150,8 @@ export default function GhostTable({
                       )}
                     </td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>

@@ -1,5 +1,6 @@
 import { notFound } from "next/navigation";
 import Link from "next/link";
+import { currentUser } from "@clerk/nextjs/server";
 import {
   AGED, COURIERS, INTEGRITY_EXC, KAT_LABEL, PREPAID, REMIT_PENDING_DAYS,
   PrepaidKey, StreamKey, streamSummary, streamPrepaidSummary,
@@ -22,7 +23,13 @@ import ExportCsv from "@/components/ExportCsv";
 import AgingControl from "@/components/AgingControl";
 import DateRangeFilter from "@/components/DateRangeFilter";
 import InfoTip from "@/components/InfoTip";
+import ExceptionsTable from "@/components/ExceptionsTable";
 import { getBankDeposits } from "@/lib/bank";
+import { isAdmin } from "@/lib/mutations";
+import {
+  decorate, resolutionContext, type ResolutionAggregate,
+} from "@/lib/resolutions";
+import { reasonOptionsUI, resolveLimits, targetsFrom } from "@/components/resolveServer";
 
 // Ambang aging: 3..45 (padan slider Streamlit), default REMIT_PENDING_DAYS (14).
 function parsePending(v: string | undefined): number {
@@ -107,9 +114,18 @@ export default async function StreamPage(
   const summaryP: Promise<StreamSummary & { undatedRows: number }> = scoped
     ? streamSummaryRanged(key, pending, range)
     : streamSummary(key, pending).then((x) => ({ ...x, undatedRows: 0 }));
-  const [s, deposits, asOf] = await Promise.all([
-    summaryP, getBankDeposits(), lastIngest(),
+  const [raw, deposits, asOf, user, ctx] = await Promise.all([
+    summaryP, getBankDeposits(), lastIngest(), currentUser(),
+    resolutionContext(key, reconTodayYmd(), pending),
   ]);
+  // TITIK CANTUM lapisan Resolution: decorate() HANYA MENAMBAH medan (lencana
+  // per baris + blok resolutionSummary). Tiada satu pun angka duit di bawah ni
+  // berubah, jadi paparan lama kekal identik bila tiada kes.
+  const s = decorate(raw, ctx);
+  const rs = s.resolutionSummary;
+  const actor = user?.primaryEmailAddress?.emailAddress ?? "unknown";
+  const limits = resolveLimits(isAdmin(actor), reconTodayYmd(), actor);
+  const reasons = reasonOptionsUI();
   const net = Math.round((s.linesCod - s.linesFee) * 100) / 100;
   const weekly = groupByGrain(s.daily, grain);
 
@@ -187,7 +203,8 @@ export default async function StreamPage(
       )}
 
       {s.bills.length > 0 ? (
-        <BillsTable rows={billRows} courierName={cfg.name} streamKey={key} />
+        <BillsTable rows={billRows} courierName={cfg.name} streamKey={key}
+          reasons={reasons} limits={limits} />
       ) : scoped ? (
         <div className="emptyCard">
           <div className="big">No {cfg.name} bill in this date range</div>
@@ -265,6 +282,7 @@ export default async function StreamPage(
                   missing bills; it should shrink as more settlement bills are uploaded.</p></div>
             </div>
           )}
+          <ResolutionStrip agg={rs} />
         </div>
       </div>
 
@@ -292,7 +310,10 @@ export default async function StreamPage(
               <ExportCsv rows={excToCsv(s.integ)} columns={EXC_COLS}
                 filename={`${key}-integrity-exceptions.csv`} label="Download CSV" />
             </div>
-            <AuditTable rows={s.integ.slice(0, 15)} />
+            <ExceptionsTable
+              rows={targetsFrom(s.integ.slice(0, 15), key, cfg.name,
+                (k) => KAT_LABEL[k] ?? k)}
+              reasons={reasons} limits={limits} />
           </div>
           <div className="sectionGap" />
         </>
@@ -384,6 +405,49 @@ function AuditTable({ rows }: {
           ))}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+// Baris KECIL di bawah angka mentah. Angka besar di atas TIDAK PERNAH ditukar
+// jadi versi "adjusted", dan tiada toggle untuk menyorok yang mentah , keadaan
+// resolution cuma dilaporkan di sebelah.
+function ResolutionStrip({ agg }: { agg: ResolutionAggregate }) {
+  if (!agg.loaded) return null;
+  if (agg.settledN === 0 && agg.snoozedN === 0 && agg.proposedN === 0
+    && agg.staleN === 0 && agg.expiredN === 0) return null;
+  return (
+    <div className="resolveStrip">
+      <span className="resolveStat pos">{fmtInt(agg.settledN)} settled</span>
+      <span className="sep">·</span>
+      <span className="resolveStat cau">{fmtInt(agg.snoozedN)} snoozed</span>
+      <span className="sep">·</span>
+      <span className="resolveStat">{fmtInt(agg.openN)} still open</span>
+      {agg.proposedN > 0 && (
+        <>
+          <span className="sep">·</span>
+          <span className="resolveStat">{fmtInt(agg.proposedN)} awaiting approval</span>
+        </>
+      )}
+      {agg.staleN > 0 && (
+        <>
+          <span className="sep">·</span>
+          <span className="resolveStat dan">{fmtInt(agg.staleN)} reopened</span>
+        </>
+      )}
+      {agg.expiredN > 0 && (
+        <>
+          <span className="sep">·</span>
+          <span className="resolveStat dan">{fmtInt(agg.expiredN)} snooze expired</span>
+        </>
+      )}
+      <div className="resolveStripNote">
+        Counted across this whole stream, not the date range above. Settling a row
+        never changes the figures on this page.
+        <Link href="/impact/review" className="cardLink" style={{ marginLeft: 6 }}>
+          Open Review
+        </Link>
+      </div>
     </div>
   );
 }
@@ -605,7 +669,17 @@ async function PrepaidStreamPage(
   const summaryP: Promise<StreamSummary & { undatedRows: number }> = scoped
     ? streamPrepaidSummaryRanged(streamKey, range)
     : streamPrepaidSummary(streamKey).then((x) => ({ ...x, undatedRows: 0 }));
-  const [s, asOf] = await Promise.all([summaryP, lastIngest()]);
+  const [raw, asOf, user, ctx] = await Promise.all([
+    summaryP, lastIngest(), currentUser(),
+    resolutionContext(streamKey, reconTodayYmd()),
+  ]);
+  // TITIK CANTUM lapisan Resolution untuk stream prepaid. Sama seperti courier:
+  // decorate() hanya menambah medan, sifar angka duit bergerak.
+  const s = decorate(raw, ctx);
+  const rs = s.resolutionSummary;
+  const actor = user?.primaryEmailAddress?.emailAddress ?? "unknown";
+  const limits = resolveLimits(isAdmin(actor), reconTodayYmd(), actor);
+  const reasons = reasonOptionsUI();
   const net = Math.round((s.linesCod - s.linesFee) * 100) / 100;
   const weekly = groupByGrain(s.daily, grain);
 
@@ -737,6 +811,7 @@ async function PrepaidStreamPage(
                 <p>Investigate the rows flagged below; these are real leaks until proven otherwise.</p></div>
             </div>
           )}
+          <ResolutionStrip agg={rs} />
         </div>
       </div>
 
@@ -748,7 +823,10 @@ async function PrepaidStreamPage(
               <div className="cardTitle">Integrity exceptions</div>
               <div className="cardHint">Tier 1 · oldest first</div>
             </div>
-            <AuditTable rows={s.integ.slice(0, 15)} />
+            <ExceptionsTable
+              rows={targetsFrom(s.integ.slice(0, 15), streamKey, cfg.name,
+                (k) => KAT_LABEL[k] ?? k)}
+              reasons={reasons} limits={limits} showTracking={false} />
           </div>
         </>
       )}

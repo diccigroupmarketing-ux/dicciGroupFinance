@@ -15,6 +15,8 @@ import WeeklyChart from "@/components/WeeklyChart";
 import PaymentBuckets from "@/components/PaymentBuckets";
 import DateRangeFilter from "@/components/DateRangeFilter";
 import InfoTip from "@/components/InfoTip";
+import { decorate } from "@/lib/resolutions";
+import { contextsFor, pendingApprovals, sumAggregates } from "@/components/resolveServer";
 import Link from "next/link";
 
 export const dynamic = "force-dynamic";
@@ -64,9 +66,16 @@ export default async function Dashboard(
         buckets: b, totalOrders: 0, filteredOrders: 0, undatedOrders: 0,
       }));
 
-  const [summaries, gift, pay] = await Promise.all([
+  const [rawSummaries, gift, pay, ctxs, waiting] = await Promise.all([
     Promise.all(ACTIVE.map(summaryOf)), giftP, bucketsP,
+    contextsFor(ACTIVE, reconTodayYmd(), REMIT_PENDING_DAYS),
+    pendingApprovals(),
   ]);
+
+  // TITIK CANTUM lapisan Resolution untuk dashboard. decorate() hanya MENAMBAH
+  // medan, jadi rollupStreams di bawah membaca angka duit yang sama persis.
+  const summaries = rawSummaries.map((s, i) => decorate(s, ctxs[i]));
+  const res = sumAggregates(summaries.map((s) => s.resolutionSummary));
 
   // Roll-up = fungsi TULEN yang dipakai oleh KEDUA dua mod, jadi All time memang
   // matematik yang sama macam dulu (lihat scripts/testDateRange.ts bahagian C).
@@ -244,6 +253,32 @@ export default async function Dashboard(
               <WarnIcon />
               <div><b>{totExc} integrity exceptions.</b>
                 <p>Open the affected stream to investigate ghost money or amount mismatches.</p></div>
+            </div>
+          )}
+
+          {/* Baris KECIL di bawah angka mentah. Angka besar di atas tak pernah
+              ditukar jadi versi "adjusted". */}
+          {(res.loaded && (res.settledN > 0 || res.snoozedN > 0)) && (
+            <div className="resolveStrip">
+              <span className="resolveStat pos">{fmtInt(res.settledN)} settled</span>
+              <span className="sep">·</span>
+              <span className="resolveStat cau">{fmtInt(res.snoozedN)} snoozed</span>
+              <span className="sep">·</span>
+              <span className="resolveStat">{fmtInt(res.openN)} still open</span>
+              <div className="resolveStripNote">
+                Across the full streams, not the selected date range. Settling records
+                a decision, it never moves money.
+              </div>
+            </div>
+          )}
+          {waiting.n > 0 && (
+            <div className="resolveStrip">
+              <span className="resolveStat">
+                Awaiting approval: <b>{fmtInt(waiting.n)}</b> · <b>{fmtRM(waiting.value)}</b>
+              </span>
+              <Link href="/impact/review?tab=approvals" className="cardLink">
+                Open Review
+              </Link>
             </div>
           )}
         </div>
