@@ -43,7 +43,7 @@ Tarikh mula: 2026-06-18
   ops: npm test MEMADAM data dev PG (restore snapshot + testMutations), fleet jangan jalan
   suite atas kerja dev belum simpan. Baki peta tak lengkap direkod: 42 finding duitAnchor
   mati dalam log + 2 divergen reconTrust belum diverify.
-- kemaskini: 2026-07-28
+- kemaskini: 2026-07-29
 
 ## Sesi 27 Jul pagi lanjutan (fix 3 divergen + insiden deploy + peta v1.7, SEMUA LIVE)
 
