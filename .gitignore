@@ -39,3 +39,12 @@ graphify-out/
 
 # peta architecture, alat lokal sahaja, ada info dalaman bisnes
 peta/
+
+# harness parity 3 enjin: SKRIP dicommit, DATA + fail jana TIDAK
+# (fixture ada order sebenar, repo ni public)
+parityHarness/data/
+parityHarness/node_modules
+parityHarness/reconMirror.ts
+parityHarness/*.err
+parityHarness/*.db
+parityHarness/*.json
