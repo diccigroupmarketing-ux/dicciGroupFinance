@@ -64,6 +64,28 @@ def _r2(x):
     return Decimal(str(f)).quantize(_SEN, rounding=ROUND_HALF_UP)
 
 
+def _duit_masuk(v):
+    """Baris bil ni bukti duit BETUL BETUL masuk?
+
+    "Apa maksudnya": bil courier bukan hanya senarai duit dikutip, ia pun
+    mengandungi baris caj RM0 (contoh baris Returned to Sender Ninja Van , parcel
+    dipulangkan, sifar duit dikutip). Baris macam tu TIDAK boleh mengesahkan
+    order sebagai "duit dah masuk", nanti bocor duit tersorok sebagai tally atau
+    sekadar amount_mismatch, dan order terlepas dari baldi aging yang sepatutnya
+    menjeritkannya. Peraturan sama dah wujud di sisi prepaid
+    (db.confirmed_paid_order_ids: amount > 0), ini cerminnya untuk sisi COD.
+
+    Perbandingan sengaja MENTAH (`> 0`, tiada pembundaran) supaya identik dengan
+    `l.cod_amount > 0` di reconSql.py/recon.ts. NULL/NaN = bukan bukti duit,
+    sama macam SQL tiga-nilai (NULL > 0 bukan TRUE).
+    """
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return False
+    return f > 0                     # NaN > 0 = False, memang dikehendaki
+
+
 def _no_match_keys(vals, prefix):
     """Pulang kunci merge: nilai asal, tapi sentinel kosong diganti kunci unik
     (prefix + index) supaya baris tanpa AWB tak padan sesama sendiri masa merge."""
@@ -141,7 +163,12 @@ def reconcile(conn, pending_days=REMIT_PENDING_DAYS, courier="jnt"):
                      how="outer", indicator=True, suffixes=("_o", "_l"))
     m = m.drop(columns=["_mkey"])
     lines = lines.drop(columns=["_mkey"])
-    m["umur_hari"] = (TODAY - pd.to_datetime(m["order_date"], errors="coerce")).dt.days
+    # db.parse_dt = format="mixed" (setiap sel diparse ikut bentuknya sendiri).
+    # Tanpa ia pandas teka SATU format dari sel PERTAMA lalu paksa ke seluruh
+    # lajur: satu order bertarikh bukan kanonik di kedudukan pertama boleh
+    # merosakkan umur SELURUH lajur (mod runtuh CASCADE), order lain hilang umur
+    # dan tak pernah naik ke baldi hilang_lewat. Corak sama macam pintu ingest.
+    m["umur_hari"] = (TODAY - db.parse_dt(m["order_date"], dayfirst=False)).dt.days
 
     # Guard AWB dikongsi: bila >1 order padan baris bil YANG SAMA, duit satu parcel
     # tak boleh dikira "tally" untuk setiap order (double count). Tanda supaya
@@ -156,6 +183,11 @@ def reconcile(conn, pending_days=REMIT_PENDING_DAYS, courier="jnt"):
         side = r["_merge"]
         if side == "right_only":
             return "duit_hantu" if str(r["awb"]) not in all_trk else "match_luar_skop"
+        # Baris bil RM0 TIDAK mengesahkan order (lihat _duit_masuk). Order jatuh
+        # BALIK ke laluan "takde bil" supaya kategorinya ikut aging
+        # (belum_remit / hilang_lewat), sama macam order yang memang tiada bil.
+        if side == "both" and not _duit_masuk(r["cod_amount"]):
+            side = "left_only"
         if side == "both":
             st = r["status"]
             if st == COMPLETED:
@@ -235,7 +267,8 @@ def reconcile_prepaid(conn, gateway="chip", pending_days=REMIT_PENDING_DAYS):
     p = pays.rename(columns={"status": "pay_status", "source_file": "pay_source"})
     m = scoped.merge(p, left_on="order_id", right_on="order_ref",
                      how="outer", indicator=True)
-    m["umur_hari"] = (TODAY - pd.to_datetime(m["order_date"], errors="coerce")).dt.days
+    # format="mixed", sebab sama macam laluan COD di atas (mod runtuh CASCADE).
+    m["umur_hari"] = (TODAY - db.parse_dt(m["order_date"], dayfirst=False)).dt.days
 
     # Lajur serasi renderer COD.
     m["cod_amount"] = m["amount"]

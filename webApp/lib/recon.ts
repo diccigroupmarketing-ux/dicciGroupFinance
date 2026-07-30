@@ -185,7 +185,12 @@ function mSqlCourier(key: StreamKey): string {
            l.awb, l.bill_id, l.cod_amount, l.fee, l.delivered_date,
            l.cod_amount - l.fee AS remit,
            CASE
-             WHEN l.awb IS NOT NULL THEN
+             -- \`l.cod_amount > 0\` = port setia reconcile._duit_masuk /
+             -- reconSql.py: baris bil RM0 (contoh caj Returned to Sender Ninja
+             -- Van) BUKAN bukti duit masuk, jadi ia tak boleh mengesahkan order.
+             -- Order jatuh ke cabang ELSE (kategori ikut aging), sama macam
+             -- order yang memang tiada bil. NULL cod_amount pun jatuh ELSE.
+             WHEN l.awb IS NOT NULL AND l.cod_amount > 0 THEN
                CASE
                  WHEN s.status = 'Completed' THEN
                    -- Guard AWB dikongsi (port setia reconcile.py): bila >1 order
@@ -683,6 +688,9 @@ export async function searchOrders(q: string): Promise<SearchResult[]> {
 // Prepaid confirmed = ada baris prepaid untuk order ni, TAPI hanya bila status
 // berjaya DAN amount > 0 (mirror reconSql.py _PREPAID_OK / db.PREPAID_SUCCESS_STATUS).
 // Sekadar wujud TAK cukup , elak bocor tersorok bila CHIP diaktifkan nanti.
+// COD ikut peraturan SAMA lewat COD_LINE_OK: baris bil kena cod_amount > 0.
+// Baris RM0 (caj Returned to Sender Ninja Van) bukan bukti duit masuk.
+const COD_LINE_OK = "cl.cod_amount > 0";
 const PREPAID_OK =
   "pp.amount > 0 AND LOWER(TRIM(pp.status)) IN " +
   "('paid','success','successful','completed','settled','cleared','captured')";
@@ -690,7 +698,8 @@ const PREPAID_OK =
 // Diekspot (bukan diubah) supaya lapisan tapis tarikh read-only di
 // lib/dashboardRange.ts boleh guna semula ungkapan "duit disahkan" yang SAMA.
 export const CONF_SQL = `
-  CASE WHEN EXISTS (SELECT 1 FROM cod_bill_lines cl WHERE cl.awb = o.tracking)
+  CASE WHEN EXISTS (SELECT 1 FROM cod_bill_lines cl WHERE cl.awb = o.tracking
+                    AND ${COD_LINE_OK})
          OR EXISTS (SELECT 1 FROM prepaid_payments pp WHERE pp.order_ref = o.order_id
                     AND ${PREPAID_OK})
        THEN 1 ELSE 0 END
@@ -708,7 +717,8 @@ const sqlList = (a: string[]) => a.map((v) => `'${v.replace(/'/g, "''")}'`).join
 const PREPAID_METHODS = ["CHIP"];
 const COD_IN = `o.payment_method IN (${sqlList(COD_VALUES)})`;
 const PREPAID_IN = `o.payment_method IN (${sqlList(PREPAID_METHODS)})`;
-const COD_LINE_EXISTS = `EXISTS (SELECT 1 FROM cod_bill_lines cl WHERE cl.awb = o.tracking)`;
+const COD_LINE_EXISTS =
+  `EXISTS (SELECT 1 FROM cod_bill_lines cl WHERE cl.awb = o.tracking AND ${COD_LINE_OK})`;
 const PREPAID_OK_EXISTS =
   `EXISTS (SELECT 1 FROM prepaid_payments pp WHERE pp.order_ref = o.order_id AND ${PREPAID_OK})`;
 

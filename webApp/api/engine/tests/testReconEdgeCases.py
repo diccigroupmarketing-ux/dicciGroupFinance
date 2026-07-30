@@ -117,6 +117,23 @@ ORDERS = [
     ("TEST-AWBKONGSI-1", "2026-06-10 10:00:00", COMPLETED, JNT, "COD", "7750000001", 100.0),
     ("TEST-AWBKONGSI-2", "2026-06-10 10:00:00", COMPLETED, JNT, "COD", "7750000001", 100.0),
 
+    # ---- (E) Baris bil RM0 BUKAN bukti duit masuk ----
+    # Bil courier bukan hanya senarai duit dikutip: ia pun ada baris caj RM0
+    # (contoh baris Returned to Sender Ninja Van , parcel dipulangkan, sifar duit
+    # masuk). Baris macam tu TAK boleh mengesahkan order. Order jatuh BALIK ke
+    # kategori ikut aging / status, sama macam order yang memang tiada bil.
+    ("TEST-RM0-MUDA", "2026-06-10 10:00:00", COMPLETED, JNT, "COD", "7770000001", 150.0),
+    ("TEST-RM0-TUA", "2026-04-01 10:00:00", COMPLETED, JNT, "COD", "7770000002", 150.0),
+    ("TEST-RM0-RETURNED", "2026-06-10 10:00:00", RETURNED, JNT, "COD", "7770000003", 150.0),
+    ("TEST-RM0-REJECTED", "2026-06-10 10:00:00", REJECTED, JNT, "COD", "7770000004", 150.0),
+    ("TEST-RM0-TRANSIT", "2026-06-10 10:00:00", "In Transit", JNT, "COD", "7770000005", 150.0),
+    # cod_amount NULL dan NEGATIF pun bukan bukti duit masuk (NULL > 0 bukan
+    # TRUE dalam SQL; NaN > 0 False dalam pandas , dua dua enjin sepakat).
+    ("TEST-RM0-NULLAMT", "2026-04-01 10:00:00", COMPLETED, JNT, "COD", "7770000006", 150.0),
+    ("TEST-RM0-NEGATIF", "2026-04-01 10:00:00", COMPLETED, JNT, "COD", "7770000007", 150.0),
+    # KAWALAN: 1 sen tetap duit. Fix ni jangan sekali kali buang baris kecil.
+    ("TEST-RM0-KAWALAN-SEN", "2026-04-01 10:00:00", COMPLETED, JNT, "COD", "7770000008", 0.01),
+
     # ---- Prepaid (CHIP), padan ikut order_id ----
     ("TEST-PREPAID-BUNDAR", "2026-06-10 10:00:00", COMPLETED, JNT, "CHIP", "7760000001", 100.125),
     ("TEST-PREPAID-KAWALAN", "2026-06-10 10:00:00", COMPLETED, JNT, "CHIP", "7760000002", 100.0),
@@ -139,6 +156,14 @@ LINES = [
     ("7740000004", BILL_A, 100.0),         # order Rejected
     ("7740000005", BILL_A, 100.0),         # order In Transit
     ("7750000001", BILL_A, 100.0),         # AWB dikongsi 2 order
+    ("7770000001", BILL_A, 0.0),           # RM0 + order Completed muda
+    ("7770000002", BILL_A, 0.0),           # RM0 + order Completed tua
+    ("7770000003", BILL_A, 0.0),           # RM0 + order Returned
+    ("7770000004", BILL_A, 0.0),           # RM0 + order Rejected
+    ("7770000005", BILL_A, 0.0),           # RM0 + order In Transit
+    ("7770000006", BILL_A, None),          # cod_amount NULL
+    ("7770000007", BILL_A, -50.0),         # cod_amount negatif
+    ("7770000008", BILL_A, 0.01),          # kawalan: 1 sen = duit betul
 ]
 
 PREPAID = [
@@ -167,7 +192,10 @@ JANGKA_JNT = {
     ("", "NONE"): "duit_hantu",
     ("", "7730000009"): "duit_hantu",
 
-    ("TEST-BIL-RM0", "7740000001"): "amount_mismatch",
+    # Bil RM0 tak sahkan order: umur 8 hari (< 14) jadi ia balik ke belum_remit.
+    # SEBELUM fix ia 'amount_mismatch', iaitu order dikira "ada dalam bil" walhal
+    # sifar duit masuk , dan ia terlepas dari baldi aging.
+    ("TEST-BIL-RM0", "7740000001"): "belum_remit",
     ("TEST-PECAH", "7740000002"): "amount_mismatch",
     ("", "7740000012"): "duit_hantu",
     ("TEST-STATUS-RETURNED", "7740000003"): "duit_masuk_order_returned",
@@ -176,6 +204,16 @@ JANGKA_JNT = {
     ("TEST-SENTINEL-INSKOP", ""): "takde_awb_jnt",
     ("TEST-AWBKONGSI-1", "7750000001"): "amount_mismatch",
     ("TEST-AWBKONGSI-2", "7750000001"): "amount_mismatch",
+
+    # Baris bil RM0 / NULL / negatif = order kembali ke laluan "takde bil".
+    ("TEST-RM0-MUDA", "7770000001"): "belum_remit",
+    ("TEST-RM0-TUA", "7770000002"): "hilang_lewat",
+    ("TEST-RM0-RETURNED", "7770000003"): "returned",
+    ("TEST-RM0-REJECTED", "7770000004"): "rejected",
+    ("TEST-RM0-TRANSIT", "7770000005"): "pending",
+    ("TEST-RM0-NULLAMT", "7770000006"): "hilang_lewat",
+    ("TEST-RM0-NEGATIF", "7770000007"): "hilang_lewat",
+    ("TEST-RM0-KAWALAN-SEN", "7770000008"): "tally",
 }
 
 JANGKA_CHIP = {
@@ -385,6 +423,118 @@ class TestLuarSkopBukanDuitHantu(FixtureCase):
                          "duit_hantu")
 
 
+class TestBilRm0BukanDuitMasuk(FixtureCase):
+    """FIX C , baris bil RM0 tak boleh mengesahkan order sebagai duit masuk.
+
+    Punca dunia sebenar: bil Ninja Van ada baris caj "Returned to Sender" dengan
+    cod_amount 0. Sebelum fix, baris tu cukup untuk order dikira "ada dalam bil",
+    jadi ia hilang dari baldi belum_remit / hilang_lewat (duit lewat tersorok)
+    DAN dikira 'duit disahkan' oleh db.confirmed_paid_order_ids (botol dikira
+    walhal duit tak pernah masuk).
+    """
+
+    def _dua_enjin(self, kunci, jangka):
+        self.assertEqual(peta(hasil_e1(self.conn, "jnt"))[kunci], jangka,
+                         f"E1 salah untuk {kunci}")
+        self.assertEqual(peta(hasil_e2(self.conn, "courier", "jnt"))[kunci], jangka,
+                         f"E2 salah untuk {kunci}")
+
+    def test_rm0_completed_muda_jadi_belum_remit(self):
+        self._dua_enjin(("TEST-RM0-MUDA", "7770000001"), "belum_remit")
+
+    def test_rm0_completed_tua_jadi_hilang_lewat(self):
+        # Ini kes paling mahal: order tua tanpa duit MESTI menjerit di baldi aging.
+        self._dua_enjin(("TEST-RM0-TUA", "7770000002"), "hilang_lewat")
+
+    def test_rm0_returned_bukan_duit_masuk_order_returned(self):
+        # 'duit_masuk_order_returned' bermaksud DUIT masuk untuk order dipulangkan.
+        # Baris RM0 = sifar duit, jadi ia cuma 'returned' biasa, bukan exception.
+        self._dua_enjin(("TEST-RM0-RETURNED", "7770000003"), "returned")
+
+    def test_rm0_rejected_bukan_duit_masuk_order_rejected(self):
+        self._dua_enjin(("TEST-RM0-REJECTED", "7770000004"), "rejected")
+
+    def test_rm0_transit_bukan_in_bil_tapi_intransit(self):
+        self._dua_enjin(("TEST-RM0-TRANSIT", "7770000005"), "pending")
+
+    def test_cod_amount_null_pun_bukan_bukti(self):
+        self._dua_enjin(("TEST-RM0-NULLAMT", "7770000006"), "hilang_lewat")
+
+    def test_cod_amount_negatif_pun_bukan_bukti(self):
+        self._dua_enjin(("TEST-RM0-NEGATIF", "7770000007"), "hilang_lewat")
+
+    def test_kawalan_satu_sen_kekal_duit(self):
+        # Penjaga arah bertentangan: fix ni JANGAN buang baris bernilai kecil.
+        self._dua_enjin(("TEST-RM0-KAWALAN-SEN", "7770000008"), "tally")
+
+    def test_confirmed_paid_tolak_order_baris_rm0(self):
+        # db.confirmed_paid_order_ids = titik sambungan TUNGGAL "duit disahkan"
+        # (botol dikira, baldi confirmed). Order baris RM0 mesti TIADA di situ.
+        paid = db.confirmed_paid_order_ids(self.conn)
+        for oid in ("TEST-RM0-MUDA", "TEST-RM0-TUA", "TEST-RM0-RETURNED",
+                    "TEST-RM0-NULLAMT", "TEST-RM0-NEGATIF", "TEST-BIL-RM0"):
+            self.assertNotIn(oid, paid, f"{oid} tak sepatutnya dikira duit disahkan")
+        # Kawalan: yang betul betul ada duit kekal disahkan.
+        for oid in ("TEST-RM0-KAWALAN-SEN", "TEST-BUNDAR-A", "TEST-PECAH"):
+            self.assertIn(oid, paid, f"{oid} sepatutnya kekal duit disahkan")
+
+
+# =====================================================================
+# GAP DIDOKUMEN , tracking berisi whitespace BUKAN space
+# ---------------------------------------------------------------------
+# Penemuan verify 2026-07-29. Tracking yang isinya cuma tab / newline / NBSP
+# (\xa0) dilayan BERBEZA oleh dua enjin:
+#   E1 (pandas): .str.strip() buang SEMUA whitespace Unicode termasuk \xa0,
+#       jadi tracking jadi '' = sentinel. Order tak padan baris bil.
+#   E2/E3 (SQL): TRIM() hanya buang SPACE (' '), jadi '\t' kekal "tracking
+#       sebenar" dan JOIN ke baris bil BERJAYA , jadi 'tally'.
+# Kesan: satu baris duit boleh dilabel 'tally' oleh app tapi 'match_luar_skop'
+# oleh rujukan kebenaran. Belum ada kes sebenar dalam data (pintu ingest sepatutnya
+# kemas whitespace), jadi ia DIDOKUMEN sebagai gap, bukan dibaiki di enjin , sama
+# corak dengan TestGapDialekSen. Ujian ni MENGUNCI kelakuan semasa: kalau sesiapa
+# ubah normalisasi sentinel mana mana enjin, ujian ni menjerit dan keputusan boleh
+# dibuat sedar sedar (fix di pintu ingest, atau selaraskan tiga tiga enjin).
+# =====================================================================
+WS_TRACKINGS = ["\t", "\n", "\xa0"]
+GAP_WS_ORDERS = [
+    (f"TEST-WS-{nama}", "2026-06-10 10:00:00", COMPLETED, JNT, "COD", trk, 100.0)
+    for nama, trk in zip(("TAB", "NEWLINE", "NBSP"), WS_TRACKINGS)
+]
+GAP_WS_LINES = [(trk, BILL_A, 100.0) for trk in WS_TRACKINGS]
+
+
+class TestGapSentinelWhitespace(FixtureCase):
+    orders = GAP_WS_ORDERS
+    lines = GAP_WS_LINES
+    prepaid = []
+
+    def _kira(self, rows):
+        """kategori -> bilangan. Guna kiraan, bukan peta ikut AWB: _s() strip
+        whitespace jadi kunci AWB runtuh sesama sendiri."""
+        n = {}
+        for _oid, _awb, kat in rows:
+            n[kat] = n.get(kat, 0) + 1
+        return n
+
+    def test_e1_layan_whitespace_sebagai_sentinel(self):
+        # E1: 3 order tak padan (takde AWB sah) + 3 baris duit jadi yatim tapi
+        # BENIGN (trackingnya dikenali, cuma tak boleh jadi kunci padanan).
+        self.assertEqual(self._kira(hasil_e1(self.conn, "jnt")),
+                         {"takde_awb_jnt": 3, "match_luar_skop": 3})
+
+    def test_e2_layan_whitespace_sebagai_tracking_sebenar(self):
+        # E2: TRIM() SQL tak buang tab/newline/NBSP, jadi JOIN menjadi dan
+        # ketiga tiga dilabel 'tally'. INI GAP, bukan kelakuan yang diingini.
+        self.assertEqual(self._kira(hasil_e2(self.conn, "courier", "jnt")),
+                         {"tally": 3})
+
+    def test_gap_ni_memang_divergen_e1_lawan_e2(self):
+        # Penegasan eksplisit supaya niat ujian jelas: ini SATU SATUNYA tempat
+        # dalam fail ni yang E1 dan E2 SENGAJA dibenarkan bercanggah pada duit.
+        self.assertNotEqual(hasil_e1(self.conn, "jnt"),
+                            hasil_e2(self.conn, "courier", "jnt"))
+
+
 # =====================================================================
 # GAP DIDOKUMEN , tarikh bukan kanonik
 # ---------------------------------------------------------------------
@@ -392,10 +542,33 @@ class TestLuarSkopBukanDuitHantu(FixtureCase):
 # Ujian ni mengunci sebab keputusan tu: selagi order_date bukan kanonik boleh
 # masuk DB, E1 dan E2 memang akan bercanggah. Kalau suatu hari enjin diselaraskan
 # untuk kes ni, ujian ni akan GAGAL , itu isyarat padam ujian ni, bukan bug.
+#
+# TAPI ada satu perkara yang BUKAN gap dan mesti kekal dijaga: MOD RUNTUH CASCADE.
+# pd.to_datetime tanpa format="mixed" teka SATU format dari sel PERTAMA lalu paksa
+# ke SELURUH lajur. Satu order bertarikh bukan kanonik di kedudukan pertama boleh
+# jadikan SEMUA tarikh kanonik selepasnya NaT , order lain hilang umur dan tak
+# pernah naik ke baldi hilang_lewat (duit lewat tersorok, senyap, seluruh lajur).
+# Fix 2026-07-30: reconcile.py + reconSql.py guna db.parse_dt (format="mixed"),
+# corak sama macam pintu ingest. Kelas ni menguji dua benda sekali:
+#   (1) CASCADE ditutup , order LAIN kekal betul walau ada tarikh bukan kanonik
+#   (2) gap yang tinggal (E1 lawan E2 pada tarikh teks) kekal didokumen
+# PENTING, susunan yang mengena bukan susunan senarai ni: `m` dibina dari merge
+# outer atas kunci tracking, jadi pandas SUSUN IKUT TRACKING. Sel pertama lajur
+# order_date = order dengan tracking TERKECIL. Sebab itu order bukan kanonik
+# sengaja diberi tracking '7790000000' (terkecil) , itulah yang jadikan dia sel
+# yang diteka pandas, dan itulah yang dulu meracuni seluruh lajur.
 # =====================================================================
 GAP_ORDERS = [
-    ("TEST-GAP-KANONIK", "2026-06-01 10:00:00", COMPLETED, JNT, "COD", "7790000001", 100.0),
+    # Bukan kanonik + tracking TERKECIL = sel yang diteka = pemicu cascade lama.
+    ("TEST-GAP-A-BUKANKANONIK", "01/07/2026", COMPLETED, JNT, "COD", "7790000000", 100.0),
+    # Mangsa cascade: tarikh KANONIK dan memang tua. Mesti kekal hilang_lewat.
+    ("TEST-GAP-B-TUA", "2026-04-01 10:00:00", COMPLETED, JNT, "COD", "7790000001", 100.0),
+    # Mangsa cascade sisi lain: kanonik dan muda. Mesti kekal belum_remit.
+    ("TEST-GAP-C-MUDA", "2026-06-15 10:00:00", COMPLETED, JNT, "COD", "7790000003", 100.0),
     ("TEST-GAP-KOSONG", "", COMPLETED, JNT, "COD", "7790000002", 100.0),
+    # Tarikh songsang: '07/01/2026'. E1 baca 7 Julai 2026 (masa depan), E2 banding
+    # TEKS lawan cutoff dan '0...' < '2...' jadi ia "lama". Penemuan verify 29 Jul.
+    ("TEST-GAP-SONGSANG", "07/01/2026", COMPLETED, JNT, "COD", "7790000004", 100.0),
 ]
 
 
@@ -404,12 +577,43 @@ class TestGapTarikhBukanKanonik(FixtureCase):
     lines = []
     prepaid = []
 
-    def test_tarikh_kanonik_selari(self):
+    def test_cascade_tarikh_bukan_kanonik_tak_merosakkan_order_lain(self):
+        """FIX B , inti kelas ni. Tarikh rosak di baris pertama TAK boleh
+        menjangkiti umur order lain dalam lajur yang sama."""
+        p1 = peta(hasil_e1(self.conn, "jnt"))
+        # SEBELUM fix: pandas teka format dari '01/07/2026', semua tarikh ISO
+        # jadi NaT, TEST-GAP-B-TUA (1 April, 78 hari) jatuh jadi 'belum_remit'
+        # dan hilang dari baldi aging. Itulah kebocoran yang ujian ni jaga.
+        self.assertEqual(p1[("TEST-GAP-B-TUA", "")], "hilang_lewat")
+        self.assertEqual(p1[("TEST-GAP-C-MUDA", "")], "belum_remit")
+
+    def test_cascade_e2_pun_selamat_dan_selari_dengan_e1(self):
+        # E2 banding teks (tiada parsing) jadi ia memang immune pada cascade;
+        # ujian ni mengunci yang E1 kini SETUJU dengannya pada tarikh kanonik.
         p1 = peta(hasil_e1(self.conn, "jnt"))
         p2 = peta(hasil_e2(self.conn, "courier", "jnt"))
-        kunci = ("TEST-GAP-KANONIK", "")
-        self.assertEqual(p1[kunci], "hilang_lewat")
-        self.assertEqual(p2[kunci], "hilang_lewat")
+        for kunci in (("TEST-GAP-B-TUA", ""), ("TEST-GAP-C-MUDA", "")):
+            self.assertEqual(p1[kunci], p2[kunci], f"E1 lawan E2 tak selari: {kunci}")
+
+    def test_tarikh_bukan_kanonik_sendiri_masih_diparse_sel_demi_sel(self):
+        # '01/07/2026' dibaca 7 Januari 2026 (dayfirst=False), memang tua.
+        # Ia kebetulan sama dengan jawapan teks E2, tapi kebetulan tu BUKAN
+        # jaminan , lihat TEST-GAP-SONGSANG di bawah untuk kes ia terbelah.
+        p1 = peta(hasil_e1(self.conn, "jnt"))
+        p2 = peta(hasil_e2(self.conn, "courier", "jnt"))
+        self.assertEqual(p1[("TEST-GAP-A-BUKANKANONIK", "")], "hilang_lewat")
+        self.assertEqual(p2[("TEST-GAP-A-BUKANKANONIK", "")], "hilang_lewat")
+
+    def test_cascade_lajur_umur_hari_paparan_pun_selamat(self):
+        """FIX B (sisi kedua) , reconSql._umur_hari bina lajur 'Age (days)' yang
+        finance BACA dalam jadual exception. Ia pun dulu terdedah pada cascade
+        yang sama: satu tarikh bukan kanonik dalam senarai = umur SEMUA baris
+        lain jadi kosong, jadi baris tua nampak macam takde umur."""
+        s = reconSql.stream_summary(self.conn, "courier", "jnt", PENDING_DAYS)
+        umur = dict(zip(s["aged"]["order_id"], s["aged"]["umur_hari"]))
+        # 2026-06-18 00:00 tolak 2026-04-01 10:00 = 77 hari penuh (baki 14 jam
+        # dibuang oleh .dt.days). Yang penting: NOMBOR, bukan NaN.
+        self.assertEqual(umur.get("TEST-GAP-B-TUA"), 77)
 
     def test_rentetan_kosong_masih_bercanggah_sebab_itu_ingest_menapis(self):
         p1 = peta(hasil_e1(self.conn, "jnt"))
@@ -421,6 +625,20 @@ class TestGapTarikhBukanKanonik(FixtureCase):
         self.assertEqual(p2[kunci], "hilang_lewat")
         # Sebab itulah ingest.py WAJIB tulis NULL (bukan ''), diuji dalam
         # testIngestParsers.py (kelas TestFighterDateGuard).
+
+    def test_tarikh_songsang_teks_masih_bercanggah(self):
+        # GAP kedua (penemuan verify 29 Jul). '07/01/2026':
+        #   E1 parse ikut sel -> 1 Julai 2026 -> MASA DEPAN -> belum_remit
+        #   E2 banding TEKS lawan cutoff '2026-06-03...' -> '0' < '2' -> "lama"
+        # Kesan sebenar: order tarikh teks boleh dikira lewat oleh app tapi tidak
+        # oleh rujukan kebenaran. Ubatnya di PINTU INGEST (tulis ISO), bukan di
+        # enjin. Kalau suatu hari ia diselaraskan, ujian ni GAGAL , itu isyarat
+        # padam ujian ni, bukan bug.
+        p1 = peta(hasil_e1(self.conn, "jnt"))
+        p2 = peta(hasil_e2(self.conn, "courier", "jnt"))
+        kunci = ("TEST-GAP-SONGSANG", "")
+        self.assertEqual(p1[kunci], "belum_remit")
+        self.assertEqual(p2[kunci], "hilang_lewat")
 
 
 # =====================================================================

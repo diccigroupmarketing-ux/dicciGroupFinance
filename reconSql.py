@@ -171,7 +171,13 @@ def _m_sql_courier(conn, courier):
                l.awb, l.bill_id, l.cod_amount, l.fee, l.delivered_date,
                l.cod_amount - l.fee AS remit,
                CASE
-                 WHEN l.awb IS NOT NULL THEN
+                 -- `l.cod_amount > 0` = port setia reconcile._duit_masuk: baris
+                 -- bil RM0 (contoh caj Returned to Sender Ninja Van) BUKAN bukti
+                 -- duit masuk, jadi ia tak boleh mengesahkan order. Order jatuh
+                 -- ke cabang ELSE (kategori ikut aging), sama macam takde bil.
+                 -- NULL cod_amount pun jatuh ELSE (NULL > 0 bukan TRUE), identik
+                 -- dengan NaN di sisi pandas.
+                 WHEN l.awb IS NOT NULL AND l.cod_amount > 0 THEN
                    CASE
                      WHEN s.status = 'Completed' THEN
                        -- Guard AWB dikongsi (port setia reconcile.py:134 /
@@ -301,7 +307,10 @@ def _build_tmp_m(conn, kind, key, pending_days):
 
 def _umur_hari(df):
     if len(df):
-        df["umur_hari"] = (TODAY - pd.to_datetime(df["order_date"], errors="coerce")).dt.days
+        # db.parse_dt = format="mixed": setiap sel diparse sendiri sendiri, jadi
+        # satu tarikh bukan kanonik tak boleh merosakkan umur SELURUH lajur
+        # paparan (mod runtuh CASCADE). Sama macam reconcile.py.
+        df["umur_hari"] = (TODAY - db.parse_dt(df["order_date"], dayfirst=False)).dt.days
     else:
         df["umur_hari"] = pd.Series(dtype="float64")
     return df
@@ -471,11 +480,14 @@ def bill_parcels(conn, kind, key, pending_days, bill_id, cap=BILL_CAP):
 # Prepaid confirmed = ada baris prepaid untuk order ni, TAPI hanya bila status
 # berjaya DAN amount > 0 (mirror db.confirmed_paid_order_ids / db.PREPAID_SUCCESS_STATUS).
 # Sekadar wujud TAK cukup , elak bocor tersorok bila CHIP diaktifkan nanti.
+# COD ikut peraturan SAMA: baris bil kena cod_amount > 0. Baris RM0 (caj Returned
+# to Sender Ninja Van) bukan bukti duit masuk.
 _PREPAID_OK = ("pp.amount > 0 AND LOWER(TRIM(pp.status)) IN "
                "('paid','success','successful','completed','settled','cleared','captured')")
 
 CONF_SQL = f"""
-    CASE WHEN EXISTS (SELECT 1 FROM cod_bill_lines cl WHERE cl.awb = o.tracking)
+    CASE WHEN EXISTS (SELECT 1 FROM cod_bill_lines cl WHERE cl.awb = o.tracking
+                      AND cl.cod_amount > 0)
            OR EXISTS (SELECT 1 FROM prepaid_payments pp WHERE pp.order_ref = o.order_id
                       AND {_PREPAID_OK})
          THEN 1 ELSE 0 END

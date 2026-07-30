@@ -517,7 +517,14 @@ def confirmed_paid_order_ids(conn):
     Bila feed lain masuk nanti (settlement courier lain, report CHIP / online transfer),
     cukup union set order_id dia di sini, semua paparan yang guna fungsi ni update sendiri.
     """
-    awb = set(pd.read_sql(text("SELECT awb FROM cod_bill_lines"), conn)["awb"].dropna())
+    # COD: hanya baris bil dengan cod_amount > 0 yang mengesahkan duit masuk.
+    # Bil courier ada baris caj RM0 (contoh Returned to Sender Ninja Van) , sifar
+    # duit dikutip, jadi ia bukan bukti bayaran. Peraturan sama dengan sisi
+    # prepaid di bawah, dan dengan reconcile._duit_masuk / `l.cod_amount > 0`
+    # dalam reconSql.CONF_SQL + recon.ts.
+    cl = pd.read_sql(text("SELECT awb, cod_amount FROM cod_bill_lines"), conn)
+    cl_amt = pd.to_numeric(cl["cod_amount"], errors="coerce")
+    awb = set(cl.loc[cl_amt > 0, "awb"].dropna())
     od = pd.read_sql(text("SELECT order_id, tracking FROM orders"), conn)
     cod_ids = set(od.loc[od["tracking"].isin(awb), "order_id"])
     # Prepaid (CHIP / online transfer): padan ikut order_ref = order_id, TAPI hanya

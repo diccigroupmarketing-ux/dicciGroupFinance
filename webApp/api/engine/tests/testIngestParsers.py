@@ -1661,5 +1661,392 @@ class TestNinjaSoaRealSamplePassesGuard(unittest.TestCase):
             conn.close()
 
 
+# =====================================================================
+# 19. Guard nilai duit SEJAGAT (guard_feed_values). Lubang yang ditutup:
+#     guard nilai duit dulu HANYA di pintu Fighter. Feed lain cuma disemak lajur
+#     WUJUD, tak pernah disemak isinya boleh dibaca , jadi sel duit berisi teks
+#     ("PENDING", "-", "N/A") lepas masuk, db.to_num tukar jadi 0, dan bil masuk
+#     sebagai RM0 tanpa bunyi. Bil yang sepatutnya bukti duit sampai bank jadi
+#     bukti KOSONG, dan recon ingat kurier tak bayar.
+#     Sekarang SETIAP ingest_* panggil guard yang sama: reason=suspect_values,
+#     mesej sebut lajur + contoh sel, TIADA baris (mahupun header bil) ditulis.
+#     Semua fixture SINTETIK.
+# =====================================================================
+def _nv_df(rows):
+    """rows = senarai (tracking, cod, net). DataFrame Ninja COD SOA (nilai rekaan)."""
+    n = len(rows)
+    return pd.DataFrame({
+        ingest.NV_SHIPPER: [10000000] * n,
+        ingest.NV_TRACK: [r[0] for r in rows],
+        ingest.NV_COD: [r[1] for r in rows],
+        ingest.NV_NET: [r[2] for r in rows],
+        ingest.NV_COMPLETE: ["20260618"] * n,
+        ingest.NV_PICKUP: ["20260617"] * n,
+    })
+
+
+def _wallet_df(rows):
+    """rows = senarai (txn_id, amount). DataFrame Wallet minimum (nilai rekaan)."""
+    n = len(rows)
+    return pd.DataFrame({
+        ingest.W_TXN: [r[0] for r in rows],
+        ingest.W_DATE: ["10:00:00 18/06/2026"] * n,
+        ingest.W_SELLER: ["Rekaan Stockist"] * n,
+        ingest.W_TYPE: ["IN"] * n,
+        ingest.W_SOURCE: ["Sales"] * n,
+        ingest.W_STATUS: ["Approved"] * n,
+        ingest.W_AMOUNT: [r[1] for r in rows],
+    })
+
+
+def _dhl_parsed(rows):
+    """rows = senarai (ref, cod). Bentuk {meta, header, rows} macam parse_dhl."""
+    header = ["No.", ingest.D_DELIVERED, "DHL Parcel ID", ingest.D_REF,
+              "Consignee Name", ingest.D_DEPOSIT, ingest.D_COD]
+    return {
+        "meta": {"Payment Reference": "TESTPAYREF001", "Payment Date": "20260618"},
+        "header": header,
+        "rows": [[str(i + 1), "18.06.2026", "TESTPARCEL", ref, "Nama Rekaan",
+                  "", cod] for i, (ref, cod) in enumerate(rows)],
+    }
+
+
+def _chip_df(records):
+    """records = senarai dict (Type/Reference Nr./Amount/Fee/Status). DataFrame
+    CHIP bentuk selepas parse_chip (nilai rekaan)."""
+    return pd.DataFrame({
+        ingest.C_TYPE: [r.get("Type", "purchase") for r in records],
+        ingest.C_REF: [r.get("Reference Nr.") for r in records],
+        ingest.C_AMOUNT: [r.get("Amount", "100.00") for r in records],
+        ingest.C_FEE: [r.get("Fee", "2.00") for r in records],
+        ingest.C_STATUS: [r.get("Status", "paid") for r in records],
+        ingest.C_PAID: [r.get("Paid On", "2026-07-16 09:00:00") for r in records],
+        ingest.C_SETTLED: [r.get("Settled On", "2026-07-17") for r in records],
+    })
+
+
+class _MoneyGuardBase(unittest.TestCase):
+    """SQLite dalam-ingatan + pembantu kira baris (dikongsi kelas guard duit)."""
+
+    def setUp(self):
+        self.eng = create_engine("sqlite://")
+        self.conn = self.eng.connect()
+        db.init_db(self.conn)
+
+    def tearDown(self):
+        self.conn.close()
+
+    def _n(self, table):
+        return self.conn.execute(text("SELECT COUNT(*) FROM " + table)).scalar()
+
+    def _bill_counts(self):
+        return self._n("cod_bills"), self._n("cod_bill_lines")
+
+
+class TestMoneyGuardJnt(_MoneyGuardBase):
+    def test_text_in_cod_rejected(self):
+        df = _jnt_df([("TESTAWB0001", "100.00", "5.00"),
+                      ("TESTAWB0002", "PENDING", "5.00")])
+        with self.assertRaises(ingest.IngestError) as cm:
+            ingest.ingest_jnt(df, "JTMYAAA-20260618.xlsx", self.conn)
+        self.assertEqual(cm.exception.reason, ingest.REASON_SUSPECT_VALUES)
+        self.assertEqual(cm.exception.detected_type, "jnt")
+        self.assertIn(ingest.J_COD, cm.exception.message)
+        self.assertIn("PENDING", cm.exception.message)
+        # Header bil pun TIDAK ditulis (guard sebelum BILLS_UPSERT).
+        self.assertEqual(self._bill_counts(), (0, 0))
+
+    def test_text_in_fee_rejected(self):
+        df = _jnt_df([("TESTAWB0001", "100.00", "N/A")])
+        with self.assertRaises(ingest.IngestError) as cm:
+            ingest.ingest_jnt(df, "JTMYAAA-20260618.xlsx", self.conn)
+        self.assertEqual(cm.exception.reason, ingest.REASON_SUSPECT_VALUES)
+        self.assertIn(ingest.J_FEE, cm.exception.message)
+        self.assertEqual(self._bill_counts(), (0, 0))
+
+    def test_majority_empty_cod_rejected(self):
+        df = _jnt_df([("TESTAWB0001", "100.00", "5.00"),
+                      ("TESTAWB0002", "", "5.00"),
+                      ("TESTAWB0003", None, "5.00"),
+                      ("TESTAWB0004", "", "5.00")])
+        with self.assertRaises(ingest.IngestError) as cm:
+            ingest.ingest_jnt(df, "JTMYAAA-20260618.xlsx", self.conn)
+        self.assertEqual(cm.exception.reason, ingest.REASON_SUSPECT_VALUES)
+        self.assertIn("empty", cm.exception.message)
+        self.assertIn(ingest.J_COD, cm.exception.message)
+
+    def test_clean_bill_still_passes(self):
+        # Guard tak boleh terlalu ketat: bil bersih mesti masuk penuh.
+        n = ingest.ingest_jnt(_jnt_df([("TESTAWB0001", "100.00", "5.00"),
+                                       ("TESTAWB0002", "1,250.50", "(3.27)")]),
+                              "JTMYAAA-20260618.xlsx", self.conn)
+        self.assertEqual(n, 2)
+        self.assertEqual(self._bill_counts(), (1, 2))
+
+    def test_true_zero_and_blank_fee_allowed(self):
+        # COD sifar TULEN + fee kosong = fail sah (parcel percuma / bil tanpa fee).
+        n = ingest.ingest_jnt(_jnt_df([("TESTAWB0001", "0.00", ""),
+                                       ("TESTAWB0002", "100.00", "RM 0.00")]),
+                              "JTMYAAA-20260618.xlsx", self.conn)
+        self.assertEqual(n, 2)
+
+
+class TestMoneyGuardNinja(_MoneyGuardBase):
+    def test_text_in_cod_rejected(self):
+        df = _nv_df([("NVMYTEST0001", "100.00", "95.00"),
+                     ("NVMYTEST0002", "PENDING", "95.00")])
+        with self.assertRaises(ingest.IngestError) as cm:
+            ingest.ingest_ninja(df, "NVSOA-20260618.xlsx", self.conn)
+        self.assertEqual(cm.exception.reason, ingest.REASON_SUSPECT_VALUES)
+        self.assertEqual(cm.exception.detected_type, "ninja")
+        self.assertIn(ingest.NV_COD, cm.exception.message)
+        self.assertEqual(self._bill_counts(), (0, 0))
+
+    def test_text_in_net_rejected(self):
+        # NET rosak = fee dikira COD penuh (kurier nampak ambil semua duit).
+        df = _nv_df([("NVMYTEST0001", "100.00", "tiada")])
+        with self.assertRaises(ingest.IngestError) as cm:
+            ingest.ingest_ninja(df, "NVSOA-20260618.xlsx", self.conn)
+        self.assertEqual(cm.exception.reason, ingest.REASON_SUSPECT_VALUES)
+        self.assertIn(ingest.NV_NET, cm.exception.message)
+        self.assertEqual(self._bill_counts(), (0, 0))
+
+    def test_majority_empty_cod_rejected(self):
+        df = _nv_df([("NVMYTEST0001", "100.00", "95.00"),
+                     ("NVMYTEST0002", "", "95.00"),
+                     ("NVMYTEST0003", None, "95.00")])
+        with self.assertRaises(ingest.IngestError) as cm:
+            ingest.ingest_ninja(df, "NVSOA-20260618.xlsx", self.conn)
+        self.assertEqual(cm.exception.reason, ingest.REASON_SUSPECT_VALUES)
+        self.assertIn("empty", cm.exception.message)
+
+    def test_clean_soa_still_passes(self):
+        n = ingest.ingest_ninja(_nv_df([("NVMYTEST0001", "100.00", "95.00"),
+                                        ("NVMYTEST0002", "0.00", "0.00")]),
+                                "NVSOA-20260618.xlsx", self.conn)
+        self.assertEqual(n, 2)
+        self.assertEqual(self._bill_counts(), (1, 2))
+
+
+class TestMoneyGuardDhl(_MoneyGuardBase):
+    def test_text_in_cod_rejected(self):
+        parsed = _dhl_parsed([("TESTREF001", "397.00"), ("TESTREF002", "-")])
+        with self.assertRaises(ingest.IngestError) as cm:
+            ingest.ingest_dhl(parsed, "advice.xls", self.conn)
+        self.assertEqual(cm.exception.reason, ingest.REASON_SUSPECT_VALUES)
+        self.assertEqual(cm.exception.detected_type, "dhl")
+        # Mesej sebut nama lajur SEBENAR dalam advice, bukan nama pembolehubah.
+        self.assertIn(ingest.D_COD, cm.exception.message)
+        self.assertNotIn("'cod'", cm.exception.message)
+        self.assertEqual(self._bill_counts(), (0, 0))
+
+    def test_majority_empty_cod_rejected(self):
+        parsed = _dhl_parsed([("TESTREF001", "397.00"), ("TESTREF002", ""),
+                              ("TESTREF003", "")])
+        with self.assertRaises(ingest.IngestError) as cm:
+            ingest.ingest_dhl(parsed, "advice.xls", self.conn)
+        self.assertEqual(cm.exception.reason, ingest.REASON_SUSPECT_VALUES)
+        self.assertIn("empty", cm.exception.message)
+        self.assertEqual(self._bill_counts(), (0, 0))
+
+    def test_clean_advice_still_passes(self):
+        n = ingest.ingest_dhl(_dhl_parsed([("TESTREF001", "397.00"),
+                                           ("TESTREF002", "157.00")]),
+                              "advice.xls", self.conn)
+        self.assertEqual(n, 2)
+        self.assertEqual(self._bill_counts(), (1, 2))
+
+
+class TestMoneyGuardWallet(_MoneyGuardBase):
+    def test_text_in_amount_rejected(self):
+        df = _wallet_df([("TXN1", "50.00"), ("TXN2", "PENDING")])
+        with self.assertRaises(ingest.IngestError) as cm:
+            ingest.ingest_wallet(df, "wallet.xlsx", self.conn)
+        self.assertEqual(cm.exception.reason, ingest.REASON_SUSPECT_VALUES)
+        self.assertEqual(cm.exception.detected_type, "wallet")
+        self.assertIn(ingest.W_AMOUNT, cm.exception.message)
+        self.assertEqual(self._n("wallet_txns"), 0)
+
+    def test_majority_empty_amount_rejected(self):
+        df = _wallet_df([("TXN1", "50.00"), ("TXN2", ""), ("TXN3", None)])
+        with self.assertRaises(ingest.IngestError) as cm:
+            ingest.ingest_wallet(df, "wallet.xlsx", self.conn)
+        self.assertEqual(cm.exception.reason, ingest.REASON_SUSPECT_VALUES)
+        self.assertIn("empty", cm.exception.message)
+
+    def test_trailing_total_row_does_not_trip_guard(self):
+        # Baris total hujung export (tiada Transaction ID, amaun kosong) tak boleh
+        # jadi penggera palsu , guard kira atas baris ber-Transaction ID sahaja.
+        df = _wallet_df([("TXN1", "50.00"), ("TXN2", "60.00"),
+                         (None, ""), (None, "")])
+        self.assertEqual(ingest.ingest_wallet(df, "wallet.xlsx", self.conn), 4)
+
+    def test_clean_wallet_still_passes(self):
+        n = ingest.ingest_wallet(_wallet_df([("TXN1", "50.00"), ("TXN2", "0.00")]),
+                                 "wallet.xlsx", self.conn)
+        self.assertEqual(n, 2)
+        self.assertEqual(self._n("wallet_txns"), 2)
+
+
+class TestMoneyGuardChip(_MoneyGuardBase):
+    def test_text_in_amount_rejected(self):
+        df = _chip_df([{"Reference Nr.": "FIGHTER-1001", "Amount": "100.00"},
+                       {"Reference Nr.": "FIGHTER-1002", "Amount": "PENDING"}])
+        with self.assertRaises(ingest.IngestError) as cm:
+            ingest.ingest_chip(df, "chipStatement2026-07-16.xlsx", self.conn)
+        self.assertEqual(cm.exception.reason, ingest.REASON_SUSPECT_VALUES)
+        self.assertEqual(cm.exception.detected_type, "chip")
+        self.assertIn(ingest.C_AMOUNT, cm.exception.message)
+        self.assertEqual(self._n("prepaid_payments"), 0)
+
+    def test_text_in_fee_rejected(self):
+        df = _chip_df([{"Reference Nr.": "FIGHTER-1001", "Fee": "rosak"}])
+        with self.assertRaises(ingest.IngestError) as cm:
+            ingest.ingest_chip(df, "chipStatement2026-07-16.xlsx", self.conn)
+        self.assertEqual(cm.exception.reason, ingest.REASON_SUSPECT_VALUES)
+        self.assertIn(ingest.C_FEE, cm.exception.message)
+
+    def test_guard_ignores_rows_already_filtered_out(self):
+        # Baris 'custom' (disbursement) memang tak disimpan, jadi amaun rosaknya
+        # TAK boleh tolak statement yang baris purchase-nya bersih.
+        df = _chip_df([{"Reference Nr.": "FIGHTER-1001", "Amount": "100.00"},
+                       {"Type": "custom", "Reference Nr.": "PAYOUT-1",
+                        "Amount": "rosak"}])
+        self.assertEqual(
+            ingest.ingest_chip(df, "chipStatement2026-07-16.xlsx", self.conn), 1)
+
+    def test_clean_statement_still_passes(self):
+        df = _chip_df([{"Reference Nr.": "FIGHTER-1001", "Amount": "RM 150.00"},
+                       {"Reference Nr.": "FIGHTER-1002", "Amount": "0.00"}])
+        self.assertEqual(
+            ingest.ingest_chip(df, "chipStatement2026-07-16.xlsx", self.conn), 2)
+        self.assertEqual(self._n("prepaid_payments"), 2)
+
+
+class TestMoneyGuardRegistry(_MoneyGuardBase):
+    def test_every_registered_feed_has_a_money_guard(self):
+        # Backbone: tambah feed baru dalam FEED_SCHEMA tanpa lajur duit dalam
+        # FEED_MONEY = lubang RM0 senyap terbuka semula. Ujian ni yang menjaga.
+        self.assertEqual(set(ingest.FEED_MONEY), set(ingest.FEED_SCHEMA))
+        for kind, spec in ingest.FEED_MONEY.items():
+            self.assertTrue(spec["primary"], kind)      # mesti ada lajur utama
+            self.assertTrue(spec["fix"], kind)          # mesti ada arahan pembetulan
+
+    def test_guard_silent_for_unregistered_kind(self):
+        ingest.guard_feed_values("tiada_feed_ni", _jnt_df([("A", "x", "y")]))
+
+    def test_guard_silent_when_money_column_absent(self):
+        # Lajur duit tiada = kerja guard LAJUR, bukan guard nilai (jangan crash).
+        ingest.guard_feed_values("jnt", pd.DataFrame({ingest.J_AWB: ["A"]}))
+
+    def test_rejection_logged_via_ingest_bytes(self):
+        # Laluan sebenar route upload: TIADA exception naik, hanya IngestResult
+        # berkod + SATU baris cap jari selamat PII.
+        buf = io.BytesIO()
+        _nv_df([("NVMYTEST0001", "100.00", "95.00"),
+                ("NVMYTEST0002", "PENDING", "95.00")]).to_excel(buf, index=False)
+        res = ingest.ingest_bytes(buf.getvalue(), "NVSOA-20260618.xlsx", self.conn)
+        self.assertIsNone(res.kind)
+        self.assertEqual(res.rows, 0)
+        self.assertEqual(res.reason, ingest.REASON_SUSPECT_VALUES)
+        self.assertEqual(res.detected_type, "ninja")
+        self.assertEqual(self._bill_counts(), (0, 0))
+        rej = self.conn.execute(text(
+            "SELECT reason, columns_json FROM ingest_rejections")).fetchall()
+        self.assertEqual(len(rej), 1)
+        self.assertEqual(rej[0][0], ingest.REASON_SUSPECT_VALUES)
+        # Cap jari simpan nama LAJUR sahaja, tiada nilai baris (selamat PII).
+        self.assertIn(ingest.NV_COD, rej[0][1])
+        self.assertNotIn("NVMYTEST0001", rej[0][1])
+
+
+# =====================================================================
+# 20. Hardening CHIP (sesi guard duit). Empat lubang kecil yang ditutup:
+#     (a) 'Status' bukan lajur wajib , kalau hilang, tapisan status DILANGKAU
+#         senyap dan bayaran pending/gagal masuk sebagai bukti duit sampai;
+#     (b) tapisan Type tak strip ruang , " purchase" jatuh senyap dari statement;
+#     (c) prefix "FIGHTER-" dibuang case-sensitive dan di MANA MANA kedudukan;
+#     (d) tapisan buang 100% baris tapi hasil pulang HIJAU "0 rows" (nampak macam
+#         berjaya), jadi kerani tak pernah tahu statement tu tiada bayaran.
+#     Semua fixture SINTETIK.
+# =====================================================================
+class TestChipHardening(_MoneyGuardBase):
+    def _refs(self):
+        rows = self.conn.execute(text(
+            "SELECT order_ref FROM prepaid_payments ORDER BY order_ref")).fetchall()
+        return [r[0] for r in rows]
+
+    def test_status_column_now_required(self):
+        df = _chip_df([{"Reference Nr.": "FIGHTER-1001"}]).drop(
+            columns=[ingest.C_STATUS])
+        with self.assertRaises(ingest.IngestError) as cm:
+            ingest.ingest_chip(df, "chipStatement2026-07-16.xlsx", self.conn)
+        self.assertEqual(cm.exception.reason, ingest.REASON_MISSING_COLUMNS)
+        self.assertIn(ingest.C_STATUS, cm.exception.message)
+        self.assertEqual(self._n("prepaid_payments"), 0)
+
+    def test_type_with_spaces_still_counted(self):
+        df = _chip_df([{"Type": " purchase ", "Reference Nr.": "FIGHTER-1001"}])
+        self.assertEqual(
+            ingest.ingest_chip(df, "chipStatement2026-07-16.xlsx", self.conn), 1)
+        self.assertEqual(self._refs(), ["1001"])
+
+    def test_status_with_spaces_still_counted(self):
+        df = _chip_df([{"Reference Nr.": "FIGHTER-1001", "Status": "  paid  "}])
+        self.assertEqual(
+            ingest.ingest_chip(df, "chipStatement2026-07-16.xlsx", self.conn), 1)
+
+    def test_lowercase_fighter_prefix_stripped(self):
+        df = _chip_df([{"Reference Nr.": "fighter-1001"},
+                       {"Reference Nr.": "Fighter-1002"},
+                       {"Reference Nr.": "FIGHTER-1003"}])
+        self.assertEqual(
+            ingest.ingest_chip(df, "chipStatement2026-07-16.xlsx", self.conn), 3)
+        self.assertEqual(self._refs(), ["1001", "1002", "1003"])
+
+    def test_prefix_stripped_only_at_front(self):
+        # Rujukan yang KEBETULAN ada teks tu di tengah kekal utuh (dulu replace
+        # global potong ia jadi rujukan lain = bayaran jadi yatim).
+        df = _chip_df([{"Reference Nr.": "X-FIGHTER-77"}])
+        self.assertEqual(
+            ingest.ingest_chip(df, "chipStatement2026-07-16.xlsx", self.conn), 1)
+        self.assertEqual(self._refs(), ["X-FIGHTER-77"])
+
+    def test_all_disbursement_rows_warns_not_silent_green(self):
+        df = _chip_df([{"Type": "custom", "Reference Nr.": "PAYOUT-1"},
+                       {"Type": "custom", "Reference Nr.": "PAYOUT-2"}])
+        with self.assertRaises(ingest.IngestError) as cm:
+            ingest.ingest_chip(df, "chipStatement2026-07-16.xlsx", self.conn)
+        self.assertEqual(cm.exception.reason, ingest.REASON_NO_PAYMENT_ROWS)
+        self.assertEqual(cm.exception.detected_type, "chip")
+        self.assertIn("2 row(s)", cm.exception.message)
+        self.assertEqual(self._n("prepaid_payments"), 0)
+
+    def test_all_pending_status_warns(self):
+        df = _chip_df([{"Reference Nr.": "FIGHTER-1001", "Status": "overdue"}])
+        with self.assertRaises(ingest.IngestError) as cm:
+            ingest.ingest_chip(df, "chipStatement2026-07-16.xlsx", self.conn)
+        self.assertEqual(cm.exception.reason, ingest.REASON_NO_PAYMENT_ROWS)
+
+    def test_statement_with_zero_rows_stays_quiet(self):
+        # Statement sah tapi memang tiada baris data langsung = bukan amaran
+        # (tiada apa apa untuk diadukan), kekal 0 baris macam dulu.
+        self.assertEqual(
+            ingest.ingest_chip(_chip_df([]), "chipEmpty.xlsx", self.conn), 0)
+
+    def test_no_payment_rows_has_friendly_message(self):
+        msg = ingest.reason_message(ingest.REASON_NO_PAYMENT_ROWS)
+        self.assertIn("Nothing was saved", msg)
+        self.assertNotEqual(msg, ingest.reason_message(ingest.REASON_UNKNOWN))
+
+    def test_mixed_statement_keeps_only_successful_purchases(self):
+        df = _chip_df([{"Reference Nr.": "FIGHTER-1001"},
+                       {"Reference Nr.": "FIGHTER-1002", "Status": "overdue"},
+                       {"Type": "custom", "Reference Nr.": "PAYOUT-1"}])
+        self.assertEqual(
+            ingest.ingest_chip(df, "chipStatement2026-07-16.xlsx", self.conn), 1)
+        self.assertEqual(self._refs(), ["1001"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

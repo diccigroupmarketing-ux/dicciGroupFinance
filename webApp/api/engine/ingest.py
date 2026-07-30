@@ -40,6 +40,7 @@ REASON_NOT_A_BILL = "not_a_bill"        # dokumen dikenali tapi BUKAN bil bayara
 REASON_UNKNOWN = "unknown"              # betul betul tak dikenali
 REASON_MISSING_COLUMNS = "missing_columns"  # feed dikenali tapi lajur wajib hilang
 REASON_SUSPECT_VALUES = "suspect_values"    # lajur duit ada sel yang tak boleh dibaca
+REASON_NO_PAYMENT_ROWS = "no_payment_rows"  # feed sah tapi 0 baris bayaran boleh disimpan
 
 REASON_MESSAGE = {
     REASON_CORRUPT_KNOWN: ("This bill looks damaged. Please download it again "
@@ -55,6 +56,10 @@ REASON_MESSAGE = {
     REASON_SUSPECT_VALUES: ("Some money cells in this file can't be read as "
                             "numbers, so they would be counted as RM 0. Nothing "
                             "was saved, please check the file and upload again."),
+    REASON_NO_PAYMENT_ROWS: ("This file was read fine, but none of its rows are "
+                             "payments this page can save. Nothing was saved, "
+                             "please check the statement period or upload the "
+                             "right export."),
 }
 
 
@@ -235,7 +240,11 @@ FEED_SCHEMA = {
         "label": "a CHIP payment statement",
         "hint": ("The CHIP export format may have changed, please check the "
                  "file or contact admin."),
-        "required": [C_TYPE, C_REF, C_AMOUNT],
+        # C_STATUS wajib: parser TAPIS baris ikut status (hanya bayaran BERJAYA
+        # jadi bukti duit masuk). Tanpa lajur ni dulu tapisan dilangkau senyap,
+        # jadi baris pending/gagal masuk sebagai bukti bayaran , order boleh
+        # ditanda confirmed atas duit yang belum sampai. Lebih baik tolak fail.
+        "required": [C_TYPE, C_REF, C_AMOUNT, C_STATUS],
     },
 }
 
@@ -695,6 +704,105 @@ def _suspect_money_cells(series, numeric):
     return out
 
 
+# =====================================================================
+# Guard nilai duit SEJAGAT (satu enjin, semua feed)
+# ---------------------------------------------------------------------
+# "Apa maksudnya": guard nilai duit dulu HANYA jaga pintu Fighter. Laluan lain
+# (Wallet, J&T, DHL, Ninja, CHIP) cuma ada guard LAJUR , iaitu ia semak lajur tu
+# WUJUD, tapi tak pernah semak isinya boleh dibaca. Jadi sel duit yang berisi
+# teks ("PENDING", "-", "RM -", "N/A") lepas masuk, db.to_num tukar jadi 0, dan
+# bil masuk sistem sebagai RM0 tanpa sebarang bunyi. Bil yang sepatutnya bukti
+# duit sampai bank jadi bukti kosong; recon ingat kurier tak bayar (atau bayar
+# sifar) sedangkan sebenarnya failnya yang tak boleh dibaca.
+#
+# Sekarang setiap feed daftar lajur duitnya di sini dan SETIAP ingest_* panggil
+# guard yang sama, jadi tolakan, ayat, kod sebab, dan baris ingest_rejections
+# semuanya seragam. Dua peranan lajur:
+#   primary   , lajur yang MEMBAWA duit feed tu (COD/Amount). Dijaga dua kali:
+#               (a) nisbah sel KOSONG (lebih F_EMPTY_RATIO_MAX = fail rosak /
+#                   sel merged), dan (b) sel berisi yang jadi 0 senyap.
+#   secondary , lajur duit sokongan (fee, net). Dijaga (b) SAHAJA. Sel kosong
+#               dibenarkan sebab kurier memang biar fee kosong untuk sesetengah
+#               baris, sama logik dengan Sales Commission Fighter.
+# Ambang kosong kongsi F_EMPTY_RATIO_MAX (0.5) supaya finance cuma perlu ingat
+# SATU nombor untuk semua feed dan semua jenis lajur (duit + tarikh).
+# =====================================================================
+FEED_MONEY = {
+    "fighter": {"fix": "re-export it from Fighter",
+                "primary": [F_AMOUNT], "secondary": [F_COMM]},
+    "wallet": {"fix": "re-export the Wallet report from Fighter",
+               "primary": [W_AMOUNT], "secondary": []},
+    "jnt": {"fix": "download the COD bill again from J&T",
+            "primary": [J_COD], "secondary": [J_FEE]},
+    "dhl": {"fix": "download the Payment Advice again from DHL",
+            "primary": [D_COD], "secondary": []},
+    "ninja": {"fix": "download the COD statement again from Ninja Van",
+              "primary": [NV_COD], "secondary": [NV_NET]},
+    "chip": {"fix": "download the statement again from CHIP",
+             "primary": [C_AMOUNT], "secondary": [C_FEE]},
+}
+
+
+def guard_feed_values(kind, frame, numeric=None, detected_type=None):
+    """Tolak fail yang lajur duitnya tak boleh dipercayai (untuk MANA MANA feed).
+
+    `frame`   = DataFrame SELEPAS baris sampah dibuang (baris total/blank export
+                tak patut cetuskan penggera palsu). Nama lajurnya mesti nama
+                kanonik feed tu (laluan DHL rename dulu sebelum panggil).
+    `numeric` = optional {lajur: Series nombor} yang pemanggil dah kira; kalau
+                tiada, guard kira sendiri dengan db.to_num (sumber kebenaran sama
+                yang parser guna, jadi guard tak boleh lebih/kurang ketat).
+
+    Lempar IngestError(suspect_values) dengan KIRAAN + maksimum 3 contoh teks sel.
+    Contoh tu ialah isi sel duit (nombor/teks pendek macam 'PENDING'), bukan nama
+    atau alamat , selamat untuk dilog. Senyap bila `kind` tak berdaftar."""
+    spec = FEED_MONEY.get(kind)
+    if not spec:
+        return
+    dt = detected_type or kind
+    nums = dict(numeric or {})
+    have = set(frame.columns)
+    n = len(frame)
+
+    def numeric_for(col):
+        got = nums.get(col)
+        return db.to_num(frame[col]) if got is None else got
+
+    # (a) Lajur duit utama majoriti KOSONG = fail rosak / sel merged.
+    if n:
+        for col in spec["primary"]:
+            if col not in have:
+                continue
+            blank = sum(1 for raw in frame[col].astype(str).tolist()
+                        if _raw_is_blank(raw))
+            if blank > n * F_EMPTY_RATIO_MAX:
+                raise IngestError(
+                    REASON_SUSPECT_VALUES,
+                    message=(f"{blank} of {n} rows have an empty '{col}'. The "
+                             "file may be damaged or the amounts may sit in "
+                             "merged cells. Nothing was saved, please "
+                             f"{spec['fix']} and upload again."),
+                    detected_type=dt)
+    # (b) Sel duit BERISI yang jadi RM0 senyap (utama + sokongan).
+    bad = []
+    for col in list(spec["primary"]) + list(spec["secondary"]):
+        if col not in have:
+            continue
+        bad += [(col, sample)
+                for sample in _suspect_money_cells(frame[col], numeric_for(col))]
+    if not bad:
+        return
+    cols = sorted({col for col, _ in bad})
+    examples = ", ".join(f"'{s}'" for _, s in bad[:3])
+    raise IngestError(
+        REASON_SUSPECT_VALUES,
+        message=(f"{len(bad)} money cell(s) in {', '.join(cols)} could not be "
+                 f"read as a number (for example {examples}), so they would "
+                 "have been counted as RM 0. Nothing was saved, please fix "
+                 "the file and upload again."),
+        detected_type=dt)
+
+
 def guard_fighter_columns(df):
     """Guard 1: lajur wajib Fighter mesti ada. Lempar IngestError(missing_columns)
     dengan nama lajur yang hilang (nama LAJUR sahaja, tiada nilai baris).
@@ -706,32 +814,10 @@ def guard_fighter_columns(df):
 
 def guard_fighter_values(df, price_num, comm_num):
     """Guard 2 + 3: lajur Selling Price majoriti kosong, atau ada sel duit yang
-    jadi RM0 senyap. Lempar IngestError(suspect_values) dengan kiraan + contoh."""
-    n = len(df)
-    if n:
-        blank = sum(1 for raw in df[F_AMOUNT].astype(str).tolist()
-                    if _raw_is_blank(raw))
-        if blank > n * F_EMPTY_RATIO_MAX:
-            raise IngestError(
-                REASON_SUSPECT_VALUES,
-                message=(f"{blank} of {n} rows have an empty '{F_AMOUNT}'. The "
-                         "file may be damaged or the amounts may sit in merged "
-                         "cells. Nothing was saved, please re-export it from "
-                         "Fighter and upload again."),
-                detected_type="fighter")
-    bad = []
-    for col, nums in ((F_AMOUNT, price_num), (F_COMM, comm_num)):
-        bad += [(col, sample) for sample in _suspect_money_cells(df[col], nums)]
-    if bad:
-        cols = sorted({col for col, _ in bad})
-        examples = ", ".join(f"'{s}'" for _, s in bad[:3])
-        raise IngestError(
-            REASON_SUSPECT_VALUES,
-            message=(f"{len(bad)} money cell(s) in {', '.join(cols)} could not be "
-                     f"read as a number (for example {examples}), so they would "
-                     "have been counted as RM 0. Nothing was saved, please fix "
-                     "the file and upload again."),
-            detected_type="fighter")
+    jadi RM0 senyap. Kini nipis di atas guard_feed_values (enjin sejagat); nama
+    dan mesej dikekalkan sama supaya laluan Fighter tak berubah langsung."""
+    guard_feed_values("fighter", df,
+                      numeric={F_AMOUNT: price_num, F_COMM: comm_num})
 
 
 def _suspect_date_cells(series, parsed):
@@ -868,6 +954,10 @@ def ingest_wallet(df, source_file, conn):
     # Guard pintu DULU: lajur Wallet yang dicapai TERUS di bawah (tarikh, nama,
     # jenis, sumber, status, amaun) mesti ada, kalau tak ia KeyError mentah.
     guard_feed_columns("wallet", df.columns)
+    # Guard nilai duit: lajur Amount dikira HANYA atas baris yang ada Transaction
+    # ID (baris total/blank hujung export tak cetuskan penggera palsu). Tapisan ni
+    # untuk GUARD sahaja, apa yang di-upsert kekal sama macam dulu.
+    guard_feed_values("wallet", df[df[W_TXN].notna()])
     w = pd.DataFrame({
         "txn_id": df[W_TXN].astype(str).str.replace(r"\.0$", "", regex=True).str.strip(),
         "txn_date": iso(db.parse_dt(df[W_DATE], dayfirst=True)),
@@ -1000,6 +1090,9 @@ def ingest_jnt(df, source_file, conn, settlement_override=None):
     # Kalau tak, NaN jadi string "NAN" dan padan dengan semua order tanpa tracking.
     df = df[df[J_AWB].notna()].copy()
     df = df[df[J_AWB].astype(str).str.strip() != ""]
+    # Guard nilai duit SEBELUM apa apa tulisan DB (termasuk header bil): bil COD
+    # yang lajur duitnya tak boleh dibaca bukan bukti duit sampai bank.
+    guard_feed_values("jnt", df)
     bill_id, settlement = parse_bill_meta(source_file)
     # settlement_override: laluan PDF (COD Statement) baca tarikh dari kandungan
     # statement (nama fail J&T PDF tiada larian 8-digit). Default None kekalkan
@@ -1213,6 +1306,10 @@ def ingest_dhl(parsed, source_file, conn):
     # Buang baris ref kosong (awb='' runtuh jadi satu rekod atas PK awb, jumlah
     # COD bil terkurang senyap), guard sama corak dengan J&T/Ninja.
     df = df[df["ref"].astype(str).str.strip() != ""]
+    # Guard nilai duit SEBELUM header bil ditulis. Lajur dalaman "cod" dinamakan
+    # semula ke nama kanonik advice supaya mesej ke finance sebut lajur SEBENAR
+    # yang dia nampak dalam fail, bukan nama pembolehubah kod.
+    guard_feed_values("dhl", df.rename(columns={"cod": D_COD}))
     conn.execute(BILLS_UPSERT, {
         "bill_id": bill_id, "courier": "DHL eCommerce", "settlement_date": settlement,
         "source_file": source_file, "ingested_at": now_iso(),
@@ -1341,6 +1438,10 @@ def ingest_ninja(df, source_file, conn):
     guard_feed_columns("ninja", df.columns)
     df = df[df[NV_TRACK].notna()].copy()
     df = df[df[NV_TRACK].astype(str).str.upper().str.startswith("NV")]
+    # Guard nilai duit SEBELUM header bil ditulis. NET dijaga juga sebab fee
+    # dikira COD - NET: NET yang jatuh senyap ke 0 buat fee = COD penuh (kurier
+    # nampak macam ambil semua duit), satu lagi cara angka rosak masuk senyap.
+    guard_feed_values("ninja", df)
     bill_id, settlement = parse_nv_meta(source_file)
     conn.execute(BILLS_UPSERT, {
         "bill_id": bill_id, "courier": "Ninja Van", "settlement_date": settlement,
@@ -1499,17 +1600,40 @@ def ingest_chip(df, source_file, conn):
     # Guard pintu DULU: statement CHIP tanpa lajur Type/Amount tak boleh dibaca
     # sebagai bukti bayaran, tolak dengan sebab berkod bukan KeyError mentah.
     guard_feed_columns("chip", df.columns)
+    total = len(df)
     # Hanya baris 'purchase' = bayaran pelanggan masuk (disbursement diparkir).
-    df = df[df[C_TYPE].astype(str).str.lower() == "purchase"].copy()
+    # .strip() penting: CHIP kadang hantar sel dengan ruang ekor (" purchase"),
+    # tanpa strip baris tu jatuh senyap dari statement = duit masuk hilang.
+    df = df[df[C_TYPE].astype(str).str.strip().str.lower() == "purchase"].copy()
     df = df[df[C_REF].notna()]
     # Hanya baris status BERJAYA: prepaid pending/gagal belum sahkan duit masuk,
     # jangan simpan sebagai bukti bayaran (elak order ditanda confirmed atas
     # bayaran yang belum jadi). Bila settle nanti, re-upload tangkap (idempotent).
+    # C_STATUS kini lajur WAJIB (FEED_SCHEMA), jadi tapisan ni tak boleh lagi
+    # dilangkau senyap; semak `in df.columns` dikekalkan cuma sebagai jaring
+    # untuk pemanggil terus (ujian) yang bina df sendiri.
     if C_STATUS in df.columns:
         df = df[df[C_STATUS].astype(str).str.strip().str.lower()
                 .isin(db.PREPAID_SUCCESS_STATUS)]
-    df["order_ref"] = df[C_REF].astype(str).str.replace("FIGHTER-", "", regex=False).str.strip()
+    # Prefix FIGHTER- dibuang TAK KIRA huruf besar/kecil dan hanya di HADAPAN
+    # (dulu "fighter-123" lepas utuh jadi order_ref salah = bayaran jadi yatim).
+    df["order_ref"] = (df[C_REF].astype(str)
+                       .str.replace(r"(?i)^\s*fighter-", "", regex=True).str.strip())
     df = df[df["order_ref"].astype(bool) & (df["order_ref"].str.lower() != "nan")]
+    # Fail ada baris tapi tapisan buang SEMUANYA = jangan pulang hijau senyap
+    # ("0 rows" nampak macam berjaya). Beri amaran berkod supaya kerani tahu
+    # statement tu memang tiada bayaran berjaya, bukan sistem yang tertelan.
+    if total and df.empty:
+        raise IngestError(
+            REASON_NO_PAYMENT_ROWS,
+            message=(f"This CHIP statement has {total} row(s), but none of them "
+                     "is a completed customer payment (rows are disbursements, "
+                     "or payments still pending/failed), so nothing was saved. "
+                     "If you expected payments here, check the statement period "
+                     "or re-download it once the payments settle."),
+            detected_type="chip")
+    # Guard nilai duit atas baris yang BENAR benar akan disimpan.
+    guard_feed_values("chip", df)
     stmt_id = _chip_stmt_id(source_file)
     recs = []
     for _, r in df.iterrows():
