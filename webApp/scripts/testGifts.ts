@@ -9,7 +9,7 @@
 import { saveGifts } from "../lib/mutations";
 import {
   giftCostSummaryImpl, stockistGiftsImpl, stockistBottlesImpl,
-  streamSummaryImpl, skuGiftsListImpl,
+  streamSummaryImpl, skuGiftsListImpl, CONF_SQL,
 } from "../lib/recon";
 import { ensureGiftTable } from "../lib/giftsSchema";
 import { getPool } from "../lib/db";
@@ -40,13 +40,20 @@ const GIFTS_A: GiftDef[] = [
 ];
 const GIFTS_B: GiftDef[] = [{ name: "Ujian Beg", cost: 3.5, qty: 1 }];
 
-// Ungkapan conf ditulis SEMULA di sini (bukan import CONF_SQL) supaya oracle
-// kekal bebas dari recon.ts; yang diuji ialah matematik agregat, bukan definisi conf.
+// Penanda baris cod_bill_lines sintetik kes (c), supaya cleanup boleh sasar
+// tepat (termasuk sisa dari run yang mati separuh jalan).
+const SYNTH_BILL = "UJIAN-RM0-testGifts";
+
+// Ungkapan conf GUNA SEMULA CONF_SQL dari recon.ts, bukan salinan tangan.
+// Sebab: yang diuji di sini ialah matematik agregat kos gift, BUKAN definisi
+// "duit disahkan" (definisi tu ada gate sendiri, parity harness lawan
+// reconcile.py). Salinan tangan dulu senyap senyap jadi lebih LONGGAR dari
+// enjin (hilang tapisan cod_amount > 0 dan tapisan status/amount prepaid),
+// jadi oracle boleh "lulus" sambil mengesahkan benda yang enjin tolak.
+// Kes (c) di bawah yang pin makna RM0 tu dengan jangkaan tulis tangan.
 const ORACLE_SQL = `
   SELECT o.order_id, o.status, os.sku, os.qty,
-         CASE WHEN EXISTS (SELECT 1 FROM cod_bill_lines cl WHERE cl.awb = o.tracking)
-                OR EXISTS (SELECT 1 FROM prepaid_payments pp WHERE pp.order_ref = o.order_id)
-              THEN 1 ELSE 0 END AS conf
+         ${CONF_SQL} AS conf
   FROM orders o
   JOIN order_skus os ON os.order_id = o.order_id
   WHERE os.sku = ANY($1)`;
@@ -74,10 +81,7 @@ async function main() {
   // Pilih SKU dinamik (tak bergantung isi backup): skuA = paling banyak order
   // Completed + duit disahkan, skuB = paling banyak order at-risk (kalau ada).
   const confSku = await p.query(`
-    SELECT o.status, os.sku,
-           CASE WHEN EXISTS (SELECT 1 FROM cod_bill_lines cl WHERE cl.awb = o.tracking)
-                  OR EXISTS (SELECT 1 FROM prepaid_payments pp WHERE pp.order_ref = o.order_id)
-                THEN 1 ELSE 0 END AS conf
+    SELECT o.status, os.sku, ${CONF_SQL} AS conf
     FROM orders o
     JOIN order_skus os ON os.order_id = o.order_id
     JOIN sku_bottles sb ON UPPER(TRIM(sb.sku)) = os.sku`);
@@ -177,7 +181,63 @@ async function main() {
     ok(approx(sgCost, sum.confirmedCost),
       `sum stockistGifts cost ${r2(sgCost)} = confirmedCost ${r2(sum.confirmedCost)}`);
     ok(sgQty === sum.giftsGiven, `sum stockistGifts qty ${sgQty} = giftsGiven ${sum.giftsGiven}`);
+
+    // ================================================================
+    // (c) Baris bil RM0 BUKAN bukti duit masuk.
+    // Snapshot dev takde langsung baris cod_amount 0/null/negatif, jadi (b)
+    // di atas takkan nampak beza walaupun oracle terlepas tapisan
+    // cod_amount > 0. Kes ni CIPTA baris tu sendiri (contoh sebenar: caj
+    // "Returned to Sender" Ninja Van, bil ada, duit tak ada) dan kunci
+    // maksudnya dengan jangkaan tulis tangan.
+    // ================================================================
+    console.log("== (c) baris bil RM0 bukan duit masuk ==");
+    const oracleConf = async (orderId: string): Promise<number[]> => {
+      const rs = await p.query(ORACLE_SQL, [[skuA, skuB]]);
+      return rs.rows.filter((r) => r.order_id === orderId).map((r) => Number(r.conf));
+    };
+    // Calon: order Completed ber-gift yang BELUM ada apa apa bukti duit, dan
+    // AWB dia belum wujud dalam cod_bill_lines (awb = PK, elak timpa data dev).
+    const cand = await p.query(`
+      SELECT o.order_id, o.tracking
+      FROM orders o
+      JOIN order_skus os ON os.order_id = o.order_id
+      WHERE o.status = 'Completed' AND os.sku = ANY($1)
+        AND o.tracking IS NOT NULL AND TRIM(o.tracking) <> ''
+        AND (${CONF_SQL}) = 0
+        AND NOT EXISTS (SELECT 1 FROM cod_bill_lines cl WHERE cl.awb = o.tracking)
+      LIMIT 1`, [[skuA, skuB]]);
+    ok(cand.rowCount === 1, "ada order Completed tanpa bukti duit untuk suntik baris ujian");
+    if (cand.rowCount === 1) {
+      const candId = cand.rows[0].order_id as string;
+      const synthAwb = cand.rows[0].tracking as string;
+      const base = await giftCostSummaryImpl();
+
+      await p.query(
+        `INSERT INTO cod_bill_lines (awb, bill_id, cod_amount, fee, source_file)
+         VALUES ($1, $2, 0, 0, 'testGifts.ts')`, [synthAwb, SYNTH_BILL]);
+      ok((await oracleConf(candId)).every((c) => c === 0),
+        "oracle: baris bil RM0 TIDAK mengesahkan duit (conf kekal 0)");
+      const zero = await giftCostSummaryImpl();
+      ok(approx(zero.confirmedCost, base.confirmedCost) &&
+         approx(zero.atRiskCost, base.atRiskCost),
+        `kos gift TAK berubah oleh baris RM0 (confirmed ${r2(zero.confirmedCost)}, at-risk ${r2(zero.atRiskCost)})`);
+
+      // Kawalan (bukti ujian atas ni ada gigi): baris SAMA dinaikkan jadi RM50
+      // mesti FLIP order tu jadi confirmed. Tanpa ni, "tiada perubahan" boleh
+      // jadi sekadar kerana order calon memang tak menyumbang kos gift.
+      await p.query("UPDATE cod_bill_lines SET cod_amount = 50 WHERE awb = $1", [synthAwb]);
+      ok((await oracleConf(candId)).every((c) => c === 1),
+        "oracle: baris bil RM50 MENGESAHKAN duit (conf jadi 1)");
+      const paid = await giftCostSummaryImpl();
+      ok(paid.confirmedCost > base.confirmedCost + 0.005 &&
+         paid.atRiskCost < base.atRiskCost - 0.005,
+        `kos gift berpindah at-risk -> confirmed bila duit betul masuk ` +
+        `(confirmed ${r2(base.confirmedCost)} -> ${r2(paid.confirmedCost)}, ` +
+        `at-risk ${r2(base.atRiskCost)} -> ${r2(paid.atRiskCost)})`);
+    }
   } finally {
+    // Buang baris bil sintetik (ikut bill_id, jadi sisa run yang crash pun kena).
+    await p.query("DELETE FROM cod_bill_lines WHERE bill_id = $1", [SYNTH_BILL]);
     // Pulihkan sku_gifts asal walau ujian gagal separuh jalan.
     await p.query("DELETE FROM sku_gifts");
     for (const g of giftBackup) {

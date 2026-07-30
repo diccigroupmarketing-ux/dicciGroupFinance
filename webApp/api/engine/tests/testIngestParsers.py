@@ -818,16 +818,24 @@ class TestJntPdfParser(unittest.TestCase):
         self.assertTrue(df[ingest.J_PICKUP].isna().all())
 
     def test_mismatch_grand_total_raises(self):
+        # Tolakan kini BERKOD (IngestError) supaya ia jadi mesej mesra + satu
+        # baris ingest_rejections, bukan ValueError mentah yang naik jadi
+        # "server error" di skrin kerani.
         bad_grand = ("999.00", "5.27", "0.32", "471.41")
-        with self.assertRaises(ValueError):
+        with self.assertRaises(ingest.IngestError) as cm:
             ingest._jnt_parse_text(_jnt_stmt_text(_JNT_GOOD_ROWS, bad_grand))
+        self.assertEqual(cm.exception.reason, ingest.REASON_TALLY_MISMATCH)
+        self.assertEqual(cm.exception.detected_type, "jnt")
+        self.assertIn("999.00", cm.exception.message)   # nombor fail
+        self.assertIn("477.00", cm.exception.message)   # nombor yang kita baca
 
     def test_missing_grand_total_raises(self):
         txt = "\n".join(
             l for l in _jnt_stmt_text(_JNT_GOOD_ROWS, _JNT_GOOD_GRAND).splitlines()
             if not l.startswith("GRAND TOTAL"))
-        with self.assertRaises(ValueError):
+        with self.assertRaises(ingest.IngestError) as cm:
             ingest._jnt_parse_text(txt)
+        self.assertEqual(cm.exception.reason, ingest.REASON_TALLY_MISMATCH)
 
     def test_non_jnt_text_returns_none(self):
         # Teks tanpa tandatangan J&T (cth PDF DHL) = bukan bil J&T, langkau.
@@ -1877,9 +1885,12 @@ class TestMoneyGuardWallet(_MoneyGuardBase):
     def test_trailing_total_row_does_not_trip_guard(self):
         # Baris total hujung export (tiada Transaction ID, amaun kosong) tak boleh
         # jadi penggera palsu , guard kira atas baris ber-Transaction ID sahaja.
+        # Baris tu juga TIDAK disimpan lagi (dulu ia runtuh jadi satu rekod PK
+        # "nan"), jadi kaunter sekarang 2, bukan 4.
         df = _wallet_df([("TXN1", "50.00"), ("TXN2", "60.00"),
                          (None, ""), (None, "")])
-        self.assertEqual(ingest.ingest_wallet(df, "wallet.xlsx", self.conn), 4)
+        self.assertEqual(ingest.ingest_wallet(df, "wallet.xlsx", self.conn), 2)
+        self.assertEqual(self._n("wallet_txns"), 2)
 
     def test_clean_wallet_still_passes(self):
         n = ingest.ingest_wallet(_wallet_df([("TXN1", "50.00"), ("TXN2", "0.00")]),
@@ -2046,6 +2057,588 @@ class TestChipHardening(_MoneyGuardBase):
         self.assertEqual(
             ingest.ingest_chip(df, "chipStatement2026-07-16.xlsx", self.conn), 1)
         self.assertEqual(self._refs(), ["1001"])
+
+
+# =====================================================================
+# 21. SEMAKAN JUMLAH KAWALAN (reason=tally_mismatch). Lubang yang ditutup:
+#     fail kurier CETAK jumlah besarnya sendiri (baris TOTAL kaki SOA Ninja,
+#     "Sum Total"/"Payment amount" advice DHL, GRAND TOTAL statement J&T), tapi
+#     kita gugurkan baris tu tanpa memakainya. Jadi kalau parser terlepas baris
+#     (format berubah, sel rosak, baris tanpa tracking dibuang), fail tetap
+#     "berjaya" dengan duit KURANG dan tiada siapa perasan.
+#     Sekarang jumlah yang kita baca DIBANDING jumlah yang fail isytihar.
+#     Fail LAMA tanpa baris total = semakan dilangkau SENYAP (tak boleh mengarang
+#     jumlah kawalan yang tak wujud). Semua fixture SINTETIK.
+# =====================================================================
+def _nv_df_with_total(rows, total_cod, total_net):
+    """SOA Ninja sintetik + baris TOTAL kaki (tiada Tracking ID, ada duit)."""
+    return _nv_df(list(rows) + [(None, total_cod, total_net)])
+
+
+class TestNinjaControlTotal(_MoneyGuardBase):
+    def test_matching_total_passes_and_total_row_not_saved(self):
+        df = _nv_df_with_total(
+            [("NVMYTEST0001", "100.00", "95.00"),
+             ("NVMYTEST0002", "50.00", "45.00")], "150.00", "140.00")
+        self.assertEqual(ingest.ingest_ninja(df, "NVSOA-20260618.xlsx", self.conn), 2)
+        self.assertEqual(self._bill_counts(), (1, 2))     # baris TOTAL tak masuk
+
+    def test_short_read_rejected(self):
+        # Fail isytihar COD 587 tapi baris yang boleh dibaca cuma 500 = duit
+        # tercicir. Dulu ia masuk senyap sebagai 500.
+        df = _nv_df_with_total([("NVMYTEST0001", "500.00", "480.00")],
+                               "587.00", "560.00")
+        with self.assertRaises(ingest.IngestError) as cm:
+            ingest.ingest_ninja(df, "NVSOA-20260618.xlsx", self.conn)
+        self.assertEqual(cm.exception.reason, ingest.REASON_TALLY_MISMATCH)
+        self.assertEqual(cm.exception.detected_type, "ninja")
+        self.assertIn("500.00", cm.exception.message)     # yang kita baca
+        self.assertIn("587.00", cm.exception.message)     # yang fail isytihar
+        self.assertIn(ingest.NV_COD, cm.exception.message)
+        self.assertEqual(self._bill_counts(), (0, 0))     # sifar kesan DB
+
+    def test_net_mismatch_alone_is_enough_to_reject(self):
+        df = _nv_df_with_total([("NVMYTEST0001", "100.00", "95.00")],
+                               "100.00", "90.00")
+        with self.assertRaises(ingest.IngestError) as cm:
+            ingest.ingest_ninja(df, "NVSOA-20260618.xlsx", self.conn)
+        self.assertEqual(cm.exception.reason, ingest.REASON_TALLY_MISMATCH)
+        self.assertIn(ingest.NV_NET, cm.exception.message)
+
+    def test_dropped_non_nv_row_is_caught(self):
+        # Baris tracking BUKAN NV dibuang oleh penapis; jumlah kawalan yang kini
+        # dibaca itulah yang menangkap duit yang terbuang tu.
+        df = _nv_df_with_total([("NVMYTEST0001", "100.00", "95.00"),
+                                ("XYZ0001", "80.00", "75.00")],
+                               "180.00", "170.00")
+        with self.assertRaises(ingest.IngestError) as cm:
+            ingest.ingest_ninja(df, "NVSOA-20260618.xlsx", self.conn)
+        self.assertEqual(cm.exception.reason, ingest.REASON_TALLY_MISMATCH)
+
+    def test_file_without_total_row_still_passes(self):
+        # Format lama (tiada baris TOTAL) TIDAK boleh ditolak , semakan dilangkau.
+        n = ingest.ingest_ninja(_nv_df([("NVMYTEST0001", "100.00", "95.00")]),
+                                "NVSOA-20260618.xlsx", self.conn)
+        self.assertEqual(n, 1)
+
+    def test_two_total_like_rows_skip_check_silently(self):
+        # Bentuk fail tak dikenali (dua baris tanpa tracking tapi berduit) =
+        # jangan teka, langkau semakan. Lebih baik senyap daripada tolak fail sah.
+        df = _nv_df([("NVMYTEST0001", "100.00", "95.00"),
+                     (None, "999.00", "999.00"), (None, "888.00", "888.00")])
+        self.assertEqual(ingest.ingest_ninja(df, "NVSOA-20260618.xlsx", self.conn), 1)
+
+    def test_blank_separator_row_is_not_a_total(self):
+        # Baris pemisah kosong tulen (tiada tracking, tiada duit) bukan total.
+        df = _nv_df([("NVMYTEST0001", "100.00", "95.00"), (None, None, None)])
+        self.assertEqual(ingest.ingest_ninja(df, "NVSOA-20260618.xlsx", self.conn), 1)
+
+    def test_cents_rounding_within_tolerance_passes(self):
+        # Pembundaran sen kurier (<= 1 sen) BUKAN ketidaktepatan , mesti lulus.
+        df = _nv_df_with_total([("NVMYTEST0001", "100.00", "95.005")],
+                               "100.00", "95.00")
+        self.assertEqual(ingest.ingest_ninja(df, "NVSOA-20260618.xlsx", self.conn), 1)
+
+    def test_ingest_bytes_logs_rejection(self):
+        buf = io.BytesIO()
+        _nv_df_with_total([("NVMYTEST0001", "500.00", "480.00")],
+                          "587.00", "560.00").to_excel(buf, index=False)
+        res = ingest.ingest_bytes(buf.getvalue(), "NVSOA-20260618.xlsx", self.conn)
+        self.assertIsNone(res.kind)
+        self.assertEqual(res.reason, ingest.REASON_TALLY_MISMATCH)
+        self.assertEqual(self._bill_counts(), (0, 0))
+        rej = self.conn.execute(text(
+            "SELECT reason, columns_json FROM ingest_rejections")).fetchall()
+        self.assertEqual(len(rej), 1)
+        self.assertEqual(rej[0][0], ingest.REASON_TALLY_MISMATCH)
+        self.assertNotIn("NVMYTEST0001", rej[0][1])       # cap jari kekal PII-safe
+
+
+def _dhl_totals(before=None, deduction=0.0, sum_total=None, payment=None):
+    """Blok jumlah kawalan advice PDF (nilai rekaan)."""
+    return {"before_deduction": before, "deduction": deduction,
+            "sum_total": sum_total, "payment_amount": payment}
+
+
+def _dhl_parsed_with_totals(rows, totals):
+    p = _dhl_parsed(rows)
+    p["totals"] = totals
+    return p
+
+
+class TestDhlControlTotal(_MoneyGuardBase):
+    def test_matching_totals_pass(self):
+        p = _dhl_parsed_with_totals(
+            [("TESTREF001", "397.00"), ("TESTREF002", "157.00")],
+            _dhl_totals(before=554.0, sum_total=554.0, payment=554.0))
+        self.assertEqual(ingest.ingest_dhl(p, "advice.pdf", self.conn), 2)
+
+    def test_missing_line_rejected(self):
+        p = _dhl_parsed_with_totals(
+            [("TESTREF001", "397.00")],
+            _dhl_totals(before=554.0, sum_total=554.0, payment=554.0))
+        with self.assertRaises(ingest.IngestError) as cm:
+            ingest.ingest_dhl(p, "advice.pdf", self.conn)
+        self.assertEqual(cm.exception.reason, ingest.REASON_TALLY_MISMATCH)
+        self.assertEqual(cm.exception.detected_type, "dhl")
+        self.assertIn("397.00", cm.exception.message)
+        self.assertIn("554.00", cm.exception.message)
+        self.assertEqual(self._bill_counts(), (0, 0))
+
+    def test_payment_amount_alone_can_reject(self):
+        # Bank bayar 900 tapi baris cuma 554 = ada baris yang tak dibaca.
+        p = _dhl_parsed_with_totals(
+            [("TESTREF001", "397.00"), ("TESTREF002", "157.00")],
+            _dhl_totals(payment=900.0))
+        with self.assertRaises(ingest.IngestError) as cm:
+            ingest.ingest_dhl(p, "advice.pdf", self.conn)
+        self.assertEqual(cm.exception.reason, ingest.REASON_TALLY_MISMATCH)
+        self.assertIn("Payment amount", cm.exception.message)
+
+    def test_advice_without_totals_still_passes(self):
+        # Laluan .xls (tiada blok jumlah) TIDAK boleh ditolak.
+        self.assertEqual(
+            ingest.ingest_dhl(_dhl_parsed([("TESTREF001", "397.00")]),
+                              "advice.xls", self.conn), 1)
+
+    def test_totals_parsed_from_wrapped_pdf_text(self):
+        # Label "Total before deduction:" PECAH dua baris dalam extract_text.
+        txt = ("some advice text\nTotal before\ndeduction: 3,162.00\n"
+               "Total deduction: 0.00\nSum Total: 3,162.00\n")
+        t = ingest._dhl_pdf_totals(txt, "3,162.00")
+        self.assertEqual(t["before_deduction"], 3162.00)
+        self.assertEqual(t["deduction"], 0.00)
+        self.assertEqual(t["sum_total"], 3162.00)
+        self.assertEqual(t["payment_amount"], 3162.00)
+
+    def test_totals_absent_are_none_not_zero(self):
+        # Tiada label = None (langkau semakan), BUKAN 0.00 yang akan tolak fail
+        # sah secara palsu.
+        t = ingest._dhl_pdf_totals("advice tanpa blok jumlah", None)
+        self.assertEqual(list(t.values()), [None, None, None, None])
+
+
+class TestControlTotalHelper(unittest.TestCase):
+    def test_none_stated_is_skipped(self):
+        ingest.guard_control_total("ninja", [("COD Amount", 100.0, None)])
+
+    def test_within_one_cent_passes(self):
+        ingest.guard_control_total("ninja", [("COD Amount", 100.00, 100.005)])
+
+    def test_beyond_tolerance_rejects(self):
+        with self.assertRaises(ingest.IngestError) as cm:
+            ingest.guard_control_total("ninja", [("COD Amount", 100.00, 100.02)])
+        self.assertEqual(cm.exception.reason, ingest.REASON_TALLY_MISMATCH)
+
+    def test_message_carries_courier_fix_hint(self):
+        with self.assertRaises(ingest.IngestError) as cm:
+            ingest.guard_control_total("jnt", [("COD", 1.0, 2.0)])
+        self.assertIn(ingest.FEED_MONEY["jnt"]["fix"], cm.exception.message)
+
+
+# =====================================================================
+# 22. "Total deduction" DHL (reason=not_modelled). Advice boleh potong sesuatu
+#     daripada bayaran (caj, tuntutan, pelarasan). Kita TAK modelkan potongan
+#     lagi, dan fee DHL dikunci 0.0 , jadi advice berpotongan akan simpan angka
+#     yang kita TAHU salah. Lebih jujur berhenti dan hantar pada owner daripada
+#     mencipta nombor. Fixture SINTETIK.
+# =====================================================================
+class TestDhlDeduction(_MoneyGuardBase):
+    def test_zero_deduction_proceeds_as_usual(self):
+        p = _dhl_parsed_with_totals([("TESTREF001", "397.00")],
+                                    _dhl_totals(before=397.0, deduction=0.0,
+                                                sum_total=397.0, payment=397.0))
+        self.assertEqual(ingest.ingest_dhl(p, "advice.pdf", self.conn), 1)
+        self.assertEqual(self._bill_counts(), (1, 1))
+
+    def test_non_zero_deduction_rejected(self):
+        p = _dhl_parsed_with_totals([("TESTREF001", "397.00")],
+                                    _dhl_totals(before=397.0, deduction=25.0,
+                                                sum_total=372.0, payment=372.0))
+        with self.assertRaises(ingest.IngestError) as cm:
+            ingest.ingest_dhl(p, "advice.pdf", self.conn)
+        self.assertEqual(cm.exception.reason, ingest.REASON_NOT_MODELLED)
+        self.assertEqual(cm.exception.detected_type, "dhl")
+        self.assertIn("25.00", cm.exception.message)
+        self.assertIn("Total deduction", cm.exception.message)
+        self.assertEqual(self._bill_counts(), (0, 0))
+
+    def test_negative_deduction_also_rejected(self):
+        p = _dhl_parsed_with_totals([("TESTREF001", "397.00")],
+                                    _dhl_totals(deduction=-10.0))
+        with self.assertRaises(ingest.IngestError) as cm:
+            ingest.ingest_dhl(p, "advice.pdf", self.conn)
+        self.assertEqual(cm.exception.reason, ingest.REASON_NOT_MODELLED)
+
+    def test_deduction_checked_before_tally(self):
+        # Advice berpotongan MEMANG tak tally (Sum Total < baris), tapi sebab
+        # sebenarnya potongan , mesejnya mesti yang itu, bukan tally_mismatch.
+        p = _dhl_parsed_with_totals([("TESTREF001", "397.00")],
+                                    _dhl_totals(before=397.0, deduction=25.0,
+                                                sum_total=372.0, payment=372.0))
+        with self.assertRaises(ingest.IngestError) as cm:
+            ingest.ingest_dhl(p, "advice.pdf", self.conn)
+        self.assertEqual(cm.exception.reason, ingest.REASON_NOT_MODELLED)
+
+    def test_missing_deduction_field_does_not_reject(self):
+        p = _dhl_parsed_with_totals([("TESTREF001", "397.00")],
+                                    _dhl_totals(deduction=None))
+        self.assertEqual(ingest.ingest_dhl(p, "advice.pdf", self.conn), 1)
+
+    def test_not_modelled_has_friendly_message(self):
+        msg = ingest.reason_message(ingest.REASON_NOT_MODELLED)
+        self.assertIn("Nothing was saved", msg)
+        self.assertNotEqual(msg, ingest.reason_message(ingest.REASON_UNKNOWN))
+
+
+# =====================================================================
+# 23. Statement J&T PDF: semakan PER BARIS + tanda fee.
+#     (a) Guard lama semak JUMLAH sahaja (COD & net lawan GRAND TOTAL). Ralat
+#         yang saling batal antara baris boleh lepas. Sekarang setiap baris
+#         disemak: COD - fee mesti = Net yang statement cetak.
+#     (b) Fee dulu dikira abs(txn) + abs(SST) , SENTIASA positif. Baris
+#         reversal/kredit (J&T PULANGKAN fee, token TANPA kurungan) jadi kos,
+#         bukan kredit. Sekarang fee = -(txn + SST): baris biasa keluar nilai
+#         SAMA macam dulu, baris kredit kekal NEGATIF. Fixture SINTETIK.
+# =====================================================================
+# Baris reversal: COD dipulangkan (kurungan) dan fee dikreditkan balik (tanpa
+# kurungan). net = cod - fee = -297.00 + 3.47 = -293.53.
+_JNT_REVERSAL_ROW = ("632199999999", "2026-07-21 09:00:00",
+                     "(297.00)", "3.27", "0.20", "(293.53)")
+
+
+class TestJntPdfLineTally(unittest.TestCase):
+    def test_line_that_does_not_add_up_rejected(self):
+        rows = [("632111663453", "2026-07-21 22:28:06", "297.00", "(3.27)",
+                 "(0.20)", "290.00")]        # net salah (patut 293.53)
+        with self.assertRaises(ingest.IngestError) as cm:
+            ingest._jnt_parse_text(_jnt_stmt_text(rows, ("297.00", "3.27",
+                                                         "0.20", "290.00")))
+        self.assertEqual(cm.exception.reason, ingest.REASON_TALLY_MISMATCH)
+        self.assertIn("632111663453", cm.exception.message)   # AWB contoh
+
+    def test_offsetting_line_errors_no_longer_hide(self):
+        # Dua baris silap yang JUMLAHNYA betul: guard jumlah lama lulus, guard
+        # per baris yang menangkapnya.
+        rows = [("632111663453", "2026-07-21 22:28:06", "297.00", "(3.27)",
+                 "(0.20)", "300.00"),
+                ("632118893604", "2026-07-21 14:52:52", "180.00", "(2.00)",
+                 "(0.12)", "171.41")]
+        grand = ("477.00", "5.27", "0.32", "471.41")          # jumlah TETAP tally
+        with self.assertRaises(ingest.IngestError) as cm:
+            ingest._jnt_parse_text(_jnt_stmt_text(rows, grand))
+        self.assertEqual(cm.exception.reason, ingest.REASON_TALLY_MISMATCH)
+        self.assertIn("do not add up", cm.exception.message)
+
+    def test_reversal_row_keeps_negative_fee(self):
+        # Bukti tanda: fee baris kredit mesti NEGATIF. Dengan abs() dulu ia jadi
+        # +3.47 dan baris ni akan gagal semakan COD - fee = Net.
+        rows = list(_JNT_GOOD_ROWS) + [_JNT_REVERSAL_ROW]
+        grand = ("180.00", "2.00", "0.12", "177.88")   # 477-297 , 471.41-293.53
+        df, _ = ingest._jnt_parse_text(_jnt_stmt_text(rows, grand))
+        self.assertEqual(len(df), 3)
+        self.assertAlmostEqual(df[ingest.J_FEE].iloc[2], -3.47, places=2)
+        self.assertAlmostEqual(df[ingest.J_COD].iloc[2], -297.00, places=2)
+
+    def test_normal_rows_keep_positive_fee(self):
+        # Perangai baris biasa TIDAK berubah (kos kekal positif).
+        df, _ = ingest._jnt_parse_text(
+            _jnt_stmt_text(_JNT_GOOD_ROWS, _JNT_GOOD_GRAND))
+        self.assertEqual(list(df[ingest.J_FEE]), [3.47, 2.12])
+
+    def test_every_line_satisfies_cod_minus_fee_equals_net(self):
+        rows = list(_JNT_GOOD_ROWS) + [_JNT_REVERSAL_ROW]
+        grand = ("180.00", "2.00", "0.12", "177.88")
+        df, _ = ingest._jnt_parse_text(_jnt_stmt_text(rows, grand))
+        for i, r in enumerate(rows):
+            net = ingest._jnt_pdf_num(r[5])
+            self.assertAlmostEqual(
+                df[ingest.J_COD].iloc[i] - df[ingest.J_FEE].iloc[i], net, places=2)
+
+    def test_cent_rounding_on_a_line_still_passes(self):
+        rows = [("632111663453", "2026-07-21 22:28:06", "297.00", "(3.27)",
+                 "(0.20)", "293.54")]        # 1 sen beza = pembundaran
+        df, _ = ingest._jnt_parse_text(
+            _jnt_stmt_text(rows, ("297.00", "3.27", "0.20", "293.54")))
+        self.assertEqual(len(df), 1)
+
+
+# =====================================================================
+# 24. DUPLIKAT KUNCI DALAM SATU FAIL (reason=duplicate_rows). Lubang yang
+#     ditutup: cod_bill_lines berkunci AWB, jadi AWB berulang DALAM satu fail
+#     ditimpa senyap oleh upsert , duit baris pertama lenyap sedangkan kaunter
+#     "x baris" tetap kira dua. Sekarang: duplikat IDENTIK = dedup senyap
+#     (kaunter jadi jujur), duplikat bernilai BERBEZA = tolak fail (kita tak
+#     boleh pilih sendiri baris mana yang betul). Fixture SINTETIK.
+# =====================================================================
+class TestDuplicateRowsGuard(_MoneyGuardBase):
+    def test_jnt_identical_duplicate_deduped_silently(self):
+        df = _jnt_df([("TESTAWB0001", "100.00", "5.00"),
+                      ("TESTAWB0001", "100.00", "5.00"),
+                      ("TESTAWB0002", "60.00", "3.00")])
+        n = ingest.ingest_jnt(df, "JTMYAAA-20260618.xlsx", self.conn)
+        self.assertEqual(n, 2)                       # kaunter jujur, bukan 3
+        self.assertEqual(self._bill_counts(), (1, 2))
+        total = self.conn.execute(text(
+            "SELECT ROUND(SUM(cod_amount),2) FROM cod_bill_lines")).scalar()
+        self.assertEqual(total, 160.0)
+
+    def test_jnt_conflicting_duplicate_rejected(self):
+        df = _jnt_df([("TESTAWB0001", "100.00", "5.00"),
+                      ("TESTAWB0001", "250.00", "5.00")])
+        with self.assertRaises(ingest.IngestError) as cm:
+            ingest.ingest_jnt(df, "JTMYAAA-20260618.xlsx", self.conn)
+        self.assertEqual(cm.exception.reason, ingest.REASON_DUPLICATE_ROWS)
+        self.assertEqual(cm.exception.detected_type, "jnt")
+        self.assertIn("TESTAWB0001", cm.exception.message)   # contoh kunci
+        self.assertEqual(self._bill_counts(), (0, 0))        # sifar kesan DB
+
+    def test_jnt_duplicate_differing_only_in_date_rejected(self):
+        # "Nilai berbeza" bukan duit sahaja , tarikh hantar pun mengubah aging.
+        df = _jnt_df([("TESTAWB0001", "100.00", "5.00"),
+                      ("TESTAWB0001", "100.00", "5.00")])
+        df.loc[1, ingest.J_DELIVERED] = "2026-06-25"
+        with self.assertRaises(ingest.IngestError) as cm:
+            ingest.ingest_jnt(df, "JTMYAAA-20260618.xlsx", self.conn)
+        self.assertEqual(cm.exception.reason, ingest.REASON_DUPLICATE_ROWS)
+
+    def test_ninja_conflicting_duplicate_rejected(self):
+        df = _nv_df([("NVMYTEST0001", "100.00", "95.00"),
+                     ("NVMYTEST0001", "300.00", "290.00")])
+        with self.assertRaises(ingest.IngestError) as cm:
+            ingest.ingest_ninja(df, "NVSOA-20260618.xlsx", self.conn)
+        self.assertEqual(cm.exception.reason, ingest.REASON_DUPLICATE_ROWS)
+        self.assertEqual(cm.exception.detected_type, "ninja")
+        self.assertEqual(self._bill_counts(), (0, 0))
+
+    def test_ninja_identical_duplicate_deduped(self):
+        df = _nv_df([("NVMYTEST0001", "100.00", "95.00"),
+                     ("NVMYTEST0001", "100.00", "95.00")])
+        self.assertEqual(ingest.ingest_ninja(df, "NVSOA-20260618.xlsx", self.conn), 1)
+
+    def test_dhl_conflicting_duplicate_rejected(self):
+        p = _dhl_parsed([("TESTREF001", "397.00"), ("TESTREF001", "157.00")])
+        with self.assertRaises(ingest.IngestError) as cm:
+            ingest.ingest_dhl(p, "advice.xls", self.conn)
+        self.assertEqual(cm.exception.reason, ingest.REASON_DUPLICATE_ROWS)
+        self.assertEqual(cm.exception.detected_type, "dhl")
+        self.assertEqual(self._bill_counts(), (0, 0))
+
+    def test_dhl_identical_duplicate_deduped(self):
+        p = _dhl_parsed([("TESTREF001", "397.00"), ("TESTREF001", "397.00")])
+        self.assertEqual(ingest.ingest_dhl(p, "advice.xls", self.conn), 1)
+
+    def test_dedup_keeps_original_order_and_is_idempotent(self):
+        df = _jnt_df([("TESTAWB0002", "60.00", "3.00"),
+                      ("TESTAWB0001", "100.00", "5.00"),
+                      ("TESTAWB0002", "60.00", "3.00")])
+        ingest.ingest_jnt(df, "JTMYAAA-20260618.xlsx", self.conn)
+        ingest.ingest_jnt(df, "JTMYAAA-20260618.xlsx", self.conn)   # re-upload
+        rows = self.conn.execute(text(
+            "SELECT awb FROM cod_bill_lines ORDER BY awb")).fetchall()
+        self.assertEqual([r[0] for r in rows], ["TESTAWB0001", "TESTAWB0002"])
+
+    def test_ingest_bytes_logs_rejection(self):
+        buf = io.BytesIO()
+        _nv_df([("NVMYTEST0001", "100.00", "95.00"),
+                ("NVMYTEST0001", "300.00", "290.00")]).to_excel(buf, index=False)
+        res = ingest.ingest_bytes(buf.getvalue(), "NVSOA-20260618.xlsx", self.conn)
+        self.assertIsNone(res.kind)
+        self.assertEqual(res.reason, ingest.REASON_DUPLICATE_ROWS)
+        self.assertEqual(self._bill_counts(), (0, 0))
+        self.assertEqual(self.conn.execute(text(
+            "SELECT COUNT(*) FROM ingest_rejections")).scalar(), 1)
+
+
+class TestDuplicateGuardHelper(unittest.TestCase):
+    def test_empty_rows_safe(self):
+        self.assertEqual(ingest.guard_duplicate_rows("jnt", []), [])
+
+    def test_unique_rows_pass_through_unchanged(self):
+        rows = [{"awb": "A", "cod_amount": 1.0}, {"awb": "B", "cod_amount": 2.0}]
+        self.assertEqual(ingest.guard_duplicate_rows("jnt", rows), rows)
+
+    def test_message_counts_distinct_keys(self):
+        rows = [{"awb": "A", "cod_amount": 1.0}, {"awb": "A", "cod_amount": 2.0},
+                {"awb": "B", "cod_amount": 3.0}, {"awb": "B", "cod_amount": 4.0}]
+        with self.assertRaises(ingest.IngestError) as cm:
+            ingest.guard_duplicate_rows("jnt", rows)
+        self.assertIn("2 tracking number(s)", cm.exception.message)
+
+
+# =====================================================================
+# 25. Feed Wallet: dua lubang kecil.
+#     (a) Baris tanpa Transaction ID (baris total/blank hujung export) dulu TIDAK
+#         ditapis. txn_id ialah PK wallet_txns dan sel kosong jadi string "nan",
+#         jadi SEMUA baris tanpa ID runtuh jadi SATU rekod "nan" yang bertimpa
+#         timpa , kaunter tetap kira penuh, duit komisennya hilang.
+#     (b) Teks status/type/source/nama disimpan mentah. SQL komisen banding teks
+#         TEPAT, jadi satu ruang ekor (" Approved") buat transaksi tu hilang dari
+#         kiraan secara senyap. Sekarang dikemas DI PINTU. Fixture SINTETIK.
+# =====================================================================
+class TestWalletHardening(_MoneyGuardBase):
+    def _rows(self):
+        return self.conn.execute(text(
+            "SELECT txn_id, seller_name, txn_type, source, status "
+            "FROM wallet_txns ORDER BY txn_id")).fetchall()
+
+    def test_rows_without_txn_id_are_dropped(self):
+        df = _wallet_df([("TXN1", "50.00"), (None, "60.00"), (None, "70.00")])
+        self.assertEqual(ingest.ingest_wallet(df, "wallet.xlsx", self.conn), 1)
+        self.assertEqual([r[0] for r in self._rows()], ["TXN1"])
+
+    def test_blank_string_txn_id_also_dropped(self):
+        df = _wallet_df([("TXN1", "50.00"), ("   ", "60.00")])
+        self.assertEqual(ingest.ingest_wallet(df, "wallet.xlsx", self.conn), 1)
+
+    def test_no_nan_sentinel_row_saved(self):
+        # Bukti langsung lubang lama: sel ID kosong jadi string "nan" selepas
+        # astype(str), jadi SEMUA baris tanpa ID runtuh jadi satu rekod "nan".
+        df = _wallet_df([("TXN1", "50.00"), (float("nan"), "60.00"),
+                         (float("nan"), "70.00")])
+        self.assertEqual(ingest.ingest_wallet(df, "wallet.xlsx", self.conn), 1)
+        ids = [r[0] for r in self._rows()]
+        self.assertEqual(ids, ["TXN1"])
+        for sentinel in ("nan", "NAN", "None", "NaT"):
+            self.assertNotIn(sentinel, ids)
+
+    def test_text_columns_are_trimmed(self):
+        df = _wallet_df([("TXN1", "50.00")])
+        df.loc[0, ingest.W_STATUS] = " Approved "
+        df.loc[0, ingest.W_TYPE] = " IN "
+        df.loc[0, ingest.W_SOURCE] = "Sales  "
+        df.loc[0, ingest.W_SELLER] = "  Rekaan Stockist "
+        ingest.ingest_wallet(df, "wallet.xlsx", self.conn)
+        row = self._rows()[0]
+        self.assertEqual(row[1], "Rekaan Stockist")
+        self.assertEqual(row[2], "IN")
+        self.assertEqual(row[3], "Sales")
+        self.assertEqual(row[4], "Approved")
+
+    def test_blank_text_stays_null_not_nan_string(self):
+        df = _wallet_df([("TXN1", "50.00")])
+        df.loc[0, ingest.W_SELLER] = None
+        ingest.ingest_wallet(df, "wallet.xlsx", self.conn)
+        self.assertIsNone(self._rows()[0][1])
+
+    def test_clean_wallet_values_unchanged(self):
+        # Nilai yang memang bersih TIDAK berubah langsung (strip bukan penulisan
+        # semula data).
+        ingest.ingest_wallet(_wallet_df([("TXN1", "50.00")]), "w.xlsx", self.conn)
+        self.assertEqual(self._rows()[0],
+                         ("TXN1", "Rekaan Stockist", "IN", "Sales", "Approved"))
+
+
+# =====================================================================
+# 26. Header jadual PDF DHL dibaca ikut NAMA, bukan POSISI.
+#     Lubang yang ditutup: kod dulu tampal senarai 7 nama TETAP atas baris data.
+#     Satu lajur baru yang DHL sisip di tengah akan menggeser semua nama satu
+#     lajur , lajur duit dibaca dari sel sebelahnya, amaun salah masuk tanpa
+#     bunyi. Sekarang header datang dari fail itu sendiri (nama ringkas
+#     diterjemah ke nama kanonik advice), dan nama yang tak dikenali jatuh ke
+#     guard lajur = reason missing_columns. Fixture SINTETIK.
+# =====================================================================
+_DHL_PDF_REAL_HEAD = ["No.", "Delivery Date", "DHL Parcel ID", "Customer Ref.ID",
+                      "Consignee Name", "Deposit Date", "CoD Amount", ""]
+
+
+class TestDhlPdfHeaderMap(unittest.TestCase):
+    def test_short_names_canonicalised_in_place(self):
+        out = ingest._dhl_pdf_header(_DHL_PDF_REAL_HEAD)
+        self.assertEqual(len(out), len(_DHL_PDF_REAL_HEAD))   # posisi dikekalkan
+        self.assertEqual(out[3], ingest.D_REF)                # Ref.ID -> kanonik
+        self.assertEqual(out[6], ingest.D_COD)
+
+    def test_inserted_column_shifts_money_index(self):
+        # Lajur baru disisip SEBELUM lajur duit: indeks duit mesti ikut fail.
+        head = ["No.", "Delivery Date", "DHL Parcel ID", "Customer Ref.ID",
+                "Consignee Name", "Service Type", "Deposit Date", "CoD Amount"]
+        out = ingest._dhl_pdf_header(head)
+        self.assertEqual(out.index(ingest.D_COD), 7)          # bukan 6
+        self.assertEqual(out[5], "Service Type")              # nama asing kekal
+
+    def test_unknown_name_kept_as_is(self):
+        self.assertEqual(ingest._dhl_pdf_header(["Lajur Baru"]), ["Lajur Baru"])
+
+    def test_empty_and_none_header_safe(self):
+        self.assertEqual(ingest._dhl_pdf_header(None), [])
+        self.assertEqual(ingest._dhl_pdf_header([None, "  "]), ["", ""])
+
+
+class TestDhlPdfHeaderDrivesMoney(_MoneyGuardBase):
+    def _parsed_with_extra_column(self):
+        """Advice dengan satu lajur baru disisip sebelum lajur duit (bentuk
+        sama macam yang parse_dhl_pdf akan keluarkan untuk PDF begitu)."""
+        head = ingest._dhl_pdf_header(
+            ["No.", "Delivery Date", "DHL Parcel ID", "Customer Ref.ID",
+             "Consignee Name", "Service Type", "Deposit Date", "CoD Amount"])
+        return {"meta": {"Payment Reference": "TESTPAYREF001",
+                         "Payment Date": "20260618"},
+                "header": head,
+                "rows": [["1", "18.06.2026", "TESTPARCEL", "TESTREF001",
+                          "Nama Rekaan", "EXPRESS", "19.06.2026", "397.00"]]}
+
+    def test_money_read_from_named_column_not_position(self):
+        # Dengan senarai posisi TETAP lama, "397.00" duduk di indeks 7 sedangkan
+        # kod cari indeks 6 ("EXPRESS") = COD jadi RM0. Sekarang betul.
+        n = ingest.ingest_dhl(self._parsed_with_extra_column(), "advice.pdf",
+                              self.conn)
+        self.assertEqual(n, 1)
+        row = self.conn.execute(text(
+            "SELECT awb, cod_amount, delivered_date FROM cod_bill_lines")).fetchone()
+        self.assertEqual(row[0], "TESTREF001")
+        self.assertEqual(row[1], 397.0)
+        self.assertEqual(row[2], "2026-06-18 00:00:00")
+
+    def test_unrecognised_money_column_rejected_as_missing(self):
+        # Nama lajur duit berubah jadi sesuatu yang kita tak kenal = TOLAK,
+        # bukan baca dari lajur sebelah.
+        p = self._parsed_with_extra_column()
+        p["header"] = [c if c != ingest.D_COD else "Amount Paid"
+                       for c in p["header"]]
+        with self.assertRaises(ingest.IngestError) as cm:
+            ingest.ingest_dhl(p, "advice.pdf", self.conn)
+        self.assertEqual(cm.exception.reason, ingest.REASON_MISSING_COLUMNS)
+        self.assertIn(ingest.D_COD, cm.exception.message)
+        self.assertEqual(self._bill_counts(), (0, 0))
+
+
+@unittest.skipUnless(os.path.exists(_PDF_TWIN) and os.path.exists(_PDF_SOLO),
+                     "sampel DHL PDF (gitignored) tiada, langkau")
+class TestDhlPdfRealSampleTotals(unittest.TestCase):
+    """Gate mutlak: sampel PDF SEBENAR mesti kekal reason=ok, dan jumlah kawalan
+    yang dibaca mesti sepadan dengan jumlah barisnya."""
+
+    def _ingest(self, path):
+        eng = create_engine("sqlite://")
+        conn = eng.connect()
+        db.init_db(conn)
+        with open(path, "rb") as fh:
+            res = ingest.ingest_bytes(fh.read(), os.path.basename(path), conn)
+        rows = conn.execute(text(
+            "SELECT COUNT(*), ROUND(SUM(cod_amount),2) FROM cod_bill_lines")
+        ).fetchone()
+        conn.close()
+        return res, rows
+
+    def test_real_pdf_totals_are_read(self):
+        with open(_PDF_SOLO, "rb") as fh:
+            parsed = ingest.parse_dhl_pdf(fh.read())
+        t = parsed["totals"]
+        self.assertEqual(t["deduction"], 0.00)
+        self.assertEqual(t["sum_total"], 3162.00)
+        self.assertEqual(t["payment_amount"], 3162.00)
+        # Header datang dari fail, sudah dikanonkan ikut nama.
+        self.assertIn(ingest.D_COD, parsed["header"])
+        self.assertIn(ingest.D_REF, parsed["header"])
+
+    def test_real_pdfs_still_ingest_ok(self):
+        res, rows = self._ingest(_PDF_SOLO)
+        self.assertEqual((res.kind, res.reason, res.rows), ("dhl", ingest.REASON_OK, 16))
+        self.assertEqual(rows, (16, 3162.00))
+        res, rows = self._ingest(_PDF_TWIN)
+        self.assertEqual((res.kind, res.reason, res.rows), ("dhl", ingest.REASON_OK, 1))
+        self.assertEqual(rows, (1, 397.00))
 
 
 if __name__ == "__main__":

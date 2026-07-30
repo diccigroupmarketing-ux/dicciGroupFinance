@@ -41,6 +41,9 @@ REASON_UNKNOWN = "unknown"              # betul betul tak dikenali
 REASON_MISSING_COLUMNS = "missing_columns"  # feed dikenali tapi lajur wajib hilang
 REASON_SUSPECT_VALUES = "suspect_values"    # lajur duit ada sel yang tak boleh dibaca
 REASON_NO_PAYMENT_ROWS = "no_payment_rows"  # feed sah tapi 0 baris bayaran boleh disimpan
+REASON_TALLY_MISMATCH = "tally_mismatch"    # jumlah baris tak padan jumlah kawalan fail
+REASON_DUPLICATE_ROWS = "duplicate_rows"    # kunci berulang DALAM fail, nilai berbeza
+REASON_NOT_MODELLED = "not_modelled"        # fail ada elemen duit yang belum dimodelkan
 
 REASON_MESSAGE = {
     REASON_CORRUPT_KNOWN: ("This bill looks damaged. Please download it again "
@@ -60,6 +63,18 @@ REASON_MESSAGE = {
                              "payments this page can save. Nothing was saved, "
                              "please check the statement period or upload the "
                              "right export."),
+    REASON_TALLY_MISMATCH: ("The rows we could read don't add up to the total "
+                            "printed in this file, so some money would be "
+                            "missing. Nothing was saved, please download the "
+                            "file again and upload it."),
+    REASON_DUPLICATE_ROWS: ("This file lists the same tracking number more than "
+                            "once with different amounts, so saving it would "
+                            "overwrite one row's money with another's. Nothing "
+                            "was saved, please check the file with the courier."),
+    REASON_NOT_MODELLED: ("This file contains a charge this page doesn't know "
+                          "how to record yet, so the amounts would be wrong. "
+                          "Nothing was saved, please send this file to the "
+                          "owner."),
 }
 
 
@@ -803,6 +818,106 @@ def guard_feed_values(kind, frame, numeric=None, detected_type=None):
         detected_type=dt)
 
 
+# =====================================================================
+# Guard JUMLAH KAWALAN (semakan silang lawan total yang fail sendiri cetak)
+# ---------------------------------------------------------------------
+# "Apa maksudnya": kurier cetak jumlah besar dalam failnya sendiri (baris TOTAL
+# bawah SOA Ninja, "Sum Total"/"Payment amount" dalam advice DHL, GRAND TOTAL
+# dalam statement J&T). Sebelum ni kita GUGURKAN baris total tu tanpa memakainya.
+# Jadi kalau parser terlepas beberapa baris (format berubah sikit, sel rosak,
+# baris tanpa tracking dibuang), sistem tetap kata "berjaya" , cuma duitnya
+# kurang, dan tiada siapa tahu. Sekarang jumlah baris yang kita baca DIBANDING
+# dengan jumlah yang fail sendiri isytihar. Tak sama = tolak fail.
+#
+# Toleransi SEN (0.01) sebab kurier bundarkan; lebih daripada tu bukan pembundaran.
+# Fail LAMA yang memang tiada baris total: `stated` = None, semakan DILANGKAU
+# SENYAP (kita tak boleh mengarang jumlah kawalan yang tak wujud).
+# =====================================================================
+TALLY_TOLERANCE = 0.01
+
+
+def _within_cent(got, stated):
+    """True kalau dua nombor duit sama dalam had SEN (0.01).
+
+    Beza dibundarkan ke 4 titik DULU: 297.00 - 3.47 keluar 293.53000000000003
+    dalam float, dan beza mentahnya dengan 293.54 ialah 0.010000000000048 ,
+    lebih daripada 0.01 semata mata sebab hingar float. Kita menolak fail atas
+    dasar duit, bukan atas dasar perwakilan nombor."""
+    return abs(round(float(got) - float(stated), 4)) <= TALLY_TOLERANCE
+
+
+def _fix_hint(kind):
+    """Ayat 'buat apa sekarang' untuk feed ni (kongsi dengan guard duit)."""
+    spec = FEED_MONEY.get(kind) or {}
+    return spec.get("fix", "download the file again from the courier")
+
+
+def guard_control_total(kind, checks, detected_type=None):
+    """Tolak fail yang jumlah barisnya tak tally dengan jumlah kawalan fail.
+
+    `checks` = senarai (label, jumlah_dibaca, jumlah_diisytihar). Entri dengan
+    jumlah_diisytihar None DILANGKAU (fail tiada total , bukan salah fail).
+    Lempar IngestError(tally_mismatch) yang sebut DUA nombor, supaya finance
+    nampak berapa banyak duit yang tercicir, bukan sekadar 'fail ditolak'."""
+    bad = [(label, float(got), float(stated))
+           for label, got, stated in checks
+           if stated is not None and not _within_cent(got, stated)]
+    if not bad:
+        return
+    parts = ["'{}' adds up to RM {:,.2f} in the rows we could read, but this "
+             "file's own total says RM {:,.2f}".format(label, got, stated)
+             for label, got, stated in bad]
+    raise IngestError(
+        REASON_TALLY_MISMATCH,
+        message=("This file does not add up: " + "; ".join(parts) + ". Some "
+                 "rows are missing or could not be read, so nothing was saved. "
+                 "Please " + _fix_hint(kind) + " and upload again."),
+        detected_type=detected_type or kind)
+
+
+# =====================================================================
+# Guard KUNCI BERULANG DALAM SATU FAIL
+# ---------------------------------------------------------------------
+# "Apa maksudnya": jadual cod_bill_lines berkunci AWB. Kalau SATU fail sebut AWB
+# yang sama dua kali dengan amaun BERBEZA, upsert menimpa baris pertama dengan
+# yang kedua , duit baris pertama lenyap, tapi kaunter "x baris di-upsert" tetap
+# kira dua. Fail nampak berjaya penuh sedangkan sebahagian duitnya hilang.
+#
+# Sekarang duplikat dikesan SEBELUM apa apa ditulis:
+#   , duplikat IDENTIK penuh (fail eksport dua kali baris sama) = dedup SENYAP,
+#     tiada duit hilang, dan kaunter jadi jujur (kira baris unik sahaja).
+#   , duplikat dengan nilai BERBEZA = tolak fail. Kita TIDAK boleh pilih sendiri
+#     baris mana yang betul; itu keputusan finance dengan kurier.
+# =====================================================================
+def guard_duplicate_rows(kind, rows, key="awb", detected_type=None):
+    """Dedup senyap duplikat identik; tolak duplikat yang nilainya berbeza.
+
+    `rows` = records (hasil db.to_records) untuk SATU fail. Pulang senarai baris
+    unik dengan turutan asal dikekalkan (idempotent). Lempar
+    IngestError(duplicate_rows) dengan contoh kunci (nombor tracking, bukan nama
+    atau alamat , selamat dilog)."""
+    seen, order, clashes = {}, [], []
+    for r in rows:
+        k = r.get(key)
+        if k not in seen:
+            seen[k] = r
+            order.append(k)
+        elif r != seen[k] and k not in clashes:
+            clashes.append(k)
+    if clashes:
+        examples = ", ".join("'%s'" % k for k in clashes[:3])
+        raise IngestError(
+            REASON_DUPLICATE_ROWS,
+            message=("%d tracking number(s) in this file appear more than once "
+                     "with DIFFERENT values (for example %s). Saving it would "
+                     "overwrite one row's money with another's, so nothing was "
+                     "saved. Please %s and upload again, or check the duplicate "
+                     "with the courier."
+                     % (len(clashes), examples, _fix_hint(kind))),
+            detected_type=detected_type or kind)
+    return [seen[k] for k in order]
+
+
 def guard_fighter_columns(df):
     """Guard 1: lajur wajib Fighter mesti ada. Lempar IngestError(missing_columns)
     dengan nama lajur yang hilang (nama LAJUR sahaja, tiada nilai baris).
@@ -950,24 +1065,41 @@ def _strip_dot0(series):
     return s.where(~s.isin(["nan", "None", "NaN", ""]), None)
 
 
+def _strip_txt(series):
+    """Buang ruang tepi lajur teks; sel kosong/sentinel jadi None (bukan 'nan').
+
+    Kenapa penting (bukan kosmetik): SQL komisen BANDING teks tepat (status =
+    'Approved', source = 'Sales'). Satu ruang ekor dari export (" Approved")
+    buat perbandingan tu gagal senyap, jadi transaksi tu hilang dari kiraan
+    komisen sedangkan ia ada dalam DB. Kita kemas DI PINTU, bukan tampal di
+    setiap query."""
+    s = series.astype(str).str.strip()
+    return s.where(~s.str.lower().isin(list(_BLANK_RAW)), None)
+
+
 def ingest_wallet(df, source_file, conn):
     # Guard pintu DULU: lajur Wallet yang dicapai TERUS di bawah (tarikh, nama,
     # jenis, sumber, status, amaun) mesti ada, kalau tak ia KeyError mentah.
     guard_feed_columns("wallet", df.columns)
-    # Guard nilai duit: lajur Amount dikira HANYA atas baris yang ada Transaction
-    # ID (baris total/blank hujung export tak cetuskan penggera palsu). Tapisan ni
-    # untuk GUARD sahaja, apa yang di-upsert kekal sama macam dulu.
-    guard_feed_values("wallet", df[df[W_TXN].notna()])
+    # Buang baris tanpa Transaction ID (baris total/blank hujung export), sama
+    # corak dengan Fighter/J&T/DHL/Ninja. WAJIB: txn_id ialah PK wallet_txns, dan
+    # baris kosong jadi string "nan" selepas astype(str) , SEMUA baris tanpa ID
+    # runtuh jadi SATU rekod "nan" yang bertimpa timpa, tapi kaunter tetap kira
+    # penuh. Fail nampak berjaya, duit komisennya hilang.
+    df = df[df[W_TXN].notna()].copy()
+    df = df[df[W_TXN].astype(str).str.strip() != ""]
+    # Guard nilai duit atas baris yang BENAR benar akan disimpan.
+    guard_feed_values("wallet", df)
     w = pd.DataFrame({
         "txn_id": df[W_TXN].astype(str).str.replace(r"\.0$", "", regex=True).str.strip(),
         "txn_date": iso(db.parse_dt(df[W_DATE], dayfirst=True)),
         "order_id": _strip_dot0(df[W_ORDER]) if W_ORDER in df.columns else None,
         "seller_id": _strip_dot0(df[W_SELLER_ID]) if W_SELLER_ID in df.columns else None,
-        "seller_name": df[W_SELLER],
-        "seller_role": df[W_ROLE] if W_ROLE in df.columns else None,
-        "txn_type": df[W_TYPE],
-        "source": df[W_SOURCE],
-        "status": df[W_STATUS],
+        "seller_name": _strip_txt(df[W_SELLER]),
+        "seller_role": _strip_txt(df[W_ROLE]) if W_ROLE in df.columns else None,
+        "txn_type": _strip_txt(df[W_TYPE]),
+        "source": _strip_txt(df[W_SOURCE]),
+        "status": _strip_txt(df[W_STATUS]),
         "amount": db.to_num(df[W_AMOUNT]),
         "managed_by": df[W_MANAGED] if W_MANAGED in df.columns else None,
         "reference": df[W_REF] if W_REF in df.columns else None,
@@ -1099,10 +1231,6 @@ def ingest_jnt(df, source_file, conn, settlement_override=None):
     # perangai Excel sedia ada (tarikh dari nama fail sahaja).
     if settlement_override:
         settlement = settlement_override
-    conn.execute(BILLS_UPSERT, {
-        "bill_id": bill_id, "courier": "J&T Express", "settlement_date": settlement,
-        "source_file": source_file, "ingested_at": now_iso(),
-    })
 
     l = pd.DataFrame({
         "awb": db.norm_trk(df[J_AWB]),
@@ -1114,7 +1242,13 @@ def ingest_jnt(df, source_file, conn, settlement_override=None):
         "source_file": source_file,
         "ingested_at": now_iso(),
     })
-    rows = db.to_records(l)
+    # Duplikat AWB DALAM fail ni disaring SEBELUM apa apa ditulis (termasuk header
+    # bil), sama corak dengan guard lajur/nilai: fail ditolak = sifar kesan DB.
+    rows = guard_duplicate_rows("jnt", db.to_records(l))
+    conn.execute(BILLS_UPSERT, {
+        "bill_id": bill_id, "courier": "J&T Express", "settlement_date": settlement,
+        "source_file": source_file, "ingested_at": now_iso(),
+    })
     if rows:  # fail sah tapi kosong (header sahaja) tak patut crash executemany
         rows, _ = _quarantine_conflicts(conn, rows, source_file)
         if rows:
@@ -1134,6 +1268,16 @@ def ingest_jnt(df, source_file, conn, settlement_override=None):
 # Takrif fee: SAMA macam Excel "Total Processing Fee" = Transaction Fee + SST
 # (dua dua kos). Dibuktikan oleh GRAND TOTAL: net = COD - (txnFee + SST). Kita
 # simpan fee sebagai nilai POSITIF (magnitud kos), selaras lajur fee Excel.
+#
+# TANDA (dibaiki round 2): statement tulis kos dalam kurungan, "(3.27)" = -3.27
+# selepas to_num. Dulu kod ambil abs() setiap komponen, jadi fee SENTIASA positif
+# , termasuk baris reversal/kredit di mana J&T PULANGKAN fee (token TANPA
+# kurungan, iaitu positif). abs() tukar pulangan tu jadi kos, dan duit tersasar
+# dua kali ganda nilai fee tanpa sebarang bunyi. Sekarang kita NEGATE jumlah
+# komponen: fee = -(txn + SST). Baris biasa keluar nilai SAMA macam dulu
+# (-(-3.27 + -0.20) = +3.47), baris kredit KEKAL negatif. Semakan per baris
+# `cod - fee == net` di bawah yang membuktikan tanda ni betul untuk kedua dua
+# jenis baris (dengan abs(), baris kredit akan gagal semakan tu).
 
 # Baris detail: "No AWB YYYY-MM-DD HH:MM:SS COD (txnFee) (SST) Net"
 # (kurungan optional; guna to_num untuk tanda, ambil magnitud untuk fee).
@@ -1148,8 +1292,9 @@ def _jnt_pdf_num(tok):
 
 def _jnt_parse_text(full):
     """Baca teks COD Statement J&T -> (DataFrame bentuk bil J&T Excel, settlement)
-    kalau ia betul betul statement J&T, else None. RAISE ValueError kalau jumlah
-    baris detail tak tally dengan GRAND TOTAL. Fungsi TULEN (atas teks) supaya
+    kalau ia betul betul statement J&T, else None. LEMPAR IngestError
+    (tally_mismatch) kalau jumlah baris detail tak tally dengan GRAND TOTAL, atau
+    kalau ada baris yang `COD - fee != Net`. Fungsi TULEN (atas teks) supaya
     boleh diuji tanpa PDF sebenar."""
     # Tandatangan J&T COD Statement (JANGAN silap kenal PDF DHL / lain).
     if "COD Statement" not in full or "J&T EXPRESS" not in full:
@@ -1163,7 +1308,9 @@ def _jnt_parse_text(full):
                 and _JNT_ROW_DATE.match(t[2]):
             awb, deliv = t[1], t[2] + " " + t[3]
             cod, txn, sst, net = t[4], t[5], t[6], t[7]
-            fee = abs(_jnt_pdf_num(txn)) + abs(_jnt_pdf_num(sst))  # total kos positif
+            # Kos ditulis berkurungan (negatif); negate supaya fee kos = positif
+            # DAN baris kredit (token positif) kekal negatif. Lihat nota di atas.
+            fee = -(_jnt_pdf_num(txn) + _jnt_pdf_num(sst))
             rows.append({
                 "awb": awb, "deliv": deliv,
                 "cod": _jnt_pdf_num(cod), "fee": round(fee, 2),
@@ -1173,16 +1320,34 @@ def _jnt_parse_text(full):
             grand = {"cod": _jnt_pdf_num(t[2]), "net": _jnt_pdf_num(t[5])}
 
     if grand is None:
-        raise ValueError("J&T COD Statement: GRAND TOTAL tak dijumpai, "
-                         "fail ditolak (tak boleh sahkan jumlah).")
+        raise IngestError(
+            REASON_TALLY_MISMATCH,
+            message=("This J&T COD Statement has no GRAND TOTAL line, so the "
+                     "rows cannot be proven complete. Nothing was saved, please "
+                     "download the COD statement again from J&T and upload it."),
+            detected_type="jnt")
+    # Semakan PER BARIS: COD - fee mesti sama dengan Net yang statement cetak.
+    # Ini yang menangkap tanda fee tersalah baca (kredit dibaca sebagai kos) dan
+    # lajur tergeser , kes yang jumlah besar boleh sorok kalau ia saling batal.
+    off = [r for r in rows
+           if not _within_cent(r["cod"] - r["fee"], r["net"])]
+    if off:
+        examples = ", ".join("'%s'" % r["awb"] for r in off[:3])
+        raise IngestError(
+            REASON_TALLY_MISMATCH,
+            message=("%d line(s) in this J&T COD Statement do not add up: COD "
+                     "minus fee does not equal the Net printed on the line (for "
+                     "example %s). Nothing was saved, please download the COD "
+                     "statement again from J&T and upload it."
+                     % (len(off), examples)),
+            detected_type="jnt")
     # Validasi dalaman: jumlah baris detail MESTI tally GRAND TOTAL (COD & net).
     cod_sum = round(sum(r["cod"] for r in rows), 2)
     net_sum = round(sum(r["net"] for r in rows), 2)
-    if abs(cod_sum - grand["cod"]) > 0.01 or abs(net_sum - grand["net"]) > 0.01:
-        raise ValueError(
-            "J&T COD Statement tak tally dengan GRAND TOTAL "
-            "(detail COD %.2f vs %.2f, net %.2f vs %.2f), fail ditolak."
-            % (cod_sum, grand["cod"], net_sum, grand["net"]))
+    guard_control_total("jnt", [
+        ("COD (RM)", cod_sum, grand["cod"]),
+        ("Net Amount (RM)", net_sum, grand["net"]),
+    ])
 
     settlement = None
     m = _JNT_STMT_DATE.search(full)
@@ -1201,8 +1366,9 @@ def _jnt_parse_text(full):
 
 def parse_jnt_pdf(data):
     """Pulang (DataFrame bentuk bil J&T Excel, settlement) kalau `data` ialah
-    J&T COD Statement PDF, else None. RAISE ValueError kalau jumlah baris detail
-    tak tally dengan GRAND TOTAL (tolak fail, jangan simpan senyap)."""
+    J&T COD Statement PDF, else None. LEMPAR IngestError(tally_mismatch) kalau
+    baris detail tak tally dengan GRAND TOTAL atau dengan Net per baris (tolak
+    fail, jangan simpan senyap)."""
     if not data[:5].startswith(b"%PDF"):
         return None
     try:
@@ -1310,22 +1476,50 @@ def ingest_dhl(parsed, source_file, conn):
     # semula ke nama kanonik advice supaya mesej ke finance sebut lajur SEBENAR
     # yang dia nampak dalam fail, bukan nama pembolehubah kod.
     guard_feed_values("dhl", df.rename(columns={"cod": D_COD}))
-    conn.execute(BILLS_UPSERT, {
-        "bill_id": bill_id, "courier": "DHL eCommerce", "settlement_date": settlement,
-        "source_file": source_file, "ingested_at": now_iso(),
-    })
+    cod_num = db.to_num(df["cod"])
+    # Jumlah kawalan advice (laluan PDF sahaja; .xls lama tiada, jadi None dan
+    # semakan dilangkau senyap).
+    totals = parsed.get("totals") or {}
+    # "Total deduction" BUKAN sifar = DHL potong sesuatu daripada bayaran ini
+    # (caj, tuntutan, pelarasan). Kita belum modelkan potongan tu di mana mana,
+    # jadi menyimpannya bermakna mencipta angka yang kita tahu salah. Berhenti
+    # dan minta bantuan owner, jangan reka nombor.
+    deduction = totals.get("deduction")
+    if deduction is not None and abs(deduction) > TALLY_TOLERANCE:
+        raise IngestError(
+            REASON_NOT_MODELLED,
+            message=("This DHL Payment Advice has a 'Total deduction' of RM "
+                     "{:,.2f}. Deductions are not recorded by this page yet, so "
+                     "saving it would show more money than DHL actually paid. "
+                     "Nothing was saved, please send this advice to the owner."
+                     .format(deduction)),
+            detected_type="dhl")
+    # Jumlah baris yang kita baca mesti sama dengan setiap jumlah yang advice
+    # sendiri cetak (dengan potongan sifar, ketiga tiganya sepatutnya sama).
+    cod_sum = round(float(cod_num.sum()), 2)
+    guard_control_total("dhl", [
+        ("Total before deduction", cod_sum, totals.get("before_deduction")),
+        ("Sum Total", cod_sum, totals.get("sum_total")),
+        ("Payment amount", cod_sum, totals.get("payment_amount")),
+    ])
     # DHL advice tiada lajur fee (COD kasar). fee=0 buat masa ni.
     l = pd.DataFrame({
         "awb": db.norm_trk(df["ref"]),
         "bill_id": bill_id,
-        "cod_amount": db.to_num(df["cod"]),
+        "cod_amount": cod_num,
         "fee": 0.0,
         "delivered_date": iso(pd.to_datetime(df["deliv"], format="%d.%m.%Y", errors="coerce")),
         "pickup_date": None,
         "source_file": source_file,
         "ingested_at": now_iso(),
     })
-    recs = db.to_records(l)
+    # Duplikat ref DALAM advice ni (identik = dedup senyap, berbeza = tolak)
+    # disaring SEBELUM header bil ditulis, sama corak dengan J&T/Ninja.
+    recs = guard_duplicate_rows("dhl", db.to_records(l))
+    conn.execute(BILLS_UPSERT, {
+        "bill_id": bill_id, "courier": "DHL eCommerce", "settlement_date": settlement,
+        "source_file": source_file, "ingested_at": now_iso(),
+    })
     if recs:
         recs, _ = _quarantine_conflicts(conn, recs, source_file)
         if recs:
@@ -1343,11 +1537,51 @@ def ingest_dhl(parsed, source_file, conn):
 # ingest_dhl cari (Customer Reference ID / CoD Amount / Delivery Date), dan
 # Payment Date ditukar dd.mm.yyyy -> yyyymmdd supaya identik dengan kembar .xls.
 
-# Header baris-item jadual advice (nama ringkas dalam PDF: "Customer Ref.ID").
-_DHL_PDF_HEADER = [
-    "No.", "Delivery Date", "DHL Parcel ID", "Customer Reference ID",
-    "Consignee Name", "Deposit Date", "CoD Amount",
-]
+# =====================================================================
+# Header jadual PDF dibaca ikut NAMA, bukan POSISI
+# ---------------------------------------------------------------------
+# "Apa maksudnya": dulu kod anggap jadual PDF sentiasa 7 lajur dalam susunan
+# TETAP, dan tampal senarai nama tu terus atas baris data. Jadi kalau DHL sisip
+# satu lajur baru di tengah (contoh "Service Type"), setiap nama akan tergeser
+# satu lajur ke kiri: nama consignee dibaca sebagai tarikh, dan LAJUR DUIT dibaca
+# dari lajur sebelahnya. Amaun salah masuk sistem, tiada bunyi, sebab semua sel
+# masih "ada".
+#
+# Sekarang kita ambil header yang PDF sendiri cetak, dan cuma terjemah nama
+# ringkasnya ("Customer Ref.ID") ke nama kanonik advice .xls ("Customer Reference
+# ID"). Posisi setiap lajur datang dari fail itu sendiri, jadi lajur baru sisipan
+# tak boleh menggeser duit. Nama yang tak dikenali dibiar apa adanya , ia jatuh
+# ke guard_feed_columns dan fail ditolak dengan reason missing_columns, bukan
+# dibaca dari lajur salah.
+_DHL_PDF_ALIASES = {
+    "no.": "No.",
+    "no": "No.",
+    "delivery date": D_DELIVERED,
+    "dhl parcel id": "DHL Parcel ID",
+    "customer ref.id": D_REF,
+    "customer ref. id": D_REF,
+    "customer ref id": D_REF,
+    "customer reference id": D_REF,
+    "consignee name": "Consignee Name",
+    "deposit date": D_DEPOSIT,
+    "cod amount": D_COD,
+}
+
+# Nama kanonik yang menandakan satu jadual PDF ialah jadual baris-item advice
+# (bukan jadual ringkasan bayaran). Cukup SATU daripadanya hadir.
+_DHL_PDF_ITEM_MARKERS = (D_COD, "DHL Parcel ID")
+
+
+def _dhl_pdf_header(head):
+    """Kanonkan header jadual PDF ikut NAMA lajur, posisi dikekalkan.
+
+    Pulang senarai sama PANJANG dengan `head` (jadi indeksnya boleh terus dipakai
+    atas baris data). Nama yang tak ada dalam peta alias dikembalikan seadanya."""
+    out = []
+    for c in head or []:
+        name = str(c or "").strip()
+        out.append(_DHL_PDF_ALIASES.get(name.lower(), name))
+    return out
 
 
 def _pdf_cell(v):
@@ -1366,6 +1600,37 @@ def _ddmmyyyy_to_yyyymmdd(s):
     return m.group(3) + m.group(2) + m.group(1) if m else None
 
 
+# Jumlah kawalan yang advice PDF cetak sendiri di kaki jadual. Label "Total
+# before deduction:" pecah dua baris dalam extract_text ("Total before\n
+# deduction: 3,162.00"), jadi \s+ (yang meliputi newline) bukan hiasan.
+_DHL_TOTAL_BEFORE = re.compile(r"Total\s+before\s+deduction\s*:\s*([-(\d.,)]+)")
+_DHL_TOTAL_DEDUCTION = re.compile(r"Total\s+deduction\s*:\s*([-(\d.,)]+)")
+_DHL_SUM_TOTAL = re.compile(r"Sum\s+Total\s*:\s*([-(\d.,)]+)")
+
+
+def _dhl_money(tok):
+    """Teks duit advice -> float (koma ribuan, kurungan = negatif). None kalau
+    tiada teks langsung."""
+    if tok is None or str(tok).strip() == "":
+        return None
+    return round(float(db.to_num(pd.Series([tok])).iloc[0]), 2)
+
+
+def _dhl_pdf_totals(full_text, pay_amount):
+    """Jumlah kawalan advice PDF: {before_deduction, deduction, sum_total,
+    payment_amount}. Nilai yang tiada dalam fail = None (semakan dilangkau,
+    bukan diada adakan)."""
+    def grab(rx):
+        m = rx.search(full_text or "")
+        return _dhl_money(m.group(1)) if m else None
+    return {
+        "before_deduction": grab(_DHL_TOTAL_BEFORE),
+        "deduction": grab(_DHL_TOTAL_DEDUCTION),
+        "sum_total": grab(_DHL_SUM_TOTAL),
+        "payment_amount": _dhl_money(pay_amount),
+    }
+
+
 def parse_dhl_pdf(data):
     """Pulang {meta, header, rows} kalau `data` ialah DHL Payment Advice PDF,
     else None. Bentuk output identik parse_dhl (.xls) supaya ingest_dhl guna
@@ -1380,7 +1645,8 @@ def parse_dhl_pdf(data):
         pdf = pdfplumber.open(io.BytesIO(data))
     except Exception:
         return None
-    line_rows, pay_ref, pay_date, full_text = [], None, None, ""
+    line_rows, header, pay_ref, pay_date, pay_amount, full_text = \
+        [], None, None, None, None, ""
     try:
         with pdf:
             for page in pdf.pages:
@@ -1388,21 +1654,28 @@ def parse_dhl_pdf(data):
                 for tbl in page.extract_tables():
                     if not tbl:
                         continue
-                    head = [_pdf_cell(c) for c in tbl[0]]
-                    # Jadual baris-item advice: tandatangan header "No." + "CoD
-                    # Amount" + "DHL Parcel ID" (khusus DHL, elak silap kenal).
-                    if head[:1] == ["No."] and "CoD Amount" in head \
-                            and "DHL Parcel ID" in head:
+                    head = _dhl_pdf_header([_pdf_cell(c) for c in tbl[0]])
+                    # Jadual baris-item advice, dikenal ikut NAMA lajur kanonik
+                    # (bukan kiraan/posisi lajur), jadi lajur baru yang DHL sisip
+                    # tak menghalang pengecaman mahupun menggeser bacaan duit.
+                    if any(m in head for m in _DHL_PDF_ITEM_MARKERS):
+                        if header is None:
+                            header = head
+                        # Lajur "No." (nombor berjalan) yang menapis baris item
+                        # sebenar daripada baris sambungan nama/garis pemisah.
+                        no_i = head.index("No.") if "No." in head else 0
                         for r in tbl[1:]:
-                            if _pdf_cell(r[0]).isdigit():  # baris item betul
-                                line_rows.append([_pdf_cell(x) for x in r])
-                    # Jadual ringkasan bayaran: ambil rujukan + tarikh bayaran.
+                            cells = [_pdf_cell(x) for x in r]
+                            if no_i < len(cells) and cells[no_i].isdigit():
+                                line_rows.append(cells)
+                    # Jadual ringkasan bayaran: rujukan + tarikh + amaun dibayar.
                     elif head[:1] == ["Payment document"] and pay_ref is None:
                         for r in tbl[1:]:
                             cells = [_pdf_cell(x) for x in r]
                             if cells and cells[0]:
                                 pay_ref = cells[0]
                                 pay_date = cells[1] if len(cells) > 1 else None
+                                pay_amount = cells[3] if len(cells) > 3 else None
                                 break
     except Exception:
         return None
@@ -1418,9 +1691,11 @@ def parse_dhl_pdf(data):
     ymd = _ddmmyyyy_to_yyyymmdd(pay_date)
     if ymd:
         meta["Payment Date"] = ymd
-    # Ambil hanya 7 lajur kanonik (buang sel ekor kosong jadual).
-    rows = [r[:len(_DHL_PDF_HEADER)] for r in line_rows]
-    return {"meta": meta, "header": list(_DHL_PDF_HEADER), "rows": rows}
+    # Setiap baris dipangkas ke panjang header fail ini (buang sel ekor kosong
+    # jadual), jadi indeks nama <-> indeks sel sentiasa sepadan.
+    rows = [r[:len(header)] for r in line_rows]
+    return {"meta": meta, "header": list(header), "rows": rows,
+            "totals": _dhl_pdf_totals(full_text, pay_amount)}
 
 
 # ---------- Ninja Van COD SOA (.xlsx) ----------
@@ -1431,11 +1706,45 @@ def parse_nv_meta(filename):
     return bill_id, settlement
 
 
+def _nv_cell_num(v):
+    """Sel duit SOA -> float; None kalau sel kosong (bukan 0 senyap)."""
+    if v is None or (not isinstance(v, str) and pd.isna(v)):
+        return None
+    if str(v).strip() == "":
+        return None
+    return float(db.to_num(pd.Series([v])).iloc[0])
+
+
+def _nv_control_total(df):
+    """Baris TOTAL di kaki SOA Ninja: TIADA Tracking ID tapi ADA nilai duit.
+
+    Pulang {'cod':..., 'net':...} atau None. Kalau baris begini tiada (format
+    lama) ATAU ada lebih daripada satu (bentuk fail tak dikenali), pulang None
+    supaya semakan dilangkau senyap , kita hanya menolak fail bila kita betul
+    betul yakin apa yang dibanding."""
+    if NV_TRACK not in df.columns:
+        return None
+    blank = df[NV_TRACK].isna() | (df[NV_TRACK].astype(str).str.strip()
+                                   .str.lower().isin(list(_BLANK_RAW)))
+    found = []
+    for _, r in df[blank].iterrows():
+        cod = _nv_cell_num(r.get(NV_COD)) if NV_COD in df.columns else None
+        net = _nv_cell_num(r.get(NV_NET)) if NV_NET in df.columns else None
+        if cod is None and net is None:
+            continue                      # baris pemisah kosong, bukan total
+        found.append({"cod": cod, "net": net})
+    return found[0] if len(found) == 1 else None
+
+
 def ingest_ninja(df, source_file, conn):
     # Guard pintu DULU, sebelum apa apa capaian lajur atau tulisan DB. Fail Ninja
     # yang BUKAN COD SOA (contoh laporan balance) ada tandatangan "Global Shipper
     # ID" tapi tiada lajur tracking/COD/net, dulu ia meletup jadi KeyError mentah.
     guard_feed_columns("ninja", df.columns)
+    # Baris TOTAL SOA dibaca DULU (sebelum ditapis keluar) supaya ia boleh jadi
+    # semakan silang. Dulu ia digugurkan begitu sahaja , jadi kalau penapisan
+    # tracking di bawah membuang baris berduit, tiada apa apa yang perasan.
+    control = _nv_control_total(df)
     df = df[df[NV_TRACK].notna()].copy()
     df = df[df[NV_TRACK].astype(str).str.upper().str.startswith("NV")]
     # Guard nilai duit SEBELUM header bil ditulis. NET dijaga juga sebab fee
@@ -1443,12 +1752,13 @@ def ingest_ninja(df, source_file, conn):
     # nampak macam ambil semua duit), satu lagi cara angka rosak masuk senyap.
     guard_feed_values("ninja", df)
     bill_id, settlement = parse_nv_meta(source_file)
-    conn.execute(BILLS_UPSERT, {
-        "bill_id": bill_id, "courier": "Ninja Van", "settlement_date": settlement,
-        "source_file": source_file, "ingested_at": now_iso(),
-    })
     cod = db.to_num(df[NV_COD])
     net = db.to_num(df[NV_NET])
+    if control:
+        guard_control_total("ninja", [
+            (NV_COD, round(float(cod.sum()), 2), control["cod"]),
+            (NV_NET, round(float(net.sum()), 2), control["net"]),
+        ])
     # NV beri net siap ("Amount owing to shipper"); fee = COD - net.
     l = pd.DataFrame({
         "awb": db.norm_trk(df[NV_TRACK]),
@@ -1460,7 +1770,12 @@ def ingest_ninja(df, source_file, conn):
         "source_file": source_file,
         "ingested_at": now_iso(),
     })
-    recs = db.to_records(l)
+    # Duplikat tracking DALAM SOA ni disaring SEBELUM header bil ditulis.
+    recs = guard_duplicate_rows("ninja", db.to_records(l))
+    conn.execute(BILLS_UPSERT, {
+        "bill_id": bill_id, "courier": "Ninja Van", "settlement_date": settlement,
+        "source_file": source_file, "ingested_at": now_iso(),
+    })
     if recs:
         recs, _ = _quarantine_conflicts(conn, recs, source_file)
         if recs:

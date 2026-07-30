@@ -27,6 +27,8 @@ const HARD_REJECT = new Set([
   "corrupt_known",     // bil dikenali tapi fail rosak/terpotong
   "missing_columns",   // lajur wajib hilang (format export berubah)
   "suspect_values",    // sel duit tak boleh dibaca (akan jadi RM0 senyap)
+  "tally_mismatch",    // jumlah baris tak padan jumlah kawalan fail
+  "duplicate_rows",    // kunci berulang DALAM fail, nilai berbeza
 ]);
 
 export default function UploadModal() {
