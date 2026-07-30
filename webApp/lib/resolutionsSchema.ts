@@ -33,6 +33,11 @@ export async function ensureResolutionTables(): Promise<void> {
       subject_id        TEXT,
       stream_snapshot   TEXT,
       category_snapshot TEXT,
+      -- amount_snapshot NULL ada MAKSUD (sengaja dibiar nullable, tiada migrasi):
+      -- amaun baris tak DAPAT DIBACA masa kes dicadang (ada baris bayaran padan,
+      -- nilainya rosak dalam fail). Ia BUKAN RM 0.00. Pembaca WAJIB melayannya
+      -- sebagai "tak diketahui": paparan tunjuk "Amount unreadable", dan kelulusan
+      -- naik laluan admin (lihat decideResolutions, GUARD 2b).
       amount_snapshot   DOUBLE PRECISION,
       expected_snapshot DOUBLE PRECISION,
       fingerprint       TEXT,

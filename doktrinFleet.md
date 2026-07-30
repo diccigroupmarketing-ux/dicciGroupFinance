@@ -12,12 +12,17 @@ guard dimatikan: 11 ujian parser gagal, `recon.ts` lama: 2/7 gagal). Baseline di
 tepat, parity 3 enjin lulus. Doktrin induk peraturan 7 (zon haram tulis) kini dibuka
 BERSYARAT untuk repo ni, syaratnya seksyen 1 dan 2 di bawah.
 
+Nota kiraan: angka mutation check di atas ialah rekod 28 Jul. Suite dah membesar sejak
+tu (round hardening 30 hingga 31 Jul): `testReconEdgeCases.py` kini 34 ujian,
+`testReconEdgeCases.ts` 12 semakan, `testIngestParsers.py` 225 ujian, `npm test`
+19 langkah. Guna angka semasa bila mengesahkan gate, bukan angka rekod ni.
+
 ## 1. Gate ujian WAJIB (haram commit tanpa ni)
 
 HARAM commit apa apa perubahan kod tanpa ketiga tiga ni hijau, dijalankan sendiri,
 bukan diandaikan:
 
-1. **`cd webApp && npm test`** hijau PENUH, 15 langkah, dengan dev PG embedded 5433 hidup
+1. **`cd webApp && npm test`** hijau PENUH, 19 langkah, dengan dev PG embedded 5433 hidup
    (`node scripts/devDb.mjs` dalam terminal lain). Separa hijau = gagal.
 2. **`cd webApp && npm run check:engine`** lulus (salinan enjin Python dalam `webApp/api/engine`
    selaras dengan root).
@@ -40,8 +45,11 @@ Fleet tulis HANYA boleh sentuh:
 
 **Perlu approval owner dulu** (jangan sentuh sendiri walau nampak remeh):
 
-- Parser ingest lain: wallet, jnt, dhl, ninja, chip. Laluan ni masih TIADA guard pintu,
-  jadi kerosakan senyap tak akan ditangkap ujian.
+- Parser ingest lain: wallet, jnt, dhl, ninja, chip. Sejak round hardening 30 hingga
+  31 Jul, laluan ni SUDAH ada guard pintu (guard nilai duit + jumlah kawalan +
+  `duplicate_rows` merentas semua feed, `testIngestParsers.py` 225 ujian), jadi kerosakan
+  senyap kini ditangkap. TAPI skop mod tangan fleet TIDAK diluaskan: parser ni tetap
+  perlu approval owner. Guard yang bertambah baik = risiko turun, bukan kebenaran naik.
 
 **Zon haram mutlak** (jangan sentuh, walau owner nampak setuju dalam sembang):
 
@@ -92,8 +100,23 @@ Berhenti terus, lapor pada sesi utama, jangan teruskan sendiri, bila:
 
 ## 7. Baki peta yang belum lengkap (sedar, jangan anggap repo bersih)
 
-- 42 finding audit `duitAnchor` mati dalam log, belum ditapis satu satu
-- 2 divergen `reconTrust` belum diverify (corak sama, belum disahkan skeptik bebas)
+Kemaskini 2026-07-31, dua baki lama dalam seksyen ni SUDAH SELESAI:
+
+- **42 finding audit `duitAnchor`** , ditriage 30 Jul: 3 sudah dicover, 11 ditolak,
+  1 tak cukup info (F31, refund CHIP, tunggu sampel sebenar), 27 terbuka disusun jadi
+  13 kerja ranked. Lebih kurang 9 daripada 13 tu DITUTUP dalam round hardening
+  30 hingga 31 Jul: guard nilai semua feed, jumlah kawalan, `duplicate_rows`, header
+  DHL ikut nama (bukan kedudukan), wallet bersih, DHL deduction, fee J&T per baris,
+  `bill_id` J&T harian, dan vouch delete wallet/prepaid.
+- **2 divergen `reconTrust`** , DIVERIFY SAH 30 Jul, ditangani 31 Jul (commit `65f2d81`).
+  Kini didokumen sebagai D8 (tarikh songsang + mod runtuh CASCADE, DIBAIKI dalam enjin)
+  dan D9 (sentinel whitespace, DIDOKUMEN sebagai gap sedar, enjin sengaja tak disentuh)
+  dalam `docs/enjinReconDivergen.md`. Tiada divergen enjin terbuka setakat ni.
+
+**Baki terbuka semasa**: F31 sahaja (refund CHIP, tersekat tunggu sampel data sebenar),
+tambah apa apa yang muncul dari kerja akan datang. Ini BUKAN kebenaran untuk anggap repo
+bersih, cuma peta yang lebih jujur: yang tinggal sekarang ialah perkara yang belum
+diketahui, bukan lagi timbunan finding yang belum ditapis.
 
 Rujukan: `HANDOVER.md` seksyen nota Jarvis 2026-07-26 dan 2026-07-28,
 `docs/enjinReconDivergen.md`, `CLAUDE.md` seksyen peraturan recon.

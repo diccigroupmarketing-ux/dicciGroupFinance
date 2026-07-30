@@ -40,7 +40,7 @@ Jadual ni banding tiap konstan kongsi merentas 3 enjin. Lajur akhir SAMA atau LA
 | AGED | `reconcile.py:31` = `["hilang_lewat"]` | import `reconSql.py:31` | `recon.ts:29` sama | SAMA |
 | PREPAID_SUCCESS_STATUS | `db.py:107` (7 status) | `reconSql.py:429` `_PREPAID_OK` (7 sama) | `recon.ts:490` `PREPAID_OK` (7 sama) | SAMA |
 | awb_valid (J&T = digit, DHL/NV = ada nilai) | `db.py:68` `is_real_awb`, `db.py:73` `_awb_present`, dipeta `db.py:83` COURIERS | `reconSql.py:44` `_frags` (`digit_ok`/`present_ok`) pilih ikut COURIERS | `recon.ts:118` (`digits`/`present` per COURIERS `recon.ts:51`) | SAMA |
-| TODAY | `db.py:40` baca env `RECON_TODAY`, fallback hari sebenar (import `reconcile.py:22`) | `db.py:40` sama (import `reconSql.py:30`) | `recon.ts:18` BEKU `2026-06-18`, tiada baca env | LARI (sedang dibaiki sesi 2026-07-23) |
+| TODAY | `db.py:40` baca env `RECON_TODAY`, fallback hari sebenar (import `reconcile.py:22`) | `db.py:40` sama (import `reconSql.py:30`) | `reconToday()` lazy, baca env `RECON_TODAY`, fallback hari sebenar zon Asia/Kuala_Lumpur | SAMA (dibaiki 2026-07-23, lihat D1) |
 
 Nota COD_VALUES: `reconcile.py` guna set `{"COD"}` untuk semakan keahlian
 (`isin(COD_VALUES)`), `recon.ts:20` guna array `["COD"]` untuk param SQL `= ANY($3)`.
@@ -66,7 +66,8 @@ Sisi padanan: order lawan baris bil di-merge ikut tracking = awb.
 |---|---|---|---|
 | Ada bil + Completed + amaun padan | `tally` (`reconcile.py:136`) | `tally` (`reconSql.py:143`) | `tally` (`recon.ts:140`) |
 | Ada bil + Completed + amaun tak padan | `amount_mismatch` (`reconcile.py:136`) | `amount_mismatch` (`reconSql.py:143`) | `amount_mismatch` (`recon.ts:141`) |
-| Ada bil + Completed + AWB DIKONGSI >1 order | `amount_mismatch` (guard, `reconcile.py:134`) | TIADA guard, jatuh ikut amaun (`reconSql.py:143`) | `amount_mismatch` (guard, `recon.ts:135`) |
+| Ada bil + Completed + AWB DIKONGSI >1 order | `amount_mismatch` (guard, `reconcile.py:194`) | `amount_mismatch` (guard diport, `reconSql.py:188`) | `amount_mismatch` (guard, `recon.ts:201`) |
+| Ada bil tapi `cod_amount` RM0 / NULL | bukan bukti duit masuk, jatuh BALIK ke laluan "takde bil" (`reconcile.py:189` `_duit_masuk`) | sama, `l.cod_amount > 0` (`reconSql.py:180`) | sama, `l.cod_amount > 0` (`recon.ts:193`) |
 | Ada bil + Returned | `duit_masuk_order_returned` (`reconcile.py:138`) | sama (`reconSql.py:145`) | sama (`recon.ts:142`) |
 | Ada bil + Rejected | `duit_masuk_order_rejected` (`reconcile.py:140`) | sama (`reconSql.py:146`) | sama (`recon.ts:143`) |
 | Ada bil + status lain | `in_bil_tapi_intransit` (`reconcile.py:141`) | sama (`reconSql.py:147`) | sama (`recon.ts:144`) |
@@ -115,20 +116,28 @@ Lihat Divergen D3 (kini DITUTUP).
 
 ### Cara sahkan "duit disahkan" (confirmed paid)
 
-- `db.py:432` `confirmed_paid_order_ids`: COD (tracking wujud dalam
-  `cod_bill_lines.awb`) union prepaid (order_ref padan + status dalam
-  PREPAID_SUCCESS_STATUS + amount > 0).
-- `reconSql.py:432` `CONF_SQL`: EXISTS `cod_bill_lines` OR EXISTS prepaid dengan
-  `_PREPAID_OK`. Logik sama.
-- `recon.ts:494` `CONF_SQL`: sama. SAMA merentas tiga.
+- `db.py:548` `confirmed_paid_order_ids`: COD (tracking wujud dalam
+  `cod_bill_lines.awb` DENGAN `cod_amount > 0`) union prepaid (order_ref padan + status
+  dalam PREPAID_SUCCESS_STATUS + amount > 0).
+- `reconSql.py` `CONF_SQL`: EXISTS `cod_bill_lines` (syarat `cod_amount > 0` sama) OR
+  EXISTS prepaid dengan `_PREPAID_OK`. Logik sama.
+- `recon.ts` `CONF_SQL` (+ `COD_LINE_OK` = `cl.cod_amount > 0`): sama. SAMA merentas tiga.
+
+Syarat `cod_amount > 0` ditambah 2026-07-31 (commit `65f2d81`) serentak di tiga enjin,
+selari dengan `reconcile._duit_masuk`: baris bil RM0 (contoh caj Returned to Sender
+Ninja Van) BUKAN bukti duit masuk, jadi ia tak boleh mengesahkan order. Tanpa syarat ni,
+botol order yang duitnya tak pernah masuk akan dikira sebagai jualan sah.
 
 ---
 
 ## Divergen disahkan
 
-Empat divergen ditemui. Tiga LARI membawa kesan sebenar, satu sedang dibaiki.
+Sembilan divergen ditemui setakat ni, merentas tiga pusingan audit (inventori asal
+2026-07-23, audit reconTrust 2026-07-27, baki reconTrust diverify 2026-07-30 dan
+ditangani 2026-07-31). SEMUA sudah ditangani, sama ada DIBAIKI dalam enjin atau
+DIDOKUMEN sebagai gap sedar yang dikunci ujian. Entri kekal di sini sebagai rekod.
 
-### D1. TODAY beku dalam recon.ts (LARI, sedang dibaiki sesi 2026-07-23)
+### D1. TODAY beku dalam recon.ts (DIBAIKI 2026-07-23, kini SAMA)
 
 - reconcile.py + reconSql.py: `db.py:40` baca env `RECON_TODAY`, fallback
   `pd.Timestamp.now().normalize()` (hari sebenar). Aging bergerak dengan masa.
@@ -147,9 +156,12 @@ dibekukan ke tarikh SAMA dengan `recon.ts` masa parity jalan. Kedua sisi beku se
 jadi padan. Divergen hanya muncul dalam PRODUKSI (Python guna hari sebenar, recon.ts
 kekal 18 Jun).
 
-Status: kerja selari sesi 2026-07-23 sedang nyahbeku `recon.ts` supaya baca env
-`RECON_TODAY` (fallback hari sebenar), selari dengan `db.py:40`. Selepas siap, D1 patut
-jadi SAMA.
+Status: SELESAI. `recon.ts` kini kira tarikh secara lazy dalam `reconToday()` (bukan
+lagi `const` beku masa modul load), baca env `RECON_TODAY` kalau ada, kalau tak fallback
+hari SEBENAR di zon Asia/Kuala_Lumpur dinormalkan ke tengah malam tempatan. Zon waktu
+dikira eksplisit sebab prod Vercel jalan UTC (kalau ambil komponen tarikh dari jam mesin,
+tetingkap 00:00 hingga 08:00 waktu Malaysia akan under-report `hilang_lewat` sehari).
+Selari dengan `db.py:40`. D1 kini SAMA.
 
 ### D2. Guard AWB dikongsi tiada dalam reconSql.py (DIBAIKI 2026-07-23, kini SAMA)
 
@@ -336,16 +348,92 @@ PADAN atas data yang masuk lewat ingest.
 BAKI DIDOKUMEN: kalau baris ditulis TERUS ke DB (bukan lewat ingest), divergen tarikh
 masih boleh wujud. Ia dikunci sebagai gap sedar dalam `TestGapTarikhBukanKanonik`.
 
+### D8. Tarikh songsang + mod runtuh CASCADE parse tarikh (DIBAIKI 2026-07-31)
+
+> Salah satu daripada 2 divergen baki audit reconTrust. DIVERIFY SAH 30 Jul 2026 dengan
+> 24 perangkap tarikh, kemudian DIBAIKI dan DIDOKUMEN 31 Jul (commit `65f2d81`).
+> Keputusan owner: **kemas di pintu ingest untuk teks, TAPI tutup mod runtuh dalam enjin**.
+
+Adik beradik D7, tapi ini sisi yang D7 tak tangkap. Bila `orders.order_date` bukan
+kanonik, E2/E3 banding ia sebagai **TEKS** lawan cutoff manakala E1 **parse** ia jadi
+tarikh sebenar. Dua cara tu boleh bagi jawapan bertentangan, dan bercanggah **DUA ARAH**
+(bukan satu enjin sekadar lebih ketat): 14 daripada 24 perangkap tarikh keluar kategori
+berbeza antara E1 dan E2. Contoh paling terang, `'07/01/2026'`:
+
+- E1 parse ikut sel, dapat 1 Julai 2026, iaitu MASA DEPAN, jadi `belum_remit`.
+- E2 banding teks lawan cutoff `'2026-06-03...'`, `'0'` < `'2'` jadi ia "lama",
+  jadi `hilang_lewat`.
+
+Penemuan yang LEBIH BESAR keluar masa verify: `reconcile.py` panggil `pd.to_datetime`
+untuk lajur `umur_hari` TANPA `format="mixed"`. Pandas teka SATU format dari sel
+**pertama** lalu paksa ia ke seluruh lajur. Satu sel rosak di kedudukan pertama boleh
+merosakkan umur SATU STREAM PENUH: setiap order lain jadi NaT, hilang umur, dan tak
+pernah naik ke baldi `hilang_lewat`. Duit tertunggak lenyap dari radar secara senyap.
+Ujian mod runtuh ni ukur **333 baris lari, RM 57,937**. Nama korban: mod runtuh CASCADE.
+
+Baik: `format="mixed"` dipakai di `reconcile.py` (DUA tempat, laluan COD dan laluan
+prepaid) dan di `reconSql._umur_hari` (lajur "Age (days)" yang finance BACA dalam jadual
+exception, ia terdedah pada cascade yang sama). Tiap sel kini diparse ikut bentuknya
+sendiri, jadi satu tarikh rosak cuma rosakkan dirinya. Kelas
+`TestGapTarikhBukanKanonik` dinaik taraf: selain mengunci gap teks asal (D7), ia kini
+kunci ANTI-cascade (order tua kekal `hilang_lewat` walaupun ada tarikh rosak di baris
+pertama, E1 dan E2 selari, lajur `umur_hari` paparan pulang NOMBOR bukan NaN) dan kunci
+kes `TEST-GAP-SONGSANG` sebagai gap sedar.
+
+Kesan pada data SEBENAR: **0 baris**. Ia bug LATEN, ditutup sebelum ia sempat menggigit.
+Baki gap teks (order ditulis TERUS ke DB, bukan lewat ingest) KEKAL didokumen, sebab
+ubatnya di pintu ingest (tulis ISO), bukan di enjin.
+
+### D9. Sentinel whitespace: `.strip()` Python lawan `TRIM()` SQL (DIDOKUMEN 2026-07-31)
+
+> Divergen kedua baki audit reconTrust. DIVERIFY SAH 30 Jul 2026 dengan 25 varian
+> sentinel, didokumen dan dikunci 31 Jul. Keputusan owner: **enjin TIDAK diubah**,
+> corak sama dengan `TestGapDialekSen`.
+
+`.strip()` Python buang **SEMUA** whitespace Unicode (space, tab, newline, NBSP).
+`TRIM()` SQL buang **space sahaja**. Jadi untuk tracking yang berisi tab, newline, atau
+NBSP:
+
+- E1 normalkan ia jadi kosong, iaitu sentinel, jadi order dikira **takde AWB sah** dan
+  baris duitnya jadi yatim benign (`match_luar_skop`). 3 order perangkap keluar
+  `takde_awb_jnt` + 3 `match_luar_skop`.
+- E2/E3 biarkan tab kekal dalam nilai, jadi JOIN `tab = tab` MENJADI dan ketiga tiga
+  dilabel `tally`. Itu **TALLY PALSU**, dan lebih teruk, ia SOROK 2 exception yang
+  sepatutnya naik untuk disiasat.
+
+Skop divergen ni SEMPIT dan itu penting: 24 varian sentinel yang lain (huruf besar
+kecil, `'NULL'`, `'-'`, `'N/A'`, space biasa dan sebagainya) SEMUA setuju merentas 4
+enjin. Maknanya baik D4 dan D6 memang tertutup rapat; yang tinggal cuma celah whitespace
+bukan-space ni.
+
+Kenapa enjin TAK diubah: pintu ingest sudah menapis. `db.norm_trk` buat
+`.str.replace(r"\s+", "", regex=True)`, iaitu ia BUANG semua whitespace (termasuk tab,
+newline, NBSP) sebelum nilai sempat masuk DB. Tracking bentuk ni cuma boleh wujud kalau
+baris ditulis TERUS ke DB memintas ingest. Kesan pada data SEBENAR: **0 baris**.
+Menyentuh enjin untuk kes yang pintu dah tutup = risiko regres tanpa pulangan.
+
+Sebagai ganti, gap dikunci sebagai gap SEDAR dalam `TestGapSentinelWhitespace`, corak
+sama macam `TestGapDialekSen`: ujian menegaskan E1 dan E2 memang bercanggah di sini,
+dengan penegasan eksplisit `assertNotEqual`. Kalau suatu hari enjin diselaraskan untuk
+kes ni, ujian tu akan GAGAL , itu isyarat padam ujian, bukan bug.
+
 ### Ringkasan kiraan
 
 - Konstan/takrif dibanding: 10 baris.
 - SAMA: 6 (REMIT_PENDING_DAYS, COD_VALUES, INTEGRITY_EXC, AGED,
   PREPAID_SUCCESS_STATUS, awb_valid), tambah botol + confirmed-paid yang selari.
-- LARI asal: 4. DITUTUP: D2 (guard AWB), D3 (skop prepaid), D4 (sentinel NONE,
-  disahkan divergen sebenar lalu diport 2026-07-23). BAKI: D1 TODAY (sedang dibaiki
-  sesi 2026-07-23).
+- LARI asal: 4. DITUTUP: D1 (TODAY, `recon.ts` kini baca env `RECON_TODAY` secara lazy),
+  D2 (guard AWB), D3 (skop prepaid), D4 (sentinel NONE, disahkan divergen sebenar lalu
+  diport 2026-07-23).
 - Pusingan kedua (audit reconTrust 2026-07-27): D5 (pembundaran half-up), D6
   (`all_trk` terlalu ketat), D7 (tarikh, ditutup di pintu ingest) , SEMUA DITUTUP.
+- Pusingan ketiga (baki reconTrust, verify 2026-07-30, tindakan 2026-07-31): D8 (tarikh
+  songsang + mod runtuh CASCADE, DIBAIKI dalam enjin), D9 (sentinel whitespace,
+  DIDOKUMEN sebagai gap sedar, enjin tak disentuh) , SEMUA DITANGANI.
+- Kedudukan sekarang: TIADA divergen terbuka. Yang tinggal cuma 3 gap SEDAR yang
+  dikunci ujian (`TestGapDialekSen`, `TestGapTarikhBukanKanonik`,
+  `TestGapSentinelWhitespace`), ketiga tiganya 0 baris pada data sebenar dan ketiga
+  tiganya ditutup di pintu ingest, bukan di enjin.
 
 ### Penggera kekal (jangan buang)
 
@@ -356,8 +444,8 @@ rasmi banding E2 lawan E3 , dua dua di sebelah teks-mentah yang sama , dan boleh
 
 | Fail | Apa dijaga |
 |---|---|
-| `webApp/api/engine/tests/testReconEdgeCases.py` | E1 lawan E2 (sqlite) baris demi baris atas fixture kes tepi sintetik + dua gap didokumen |
-| `webApp/scripts/testReconEdgeCases.ts` | E3 atas dev PG: suntik baris perangkap, semak kategori, buang balik |
+| `webApp/api/engine/tests/testReconEdgeCases.py` | 34 ujian: E1 lawan E2 (sqlite) baris demi baris atas fixture kes tepi sintetik + tiga gap didokumen + penjaga anti-cascade tarikh |
+| `webApp/scripts/testReconEdgeCases.ts` | 12 semakan: E3 atas dev PG, suntik baris perangkap, semak kategori + `CONF_SQL`, buang balik |
 | `webApp/api/engine/tests/testIngestParsers.py` (`TestFighterDateGuard`) | tarikh dikanonikkan / ditolak di pintu |
 
 Ketiga tiga dijalankan oleh `npm test` (`scripts/testAll.mjs`).
@@ -390,14 +478,13 @@ Verify: parity kekal LULUS pada data dev (tiada kes shared, jadi tiada regres), 
 guard sebenar, tambah kes shared-AWB ke fixture dev, sahkan ketiga enjin keluar
 `amount_mismatch` sama.
 
-### Langkah 2. Selesaikan D1 (TODAY) sepenuhnya
+### Langkah 2. Selesaikan D1 (TODAY) , SELESAI 2026-07-23
 
-Kerja selari sesi 2026-07-23 dah nyahbeku `recon.ts` baca `RECON_TODAY`. Sahkan
-`recon.ts:18` baca env dengan fallback hari sebenar, padan `db.py:40`. Buang komen
-"baseline beku" bila dah selari.
+`recon.ts` dah dinyahbeku: `reconToday()` baca env `RECON_TODAY` dengan fallback hari
+sebenar (zon Asia/Kuala_Lumpur), padan `db.py:40`. `webApp/scripts/reconEnv.ts` kunci
+`RECON_TODAY=2026-06-18` untuk run parity supaya ia kekal deterministik.
 
-Verify: parity LULUS dengan `RECON_TODAY=2026-06-18` (kedua sisi beku sama). Uji tambahan
-tanpa env: kedua enjin patut guna hari sebenar dan masih padan.
+Verify (DIBUAT): parity LULUS dengan `RECON_TODAY=2026-06-18` (kedua sisi beku sama).
 
 ### Langkah 3. Putus keputusan D3 (recon prepaid) , SELESAI 2026-07-23
 
@@ -442,6 +529,9 @@ tiga stream.
 ---
 
 ## Penemuan bug baru
+
+> Status: DITUTUP 2026-07-23 (Langkah 1 penyatuan). Seksyen ni dikekalkan sebagai rekod
+> bagaimana bug tu ditemui, bukan sebagai kerja terbuka.
 
 D2 (guard AWB dikongsi tiada dalam `reconSql.py`) adalah BUG BARU yang ditemui masa
 inventori ni, bukan sekadar divergen konstan. `reconSql.py` sepatutnya salinan setia

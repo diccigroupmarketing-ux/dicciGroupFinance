@@ -20,7 +20,7 @@ import { KatChip, katTone } from "@/components/Chip";
 import GrainSwitcher from "@/components/GrainSwitcher";
 import WeeklyChart from "@/components/WeeklyChart";
 import BillsTable, { type BillRow } from "@/components/BillsTable";
-import ExportCsv from "@/components/ExportCsv";
+import ExportCsv, { CSV_UNREADABLE } from "@/components/ExportCsv";
 import AgingControl from "@/components/AgingControl";
 import DateRangeFilter from "@/components/DateRangeFilter";
 import InfoTip from "@/components/InfoTip";
@@ -40,11 +40,16 @@ function parsePending(v: string | undefined): number {
 }
 
 // Baris exception -> baris rata untuk CSV (finance kerja dalam Excel).
+// cod_amount NULL sedangkan awb wujud = amaun gagal dibaca masa ingest (isyarat
+// SAMA dengan unreadableAmountRows di bawah). Kalau kita biar sel tu kosong,
+// fail yang finance hantar keluar hilang perbezaan antara "tiada bayaran" dan
+// "fail rosak" , nota jujur di skrin cakap satu benda, CSV cakap benda lain.
 function excToCsv(rows: ExcRow[]) {
   return rows.map((r) => ({
     order_id: r.order_id, stockist: r.seller_name,
     tracking: r.tracking ?? r.awb, status: r.kategori,
-    selling_price: r.selling_price, cod_amount: r.cod_amount,
+    selling_price: r.selling_price,
+    cod_amount: r.cod_amount ?? (r.awb != null ? CSV_UNREADABLE : null),
     age_days: r.umur_hari,
   }));
 }
@@ -54,6 +59,46 @@ const EXC_COLS = [
   { key: "selling_price", header: "Selling price" }, { key: "cod_amount", header: "COD amount" },
   { key: "age_days", header: "Age (days)" },
 ];
+
+// ====================================================================
+// Nota jujur untuk KPI "Tier 1 · N integrity issues worth RM X".
+//
+// integRisk enjin = SUM(cod_amount) bagi kategori integriti. Baris yang amaunnya
+// GAGAL DIBACA masa ingest disimpan NULL (bukan 0.0, lihat _amount_or_none dalam
+// ingest.py + components/AmountCell.tsx), jadi ia menyumbang RM 0 pada jumlah
+// itu. Kiraan N betul, cuma angka DUIT yang terkurang kira.
+//
+// Kita TIDAK mengubah agregasi enjin. Ini lapisan PAPARAN semata: bila ada
+// sekurang kurangnya satu baris begitu, kita cakap terus terang di sebelah
+// angka. Kiraannya diambil dari SET BARIS YANG SAMA yang page ni papar
+// (s.integ), jadi ia ikut penapis julat tarikh dengan sendirinya , tiada query
+// baru ke enjin. Sifar kes = sifar perubahan visual.
+//
+// Isyarat "gagal dibaca" sama dengan yang dipakai AmountCell/ResolveModal:
+// cod_amount NULL SEDANGKAN baris bayaran padan memang wujud (awb bukan NULL).
+function unreadableAmountRows(rows: ExcRow[]): number {
+  return rows.reduce(
+    (a, r) => a + (r.cod_amount == null && r.awb != null ? 1 : 0), 0);
+}
+
+const UNREADABLE_WHY = "The settlement file has a line for these orders, but the "
+  + "amount could not be read when it was uploaded (the cell was blank or not a "
+  + "number). The engine has no figure to add up, so these rows contribute RM 0.00 "
+  + "to the value above even though each one is still a real exception. The count "
+  + "of issues is correct; only the ringgit figure is understated. Re-upload a "
+  + "clean statement to see the true exposure.";
+
+function UnreadableAmountNote({ n }: { n: number }) {
+  if (n <= 0) return null;
+  return (
+    <p>
+      {fmtInt(n)} of {n === 1 ? "these rows has an unreadable amount and is"
+        : "these rows have unreadable amounts and are"} not counted in this figure,
+      so the real exposure is higher.
+      <InfoTip text={UNREADABLE_WHY} label="Why the value is understated" />
+    </p>
+  );
+}
 
 export const dynamic = "force-dynamic";
 
@@ -272,7 +317,8 @@ export default async function StreamPage(
             <div className="danPanel">
               <WarnIcon />
               <div><b>Tier 1 · {fmtInt(s.integN)} integrity issues worth {fmtRM(s.integRisk)}.</b>
-                <p>Investigate the rows flagged below; these are real leaks until proven otherwise.</p></div>
+                <p>Investigate the rows flagged below; these are real leaks until proven otherwise.</p>
+                <UnreadableAmountNote n={unreadableAmountRows(s.integ)} /></div>
             </div>
           )}
           {s.agedN > 0 && (
@@ -814,7 +860,8 @@ async function PrepaidStreamPage(
             <div className="danPanel">
               <WarnIcon />
               <div><b>Tier 1 · {fmtInt(s.integN)} integrity issues worth {fmtRM(s.integRisk)}.</b>
-                <p>Investigate the rows flagged below; these are real leaks until proven otherwise.</p></div>
+                <p>Investigate the rows flagged below; these are real leaks until proven otherwise.</p>
+                <UnreadableAmountNote n={unreadableAmountRows(s.integ)} /></div>
             </div>
           )}
           <ResolutionStrip agg={rs} />

@@ -3,6 +3,15 @@
 // Muat turun baris (array objek) sebagai CSV, sepenuhnya di pelayar guna data
 // yang sedia ada di halaman (tiada query baru). Untuk finance kerja dalam Excel.
 // Generik supaya boleh terima interface DAN type alias (elak isu index signature).
+
+// Token sel untuk amaun yang GAGAL DIBACA masa ingest (baris bayaran memang
+// wujud, tapi nilainya NULL , lihat components/AmountCell.tsx). Sel kosong
+// bermakna "tiada nilai langsung", jadi ia campur aduk "belum bayar" dengan
+// "fail rosak"; teks ni memisahkan dua duanya dalam fail yang finance hantar
+// keluar. Sengaja BUKAN nombor: Excel abaikan teks dalam SUM, jadi jumlah tak
+// tercemar, dan tiada RM 0.00 palsu.
+export const CSV_UNREADABLE = "UNREADABLE";
+
 function cell(v: unknown): string {
   if (v == null) return "";
   const s = String(v);

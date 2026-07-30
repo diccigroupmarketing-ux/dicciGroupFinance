@@ -9,7 +9,7 @@ import Link from "next/link";
 import { fmtDate, fmtInt, trackingOrDash } from "@/lib/format";
 import AmountCell from "@/components/AmountCell";
 import TableFilter from "@/components/TableFilter";
-import ExportCsv from "@/components/ExportCsv";
+import ExportCsv, { CSV_UNREADABLE } from "@/components/ExportCsv";
 import InfoTip from "@/components/InfoTip";
 import ResolveButton from "@/components/ResolveButton";
 import { badgeState } from "@/components/resolveTypes";
@@ -58,10 +58,14 @@ export default function GhostTable({
     });
   }, [rows, q, courier]);
 
+  // Setiap baris ghost DATANG dari baris duit masuk, jadi cod_amount NULL di sini
+  // bermakna nilainya gagal dibaca masa ingest (bukan "tiada bayaran"). Sel kosong
+  // dalam CSV akan menyorok fakta tu, jadi kita tulis token jujur , sama macam
+  // "Amount unreadable" yang jadual di bawah papar.
   const csvRows = visible.map((r) => ({
     awb: r.awb, courier: r.courier, bill_id: r.bill_id,
     source_file: r.source_file, settlement_date: r.settlement_date,
-    received: r.cod_amount,
+    received: r.cod_amount ?? CSV_UNREADABLE,
   }));
   const filtering = q.trim() || courier !== "all";
 

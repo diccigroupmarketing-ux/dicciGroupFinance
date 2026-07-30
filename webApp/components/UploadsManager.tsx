@@ -18,6 +18,16 @@ const KIND_TONE: Record<string, string> = {
   orders: "chipPos", cod: "chipMut", prepaid: "chipCau", wallet: "chipMut",
 };
 
+// Baris yang TIDAK dipadam masa delete: sama ada fail lain masih tuntut baris tu
+// (shared), atau baris lama tanpa rekod upload (legacy, tak dapat dikaitkan ke
+// mana mana fail). Satu label per jenis data supaya finance nampak sebabnya, bukan
+// sangka delete jadi no-op senyap.
+const KEPT_NOUN: Record<"orders" | "prepaid" | "wallet", [string, string]> = {
+  orders: ["order", "orders"],
+  prepaid: ["gateway payment", "gateway payments"],
+  wallet: ["wallet transaction", "wallet transactions"],
+};
+
 // "2026-07-09 04:39:13" -> "9 Jul, 04:39"
 function fmtStamp(ts: string | null): string {
   if (!ts) return "—";
@@ -69,10 +79,15 @@ export default function UploadsManager({ files }: { files: UploadedFile[] }) {
       } else {
         const r = j.removed;
         const kept: string[] = [];
-        if (r.ordersKeptShared > 0)
-          kept.push(`${fmtInt(r.ordersKeptShared)} order${r.ordersKeptShared === 1 ? "" : "s"} kept (also in another upload)`);
-        if (r.ordersKeptLegacy > 0)
-          kept.push(`${fmtInt(r.ordersKeptLegacy)} older order${r.ordersKeptLegacy === 1 ? "" : "s"} kept (uploaded before file tracking , re-upload to clear)`);
+        for (const key of ["orders", "prepaid", "wallet"] as const) {
+          const [one, many] = KEPT_NOUN[key];
+          const shared = Number(r[`${key}KeptShared`] ?? 0);
+          const legacy = Number(r[`${key}KeptLegacy`] ?? 0);
+          if (shared > 0)
+            kept.push(`${fmtInt(shared)} ${shared === 1 ? one : many} kept (still claimed by another file)`);
+          if (legacy > 0)
+            kept.push(`${fmtInt(legacy)} older ${legacy === 1 ? one : many} kept (no upload record , re-upload the file then delete to remove)`);
+        }
         setMsg({
           kind: "ok",
           text: `Removed ${fmtInt(r.total)} rows from "${target.file}".`
@@ -165,7 +180,7 @@ export default function UploadsManager({ files }: { files: UploadedFile[] }) {
               <b>Delete all data from &quot;{target.file}&quot;?</b>
               <p>This permanently removes the {fmtInt(target.rows)} row{target.rows === 1 ? "" : "s"} that
                 came from this file ({KIND_LABEL[target.kind] ?? target.kind}). Dashboards update
-                immediately.{target.kind === "orders" ? " Orders that also appear in another upload are kept, not deleted." : ""} If the file was only wrong, re-upload the corrected
+                immediately.{target.kind in KEPT_NOUN ? ` Any ${KEPT_NOUN[target.kind as keyof typeof KEPT_NOUN][1]} that another file still claims are kept, not deleted.` : ""} If the file was only wrong, re-upload the corrected
                 version after , uploads are safe to repeat. This cannot be undone.</p>
             </div>
           </div>

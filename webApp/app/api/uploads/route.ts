@@ -34,10 +34,20 @@ export async function POST(req: Request) {
   try {
     const removed = await deleteUpload(file);
     revalidateTag("recon", { expire: 0 });
+    // Baris "kept" = data fail ni yang TIDAK dipadam (fail lain masih tuntut, atau
+    // baris legacy tanpa rekod vouch). Log hanya yang bukan sifar supaya jejak audit
+    // tak dipenuhi "0 shared, 0 legacy" untuk fail biasa.
+    const kept = ([
+      ["orders", removed.ordersKeptShared, removed.ordersKeptLegacy],
+      ["prepaid", removed.prepaidKeptShared, removed.prepaidKeptLegacy],
+      ["wallet", removed.walletKeptShared, removed.walletKeptLegacy],
+    ] as const)
+      .filter(([, shared, legacy]) => shared > 0 || legacy > 0)
+      .map(([label, shared, legacy]) => `${label} kept ${shared} shared, ${legacy} legacy`);
     await logEvent(actor, "upload_delete",
       `${file}: ${removed.total} rows removed (orders ${removed.orders}, bill lines ${removed.billLines}, prepaid ${removed.prepaid}, wallet ${removed.wallet}); ` +
-      `conflicts cleared ${removed.conflicts}; ` +
-      `orders kept ${removed.ordersKeptShared} shared, ${removed.ordersKeptLegacy} legacy`);
+      `conflicts cleared ${removed.conflicts}` +
+      (kept.length ? `; ${kept.join("; ")}` : ""));
     return NextResponse.json({ ok: true, removed });
   } catch (e) {
     return NextResponse.json(

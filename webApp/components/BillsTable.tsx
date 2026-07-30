@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { fmtDate, fmtDay, fmtInt, fmtRM, trackingOrDash } from "@/lib/format";
 import AmountCell from "@/components/AmountCell";
-import ExportCsv from "@/components/ExportCsv";
+import ExportCsv, { CSV_UNREADABLE } from "@/components/ExportCsv";
 import InfoTip from "@/components/InfoTip";
 import ResolveButton from "@/components/ResolveButton";
 import { badgeState } from "@/components/resolveTypes";
@@ -45,6 +45,24 @@ type Parcel = {
 const TONE_CLASS: Record<string, string> = {
   pos: "chipPos", cau: "chipCau", dan: "chipDan", mut: "chipMut",
 };
+
+// Baris parcel -> baris CSV. Baris ni memang datang dari SATU bil, jadi amaun
+// NULL sedangkan awb wujud = nilai gagal dibaca masa ingest (isyarat sama yang
+// AmountCell pakai). Sel kosong akan jadikan ia kelihatan macam "tiada bayaran",
+// jadi kita tulis token jujur. `remit` = cod - fee, jadi ia turut NULL bila COD
+// tak terbaca.
+function parcelToCsv(rows: Parcel[]) {
+  return rows.map((p) => {
+    const unread = p.awb != null;
+    return {
+      awb: p.awb, order_id: p.order_id, seller_name: p.seller_name,
+      katLabel: p.katLabel, selling_price: p.selling_price,
+      cod_amount: p.cod_amount ?? (unread ? CSV_UNREADABLE : null),
+      fee: p.fee,
+      remit: p.remit ?? (unread && p.cod_amount == null ? CSV_UNREADABLE : null),
+    };
+  });
+}
 
 const isMatched = (net: number, actual: number) => Math.abs(net - actual) < 0.005;
 
@@ -379,7 +397,7 @@ export default function BillsTable({
                             <div className="drillNote">
                               {fmtInt(list.length)} parcels in {r.bill_id}
                               {" · "}
-                              <ExportCsv rows={list} columns={PARCEL_COLS}
+                              <ExportCsv rows={parcelToCsv(list)} columns={PARCEL_COLS}
                                 filename={`${r.bill_id}-parcels.csv`} label="Download CSV" />
                             </div>
                           </div>

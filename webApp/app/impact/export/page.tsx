@@ -21,6 +21,11 @@ const COLS = [
   { key: "bills", header: "Bills confirmed" },
   { key: "variance", header: "Variance" },
   { key: "exceptions", header: "Exceptions" },
+  // Baris bil yang amaunnya gagal dibaca masa ingest. Nilainya disimpan NULL
+  // (bukan 0.0) dan SUM() SQL langkau NULL, jadi setiap baris begini menolak
+  // "COD collected" dan "Net remit" ke bawah secara senyap. Lajur ni yang buat
+  // ia TAK senyap: 0 = pack ni penuh, > 0 = angka duit di baris tu terkurang.
+  { key: "unreadable", header: "Unreadable lines" },
 ];
 
 export default async function ExportPage() {
@@ -45,8 +50,10 @@ export default async function ExportPage() {
       net: a.net + r.net, banked: a.banked + r.banked, variance: a.variance + r.variance,
       exceptions: a.exceptions + r.exceptions,
       bankedBills: a.bankedBills + r.bankedBills, totalBills: a.totalBills + r.totalBills,
+      unreadable: a.unreadable + r.unreadable,
     }),
-    { parcels: 0, cod: 0, fee: 0, net: 0, banked: 0, variance: 0, exceptions: 0, bankedBills: 0, totalBills: 0 },
+    { parcels: 0, cod: 0, fee: 0, net: 0, banked: 0, variance: 0, exceptions: 0,
+      bankedBills: 0, totalBills: 0, unreadable: 0 },
   );
 
   // Baris CSV: data + baris TOTAL. "X of Y" (bukan "X/Y") supaya Excel tak baca jadi tarikh.
@@ -55,12 +62,13 @@ export default async function ExportPage() {
       subsidiary: "Dicci Impact", stream: r.stream, period: r.period,
       parcels: r.parcels, cod: r.cod, fee: r.fee, net: r.net, banked: r.banked,
       bills: `${r.bankedBills} of ${r.totalBills}`, variance: r.variance, exceptions: r.exceptions,
+      unreadable: r.unreadable,
     })),
     {
       subsidiary: "Dicci Impact", stream: "ALL", period: "TOTAL",
       parcels: t.parcels, cod: r2(t.cod), fee: r2(t.fee), net: r2(t.net),
       banked: r2(t.banked), bills: `${t.bankedBills} of ${t.totalBills}`,
-      variance: r2(t.variance), exceptions: t.exceptions,
+      variance: r2(t.variance), exceptions: t.exceptions, unreadable: t.unreadable,
     },
   ];
   const asOfName = asOf ? asOf.slice(0, 10) : "all";
@@ -86,6 +94,24 @@ export default async function ExportPage() {
           column stays full (all bills) as the expected total; the <b>Bills</b> column shows
           how many are confirmed so far.
         </p>
+        {/* Sifar baris tak terbaca = sifar perubahan visual (corak sama macam
+            UnreadableAmountNote di page stream). Bila ada, pack ni mengaku
+            terus terang yang angka duitnya terkurang kira, sebab SUM() langkau
+            amaun NULL. Lajur "Unreadable lines" dalam CSV bawa pecahannya. */}
+        {t.unreadable > 0 && (
+          <div className="cauPanel" style={{ marginBottom: 12 }}>
+            <div>
+              <b>{fmtInt(t.unreadable)} bill line{t.unreadable === 1 ? "" : "s"} in
+                this pack {t.unreadable === 1 ? "has" : "have"} an amount that could
+                not be read.</b>
+              <p>Those lines contribute RM 0.00 to COD collected and Net remit, so the
+                money figures here are understated, not wrong-by-leak. The downloaded
+                CSV carries an <b>Unreadable lines</b> column per period so the gap
+                travels with the file. Re-upload a clean statement for those lines to
+                close it.</p>
+            </div>
+          </div>
+        )}
         <div className="tableWrap">
           <table>
             <thead>

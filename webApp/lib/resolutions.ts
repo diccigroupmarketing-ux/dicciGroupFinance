@@ -281,16 +281,29 @@ export interface MaterialFacts {
   category: string;
   amount: number;    // duit MASUK untuk baris ni (cod_amount)
   expected: number;  // duit DIJANGKA (selling_price order)
+  // TRUE = ada baris bayaran padan TAPI nilainya gagal dibaca masa ingest
+  // (parser simpan NULL, bukan 0.0, lihat _amount_or_none dalam ingest.py).
+  // "Tak dapat dibaca" BUKAN "RM 0.00" , ia fakta material yang BERBEZA, jadi ia
+  // masuk cap jari. OPSIONAL dan lalai false supaya cap jari baris biasa kekal
+  // BYTE IDENTIK dengan sebelum ni (kes prod sedia ada tak jadi stale).
+  amountUnreadable?: boolean;
 }
 
 // Cap jari fakta MATERIAL sahaja. Kalau mana mana daripada empat ni berubah
 // selepas kes diluluskan, keputusan itu dibuat atas dunia yang lain, jadi kes
 // jadi `stale` dan BERHENTI dikira settled sampai orang tengok semula.
 // Amaun dibundar dulu supaya nyatakan semula sen (0.1+0.2) tak flip kes.
+//
+// Amaun yang TAK DAPAT DIBACA dicap sebagai token "unreadable", bukan "0.00".
+// Sebabnya dua: (1) ia jujur , kita memang tak tahu nilainya; (2) bila fail
+// bersih diupload semula dan nilainya jadi RM 0.00 betul betul, cap jari
+// BERUBAH, jadi kes lama terbuka semula untuk disemak. Kalau kedua duanya dicap
+// "0.00", perubahan tu lolos senyap.
 export function fingerprintOf(f: MaterialFacts): string {
   const canon = [
     "v1", f.stream, f.category,
-    round2(f.amount).toFixed(2), round2(f.expected).toFixed(2),
+    f.amountUnreadable ? "unreadable" : round2(f.amount).toFixed(2),
+    round2(f.expected).toFixed(2),
   ].join("|");
   return createHash("sha256").update(canon).digest("hex");
 }
@@ -320,6 +333,10 @@ export interface Resolution {
   subjectId: string;
   streamSnapshot: string | null;
   categorySnapshot: string | null;
+  // NULL ada MAKSUD: amaun baris tak dapat dibaca masa kes dicadang (ada baris
+  // bayaran padan, nilainya rosak dalam fail). Ia BUKAN "RM 0.00" dan BUKAN
+  // "tiada data". Kes lama (sebelum peraturan ni) sentiasa ada nombor, jadi NULL
+  // tak pernah bermakna dua benda. Lihat proposeResolutions + decideResolutions.
   amountSnapshot: number | null;
   expectedSnapshot: number | null;
   fingerprint: string | null;
@@ -437,6 +454,10 @@ export interface LiveFact {
   value: number;     // duit terlibat = cod_amount kalau ada, kalau tak selling_price
   lines: number;     // berapa baris tmp_m hidup untuk subjek ni (guard multi-line)
   mixed: boolean;    // baris subjek ni tak sekategori (mesti multi-line juga)
+  // Ada baris bayaran padan (awb / order_ref bukan NULL) TAPI cod_amount NULL =
+  // nilai gagal dibaca masa ingest. `amount` di atas kekal 0 (SUM COALESCE)
+  // supaya aritmetik sedia ada tak pecah; bendera ni yang bawa kebenarannya.
+  amountUnreadable: boolean;
 }
 
 export interface StreamFacts {
@@ -467,6 +488,10 @@ const FACTS_SQL = `
          SUM(COALESCE(cod_amount, 0))::float8 AS amount,
          SUM(COALESCE(selling_price, 0))::float8 AS expected,
          SUM(COALESCE(cod_amount, selling_price, 0))::float8 AS value,
+         -- Baris bayaran padan WUJUD (awb bukan NULL) tapi amaunnya NULL =
+         -- nilai gagal dibaca masa ingest. Isyarat SAMA yang dipakai
+         -- components/AmountCell.tsx, diambil dari data bukan dari kategori.
+         BOOL_OR(awb IS NOT NULL AND cod_amount IS NULL) AS amount_unreadable,
          MIN(kategori) AS kat_min,
          MAX(kategori) AS kat_max
     FROM tmp_m
@@ -501,6 +526,7 @@ async function readFacts(c: PoolClient, stream: string): Promise<StreamFacts> {
       value: Number(r.value ?? 0),
       lines: Number(r.lines ?? 0),
       mixed: String(r.kat_min) !== String(r.kat_max),
+      amountUnreadable: r.amount_unreadable === true,
     };
     bySubject.set(subjectKeyStr(f), f);
   }
@@ -640,6 +666,8 @@ function factFromRow(row: ExcRow, stream: string): MaterialFacts {
   return {
     stream, category: row.kategori,
     amount: row.cod_amount ?? 0, expected: row.selling_price ?? 0,
+    // awb ada tapi cod_amount NULL = nilai gagal dibaca (bukan "tiada bayaran").
+    amountUnreadable: row.cod_amount == null && row.awb != null,
   };
 }
 
@@ -704,7 +732,8 @@ export function decorate<T extends StreamSummary>(
     const fact = ctx.facts.get(subjectKeyStr(k));
     const material: MaterialFacts = fact
       ? { stream: ctx.stream, category: fact.category,
-          amount: fact.amount, expected: fact.expected }
+          amount: fact.amount, expected: fact.expected,
+          amountUnreadable: fact.amountUnreadable }
       : factFromRow(row, ctx.stream);
     return { ...row, resolution: rowBadge(r, evaluate(r, material, ctx.todayYmd)) };
   };
@@ -734,6 +763,7 @@ export function decorate<T extends StreamSummary>(
       const ev = evaluate(r, {
         stream: ctx.stream, category: fact.category,
         amount: fact.amount, expected: fact.expected,
+        amountUnreadable: fact.amountUnreadable,
       }, ctx.todayYmd);
       if (r.state === "proposed") agg.proposedN += 1;
       if (ev.stale) { agg.staleN += 1; continue; }
@@ -769,9 +799,13 @@ export function decorateGhostRows(
     const fact = ctx.facts.get(subjectKeyStr(k));
     const material: MaterialFacts = fact
       ? { stream: fact.stream, category: fact.category,
-          amount: fact.amount, expected: fact.expected }
+          amount: fact.amount, expected: fact.expected,
+          amountUnreadable: fact.amountUnreadable }
+      // Baris ghost SENTIASA datang dari baris duit masuk, jadi cod_amount NULL
+      // di sini bermakna nilainya gagal dibaca, bukan "tiada bayaran".
       : { stream: row.streamKey, category: "duit_hantu",
-          amount: row.cod_amount ?? 0, expected: 0 };
+          amount: row.cod_amount ?? 0, expected: 0,
+          amountUnreadable: row.cod_amount == null };
     return { ...row, resolution: rowBadge(r, evaluate(r, material, ctx.todayYmd)) };
   });
 }
@@ -861,6 +895,14 @@ export function proposeItemProblem(
   const meta = REASONS[reason];
   if (meta.side !== "both" && meta.side !== key.subjectType) {
     return `reason '${reason}' hanya untuk baris sisi ${meta.side}`;
+  }
+  // GUARD 3b (fail closed): amaun baris tak dapat dibaca -> pelarasan TAK BOLEH
+  // diukur. amountSane() akan menilai baris ni seolah olah duit masuk RM0, jadi
+  // pelarasan sebesar seluruh selling_price akan lulus "sanity" atas nilai yang
+  // kita sebenarnya tak tahu. Tolak terus; betulkan failnya dulu.
+  if (fact.amountUnreadable && round2(adjust) !== 0) {
+    return "amaun baris tak dapat dibaca, adjustment tak boleh diukur lawan "
+      + "nilai yang tak diketahui (upload semula penyata bersih dulu)";
   }
   if (!amountSane(adjust, fact.amount, fact.expected)) {
     return `adjustAmount ${round2(adjust).toFixed(2)} tidak munasabah lawan beza `
@@ -977,6 +1019,7 @@ export async function proposeResolutions(
       fingerprint: fingerprintOf({
         stream: fact!.stream, category: fact!.category,
         amount: fact!.amount, expected: fact!.expected,
+        amountUnreadable: fact!.amountUnreadable,
       }),
     });
   }
@@ -1007,6 +1050,12 @@ export async function proposeResolutions(
       const supersedes = (prev.rows[0]?.resolution_id as string | undefined) ?? null;
 
       const id = randomUUID();
+      // Snapshot amaun: NULL bila nilainya memang TAK DAPAT DIBACA. Menyimpan 0
+      // di sini membekukan pembohongan , skrin Awaiting approval / Settled akan
+      // papar "RM 0.00" selamanya, dan ambang kelulusan akan menilai kes tu
+      // sebagai kes kecil. NULL = "kita tak tahu", dan setiap pembaca kena
+      // melayannya begitu.
+      const amountSnap = r.fact.amountUnreadable ? null : round2(r.fact.amount);
       // GUARD 6b: ON CONFLICT DO NOTHING atas index unik SEPARA. Maker kedua
       // yang berlumba subjek sama dapat rowCount 0 (route balas 409).
       const ins = await client.query(
@@ -1021,7 +1070,7 @@ export async function proposeResolutions(
            WHERE state IN ('proposed', 'approved') DO NOTHING
          RETURNING resolution_id`,
         [id, r.key.subjectType, r.key.subjectId, r.fact.stream,
-         r.fact.category, round2(r.fact.amount), round2(r.fact.expected),
+         r.fact.category, amountSnap, round2(r.fact.expected),
          r.fingerprint, input.reason, note, adjust,
          (input.counterparty ?? "").trim() || null,
          (input.duplicateRef ?? "").trim() || null,
@@ -1039,7 +1088,7 @@ export async function proposeResolutions(
          VALUES ($1, $2, 'proposed', $3, $4, $5::jsonb)`,
         [randomUUID(), id, input.actor, input.now, JSON.stringify({
           fingerprint: r.fingerprint, stream: r.fact.stream,
-          category: r.fact.category, amount: round2(r.fact.amount),
+          category: r.fact.category, amount: amountSnap,
           expected: round2(r.fact.expected), adjustAmount: adjust,
           reason: input.reason, expiresOn, batchId,
         })]);
@@ -1119,6 +1168,19 @@ export async function decideResolutions(
       if (big) {
         throw new ResolutionError(
           `kes ${big.resolutionId} melebihi ambang RM ${threshold.toFixed(2)}, `
+          + "wajib diputuskan admin", 403);
+      }
+      // GUARD 2b (FAIL CLOSED): amaun baris TAK DIKETAHUI. Ambang RM ni satu
+      // satunya soalan "kes ni kecil ke besar" , dan nilai yang tak dapat
+      // dibaca TIDAK BOLEH dijawab "kecil". Sebelum ni ia dibekukan jadi RM0,
+      // maknanya baris paling rosak dalam sistem sentiasa lalu laluan peer.
+      // Sekarang ia naik pada admin, sama macam kes yang melebihi ambang.
+      // (Reject dikecualikan di atas: menolak kes sentiasa arah yang selamat.)
+      const unknown = rows.find((r) => r.amountSnapshot == null);
+      if (unknown) {
+        throw new ResolutionError(
+          `kes ${unknown.resolutionId}: amaun baris tak dapat dibaca, nilai yang `
+          + `tak diketahui tak boleh dinilai bawah ambang RM ${threshold.toFixed(2)}, `
           + "wajib diputuskan admin", 403);
       }
       const adminOnly = rows.find((r) => REASONS[r.reason]?.adminSahaja);

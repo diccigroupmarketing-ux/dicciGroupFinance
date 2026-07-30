@@ -11,11 +11,15 @@ import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { fmtDate, fmtInt, fmtRM } from "@/lib/format";
 import TableFilter from "@/components/TableFilter";
+import { AMOUNT_UNREADABLE } from "@/components/AmountCell";
 import {
   apiErrorEnglish, whyEnglish,
   type CaseUI, type DecideReply, type ResolveLimits,
 } from "@/components/resolveTypes";
 
+// Bila amaun masuk tak dapat dibaca, `amount` NULL, jadi nilai yang dipapar
+// datang dari `expected` (yang memang kita tahu). Baris begitu ditanda di skrin
+// supaya angka tu tak disalah baca sebagai duit yang disahkan masuk.
 function caseValue(c: CaseUI): number {
   return Math.abs(c.amount ?? c.expected ?? 0);
 }
@@ -127,6 +131,10 @@ export default function ReviewSettled({
         <div className="cardHint" style={{ marginTop: 8 }}>
           Value involved is the money on those rows. It is shown so the size of what
           was closed is visible: none of it moved any total.
+          {tagged.some(({ c }) => c.amountUnreadable) && (
+            <> Rows marked “{AMOUNT_UNREADABLE}” count the expected value instead,
+              because the amount received could not be read from the file.</>
+          )}
         </div>
       </div>
 
@@ -172,7 +180,11 @@ export default function ReviewSettled({
                   <td>{c.decidedBy ?? "—"}
                     <div className="cellSub">{whenText(c.decidedAt)}</div>
                   </td>
-                  <td className="num">{fmtRM(caseValue(c))}</td>
+                  <td className="num">{fmtRM(caseValue(c))}
+                    {c.amountUnreadable && (
+                      <div className="cellSub amtUnread">{AMOUNT_UNREADABLE}</div>
+                    )}
+                  </td>
                   <td>
                     {c.expiresOn
                       ? <span className={k === "expired" ? "expiredOn" : undefined}>

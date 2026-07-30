@@ -2,7 +2,7 @@ import { searchOrders } from "@/lib/recon";
 import { fmtDate, fmtInt, fmtRM, trackingOrDash } from "@/lib/format";
 import AmountCell from "@/components/AmountCell";
 import SearchBox from "@/components/SearchBox";
-import ExportCsv from "@/components/ExportCsv";
+import ExportCsv, { CSV_UNREADABLE } from "@/components/ExportCsv";
 
 const SEARCH_COLS = [
   { key: "order_id", header: "Order" }, { key: "order_date", header: "Date" },
@@ -14,6 +14,22 @@ const SEARCH_COLS = [
   { key: "fee", header: "Fee" }, { key: "prepaid_gateway", header: "Prepaid gateway" },
   { key: "prepaid_amount", header: "Prepaid amount" }, { key: "prepaid_status", header: "Prepaid status" },
 ];
+
+// Baris hasil carian -> baris CSV. Bila baris duit memang WUJUD (ada bil, atau
+// ada bayaran gateway) tapi amaunnya NULL, nilainya gagal dibaca masa ingest.
+// Sel kosong dalam CSV mengaburkan itu dengan "tiada bayaran", jadi kita tulis
+// token jujur , sama isyarat yang AmountCell pakai dalam jadual di bawah.
+function searchToCsv(rows: Awaited<ReturnType<typeof searchOrders>>) {
+  return rows.map((r) => ({
+    ...r,
+    cod_amount: r.cod_amount ?? (r.bill_id != null ? CSV_UNREADABLE : null),
+    prepaid_amount: r.prepaid_amount
+      ?? (r.prepaid_gateway != null ? CSV_UNREADABLE : null),
+    // Fee hidup atas isyarat sama dengan cod_amount: ia datang dari baris bil.
+    // Bil wujud tapi fee NULL = gagal dibaca, bukan "kurier tak potong fee".
+    fee: r.fee ?? (r.bill_id != null ? CSV_UNREADABLE : null),
+  }));
+}
 
 export const dynamic = "force-dynamic";
 
@@ -51,7 +67,7 @@ export default async function SearchPage(
                 {rows.length === 50 ? " (showing first 50)" : ""}
               </div>
               {rows.length > 0 && (
-                <ExportCsv rows={rows} columns={SEARCH_COLS}
+                <ExportCsv rows={searchToCsv(rows)} columns={SEARCH_COLS}
                   label={rows.length === 50 ? "Download CSV (first 50)" : "Download CSV"}
                   filename={`search-${q.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 40)}.csv`} />
               )}
@@ -109,7 +125,15 @@ export default async function SearchPage(
                             {settled ? (
                               <>
                                 <AmountCell value={r.cod_amount} hasPayment bold />
-                                <div className="cellSub">fee {fmtRM(r.fee ?? 0)}</div>
+                                {/* Fee ikut isyarat sama: baris bil wujud, jadi fee
+                                    NULL = gagal dibaca, BUKAN "kurier tak potong
+                                    fee". "fee RM 0.00" di sini buat finance ingat
+                                    remit penuh sedangkan nilainya tak diketahui. */}
+                                {r.fee != null ? (
+                                  <div className="cellSub">fee {fmtRM(r.fee)}</div>
+                                ) : (
+                                  <div className="cellSub amtUnread">Fee unreadable</div>
+                                )}
                               </>
                             ) : prepaid ? (
                               <AmountCell value={r.prepaid_amount} hasPayment bold />

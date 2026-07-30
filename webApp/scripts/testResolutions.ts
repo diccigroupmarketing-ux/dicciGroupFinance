@@ -2,7 +2,10 @@
 //   npx tsx scripts/testResolutions.ts
 //
 // Suite ni MENULIS ke dev PG (jadual recon_resolutions + recon_resolution_events),
-// dan dalam ujian 5 ia ubah sementara satu nilai selling_price lalu memulihkannya.
+// dan dalam ujian 5 ia ubah sementara satu nilai selling_price lalu memulihkannya
+// (bahagian F pula menulis NULL/0 sementara ke satu baris cod_bill_lines, dan
+// bahagian G menulis amaun KURANG SEDIKIT ke satu baris bil lain , dua duanya
+// pulih dalam `finally` + disahkan selepasnya).
 // Jadi ia didaftar dalam kumpulan "memadam" testAll.mjs (restore sebelum + selepas).
 //
 // Bahagian:
@@ -11,7 +14,10 @@
 //   C. MAKER CHECKER + ESKALASI , dikuatkuasa di SQL dan di gate admin.
 //   D. CAP JARI + SNOOZE , kes basi dan snooze luput balik jadi terbuka.
 //   E. GUARD PROPOSE , tally, sanity amaun, perlumbaan subjek sama.
-//   F. GREP , fail ni tak boleh menulis ke jadual duit.
+//   F. AMAUN TAK DAPAT DIBACA , snapshot NULL + kelulusan naik admin (fail closed).
+//   G. AMOUNT_MISMATCH SINTETIK , kes Singapura (duit masuk kurang sebab kadar
+//      tukaran) dibina sendiri, lalu alur penuh fx_adjustment atasnya.
+//   H. GREP , fail ni tak boleh menulis ke jadual duit.
 import "./reconEnv";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -110,6 +116,58 @@ async function sellingPriceOf(orderId: string): Promise<number> {
   return Number(r.rows[0]?.selling_price ?? 0);
 }
 
+// Satu baris bil 'tally' jnt yang SELAMAT diubah jadi kes mismatch sintetik.
+// Syarat pilihan (semuanya penting, kalau tidak ujian menguji benda lain):
+//   , satu order SAHAJA berkongsi tracking tu. Kalau dua, guard AWB dikongsi
+//     yang tentukan kategori (ia paksa amount_mismatch sendiri), jadi ujian
+//     tak lagi membuktikan beza amaun yang kita suntik.
+//   , satu baris bil SAHAJA untuk awb tu. Guard multi line tak menghalang
+//     propose, dan pemulihan dalam `finally` kena tepat satu baris.
+//   , selling_price cukup besar supaya potongan BESAR (atas ambang admin) pun
+//     tinggalkan duit masuk > 0. Baris bil <= 0 jatuh cabang lain dalam enjin
+//     (belum_remit / hilang_lewat), BUKAN amount_mismatch.
+interface TallyPick {
+  orderId: string; awb: string; billId: string; price: number; codAsal: number;
+}
+async function pickTallyLine(minPrice: number): Promise<TallyPick | null> {
+  const client: PoolClient = await getPool().connect();
+  try {
+    await client.query("BEGIN");
+    await buildTmpM(client, "jnt", REMIT_PENDING_DAYS);
+    const r = await client.query(
+      `SELECT m.order_id, m.awb, m.bill_id, m.selling_price, m.cod_amount
+         FROM tmp_m m
+        WHERE m.kategori = 'tally' AND m.selling_price > $1
+          AND (SELECT COUNT(*) FROM cod_bill_lines l WHERE l.awb = m.awb) = 1
+          AND (SELECT COUNT(*) FROM orders o WHERE o.tracking = m.tracking) = 1
+        ORDER BY m.selling_price DESC, m.order_id LIMIT 1`, [minPrice]);
+    await client.query("ROLLBACK");
+    const row = r.rows[0];
+    if (!row) return null;
+    return {
+      orderId: String(row.order_id), awb: String(row.awb),
+      billId: String(row.bill_id), price: Number(row.selling_price),
+      codAsal: Number(row.cod_amount),
+    };
+  } finally {
+    client.release();
+  }
+}
+
+// Tulis amaun baris bil yang dipilih (satu baris tepat: awb + bill_id).
+async function setLineAmount(p: TallyPick, amount: number) {
+  await getPool().query(
+    "UPDATE cod_bill_lines SET cod_amount = $3 WHERE awb = $1 AND bill_id = $2",
+    [p.awb, p.billId, amount]);
+}
+
+// Fakta hidup satu order (undefined = dia bukan lagi baris boleh-settle).
+async function orderFact(orderId: string): Promise<LiveFact | undefined> {
+  const facts = await streamFacts("jnt");
+  return facts.bySubject.get(
+    subjectKeyStr({ subjectType: "order", subjectId: orderId }));
+}
+
 async function main() {
   console.log(`\n=== A. TULEN (tiada DB) ===`);
 
@@ -131,6 +189,20 @@ async function main() {
     "fingerprint sensitif pada category");
   ok(fp !== fingerprintOf({ ...base, stream: "ninja" }),
     "fingerprint sensitif pada stream");
+
+  // AMAUN TAK DAPAT DIBACA ialah fakta material SENDIRI, bukan RM 0.00.
+  //   , Baris biasa mesti kekal BYTE IDENTIK dengan cap jari lama, kalau tidak
+  //     setiap kes prod sedia ada terus jadi stale bila kod ni naik.
+  //   , Baris tak-boleh-dibaca mesti BERBEZA dari baris RM 0.00 sebenar. Kalau
+  //     dua dua dicap "0.00", fail rosak yang kemudian dibaiki jadi RM 0.00
+  //     betul betul akan lolos senyap tanpa membuka semula kes.
+  ok(fp === fingerprintOf({ ...base, amountUnreadable: false }),
+    "fingerprint IDENTIK bila amountUnreadable=false (kes lama tak jadi stale)");
+  ok(fp !== fingerprintOf({ ...base, amountUnreadable: true }),
+    "fingerprint 'tak dapat dibaca' BERBEZA dari fingerprint RM 0.00");
+  ok(fingerprintOf({ ...base, amount: 999, amountUnreadable: true })
+     === fingerprintOf({ ...base, amount: 0, amountUnreadable: true }),
+    "amaun tak dapat dibaca: nombor di sebaliknya diabaikan (memang tak diketahui)");
 
   // Kunci subjek: awb COD dan order_ref CHIP TAK BOLEH berlanggar.
   const codKey = subjectKeyForGhostRow({
@@ -173,7 +245,8 @@ async function main() {
   // proposeItemProblem (guard 4 + 5, tulen).
   const synth = (over: Partial<LiveFact>): LiveFact => ({
     subjectType: "order", subjectId: "X", stream: "jnt", category: "belum_remit",
-    amount: 0, expected: 407, value: 407, lines: 1, mixed: false, ...over,
+    amount: 0, expected: 407, value: 407, lines: 1, mixed: false,
+    amountUnreadable: false, ...over,
   });
   const k: SubjectKey = { subjectType: "order", subjectId: "X" };
   ok(proposeItemProblem(k, synth({}), "data_entry_error", 0) === null,
@@ -190,6 +263,20 @@ async function main() {
     "GUARD 3: adjust melebihi beza -> tolak");
   ok(proposeItemProblem(k, synth({}), "unattributed_income", 0)?.includes("sisi awb"),
     "reason sisi awb tak boleh dipakai atas baris order");
+
+  // GUARD 3b: pelarasan atas baris yang amaunnya tak dapat dibaca. amountSane()
+  // menilai baris tu seolah olah duit masuk RM0, jadi tanpa guard ni pelarasan
+  // sebesar seluruh selling_price akan lulus "sanity" atas nilai yang kita
+  // memang tak tahu. Settle tanpa pelarasan tetap dibenarkan (itu keputusan,
+  // bukan angka), yang ditolak cuma pelarasan bernombor.
+  const unread = synth({ amountUnreadable: true });
+  ok(proposeItemProblem(k, unread, "data_entry_error", 0) === null,
+    "amaun tak dapat dibaca + adjust 0: lulus guard (kes masih boleh dicadang)");
+  ok(proposeItemProblem(k, unread, "partial_or_refund", -100)
+    ?.includes("tak dapat dibaca"),
+    "GUARD 3b: adjust bernombor atas amaun tak dapat dibaca -> DITOLAK");
+  ok(proposeItemProblem(k, synth({}), "partial_or_refund", -100) === null,
+    "kontras: adjust -100 lawan beza -407 pada baris BOLEH dibaca tetap lulus");
 
   // RESOLVABLE_KATS = senarai putih, bukan 'semua bukan tally'.
   ok(!RESOLVABLE_KATS.includes("tally"), "tally BUKAN kategori boleh-settle");
@@ -340,12 +427,12 @@ async function main() {
   const factOrder: LiveFact = {
     subjectType: "order", subjectId: "SYN-ORDER-1", stream: "jnt",
     category: "amount_mismatch", amount: 90, expected: 100, value: 90,
-    lines: 1, mixed: false,
+    lines: 1, mixed: false, amountUnreadable: false,
   };
   const factAwb: LiveFact = {
     subjectType: "awb", subjectId: "cod:TRK9", stream: "jnt",
     category: "duit_hantu", amount: 45, expected: 0, value: 45,
-    lines: 1, mixed: false,
+    lines: 1, mixed: false, amountUnreadable: false,
   };
   const mkRes = (f: LiveFact, over: Partial<Resolution> = {}): Resolution => ({
     resolutionId: `R-${f.subjectId}`, subjectType: f.subjectType,
@@ -899,7 +986,319 @@ async function main() {
   }
 
   // ================================================================
-  console.log(`\n=== F. GREP , fail resolutions TAK BOLEH menulis ke jadual duit ===`);
+  // Baris yang ADA bayaran padan tapi amaunnya GAGAL DIBACA masa ingest (parser
+  // simpan NULL, bukan 0.0). Dulu snapshot membekukan RM 0.00: skrin Awaiting
+  // approval / Settled papar "RM 0.00" selamanya, dan ambang kelulusan menilai
+  // baris paling rosak dalam sistem sebagai kes terkecil (sentiasa laluan peer).
+  // Sekarang: snapshot NULL + laluan ADMIN (fail closed).
+  console.log(`\n=== F. AMAUN TAK DAPAT DIBACA (fail closed) ===`);
+  await clearResolutions();
+
+  // Tiru keadaan sebenar atas satu baris bil yang wujud, pulih dalam `finally`.
+  const unreadOrder = await pickKat("jnt", "tally");
+  ok(!!unreadOrder,
+    `ada order tally untuk ditukar jadi 'tak dapat dibaca' (${unreadOrder})`);
+  const trkRow = await getPool().query(
+    "SELECT tracking FROM orders WHERE order_id = $1", [unreadOrder]);
+  const unreadAwb = String(trkRow.rows[0]?.tracking ?? "");
+  const lineRow = await getPool().query(
+    "SELECT cod_amount FROM cod_bill_lines WHERE awb = $1", [unreadAwb]);
+  const codAsal = Number(lineRow.rows[0]?.cod_amount ?? 0);
+  ok(!!unreadAwb && codAsal > 0,
+    `baris bil asal ada amaun (awb ${unreadAwb}, RM ${codAsal})`);
+
+  try {
+    await getPool().query(
+      "UPDATE cod_bill_lines SET cod_amount = NULL WHERE awb = $1", [unreadAwb]);
+
+    const gKey: SubjectKey = { subjectType: "order", subjectId: unreadOrder! };
+    const gFact = (await streamFacts("jnt")).bySubject.get(subjectKeyStr(gKey));
+    ok(gFact?.amountUnreadable === true,
+      `fakta hidup menanda amaun tak dapat dibaca (kategori '${gFact?.category}')`);
+    ok(gFact?.amount === 0,
+      "amount kekal 0 untuk aritmetik, bendera yang bawa kebenaran");
+    ok(gFact?.lines === 1, "satu baris hidup (guard multi line tak menghalang)");
+
+    // Pintu propose: pelarasan bernombor DITOLAK (tiada apa nak diukur lawan).
+    const gItems: ProposeItem[] = [
+      { subjectType: "order", subjectId: unreadOrder!, stream: "jnt" }];
+    const gAdj = await proposeResolutions({
+      items: gItems, reason: "partial_or_refund", adjustAmount: -50,
+      actor: MAKER, isAdminActor: false, now: NOW, todayYmd: TODAY,
+    });
+    ok(gAdj.created.length === 0
+      && !!gAdj.rejected[0]?.why.includes("tak dapat dibaca"),
+      `pelarasan atas amaun tak dapat dibaca DITOLAK: ${gAdj.rejected[0]?.why}`);
+
+    // Cadangan tanpa pelarasan tetap dibenarkan (itu keputusan, bukan angka).
+    const gP = await proposeResolutions({
+      items: gItems, reason: "data_entry_error", actor: MAKER,
+      isAdminActor: false, now: NOW, todayYmd: TODAY,
+    });
+    ok(gP.created.length === 1, "kes atas baris tak-boleh-dibaca boleh DICADANG");
+    const gLive = (await getResolutions())[0];
+    ok(gLive.amountSnapshot === null,
+      `snapshot amaun disimpan NULL, BUKAN 0 (${gLive.amountSnapshot})`);
+    ok((gLive.expectedSnapshot ?? 0) > 0,
+      `expected_snapshot kekal nombor sebenar (${gLive.expectedSnapshot})`);
+    const gEv = await getResolutionEvents(gP.created[0].resolutionId);
+    ok(gEv[0]?.payload?.amount === null,
+      "jejak event pun merekod amount null, bukan RM0 palsu");
+
+    // GUARD 2b: peer TAK BOLEH lulus, walaupun adjust 0 dan bukan batch.
+    let gThrew: ResolutionError | null = null;
+    try {
+      await decideResolutions({
+        resolutionIds: [gP.created[0].resolutionId], action: "approve",
+        actor: CHECKER, isAdminActor: false, now: NOW,
+      });
+    } catch (e) { gThrew = e as ResolutionError; }
+    ok(gThrew?.status === 403 && gThrew.message.includes("tak dapat dibaca"),
+      `peer lulus kes amaun tak diketahui: DITOLAK 403 (${gThrew?.message ?? "tiada ralat"})`);
+
+    // Tapi peer BOLEH TOLAK: arah selamat tak perlu tunggu admin.
+    const gRej = await decideResolutions({
+      resolutionIds: [gP.created[0].resolutionId], action: "reject",
+      actor: CHECKER, isAdminActor: false, now: NOW,
+    });
+    ok(gRej.changed.length === 1,
+      "peer BOLEH tolak kes amaun tak diketahui (fail closed cuma pada kelulusan)");
+
+    // Admin boleh lulus, dan bukti "apa yang pemutus nampak" kekal jujur.
+    const gP2 = await proposeResolutions({
+      items: gItems, reason: "data_entry_error", actor: MAKER,
+      isAdminActor: false, now: NOW, todayYmd: TODAY,
+    });
+    const gAdmin = await decideResolutions({
+      resolutionIds: [gP2.created[0].resolutionId], action: "approve",
+      actor: ADMIN, isAdminActor: true, now: NOW,
+    });
+    ok(gAdmin.changed.length === 1, "admin lulus kes amaun tak dapat dibaca");
+    ok(gAdmin.seen[0]?.amount === null,
+      `bukti keputusan simpan amaun NULL, bukan RM 0.00 (${gAdmin.seen[0]?.amount})`);
+
+    const gAgg = decorate(await streamSummaryImpl("jnt", REMIT_PENDING_DAYS),
+      await resolutionContext("jnt", TODAY)).resolutionSummary;
+    ok(gAgg.settledN === 1 && gAgg.staleN === 0,
+      `kes dikira settled selagi fakta tak berubah (settledN=${gAgg.settledN})`);
+
+    // Cap jari: "tak dapat dibaca" BERTUKAR jadi RM 0.00 SEBENAR ialah perubahan
+    // fakta material walaupun kategori, stream dan expected semuanya sama, dan
+    // walaupun nombornya kekal 0. Kalau cap jari mencap dua duanya "0.00",
+    // perubahan ni lolos senyap dan kes kekal 'settled'.
+    await getPool().query(
+      "UPDATE cod_bill_lines SET cod_amount = 0 WHERE awb = $1", [unreadAwb]);
+    const gFact0 = (await streamFacts("jnt")).bySubject.get(subjectKeyStr(gKey));
+    ok(gFact0?.amountUnreadable === false && gFact0?.amount === 0,
+      "RM 0.00 sebenar: bendera padam, nombor kekal 0");
+    ok(gFact0?.category === gFact?.category,
+      `kategori TAK berubah (${gFact0?.category}), cuma kebolehbacaan`);
+    const gAgg0 = decorate(await streamSummaryImpl("jnt", REMIT_PENDING_DAYS),
+      await resolutionContext("jnt", TODAY)).resolutionSummary;
+    ok(gAgg0.settledN === 0 && gAgg0.staleN === 1,
+      `kes TERBUKA SEMULA bila amaun tak-boleh-dibaca jadi RM 0.00 sebenar `
+      + `(settledN=${gAgg0.settledN} staleN=${gAgg0.staleN})`);
+  } finally {
+    // Pulih baris bil, walau apa pun yang gagal di atas.
+    await getPool().query(
+      "UPDATE cod_bill_lines SET cod_amount = $2 WHERE awb = $1",
+      [unreadAwb, codAsal]);
+    await clearResolutions();
+  }
+  const pulih = await getPool().query(
+    "SELECT cod_amount FROM cod_bill_lines WHERE awb = $1", [unreadAwb]);
+  ok(Number(pulih.rows[0]?.cod_amount) === codAsal,
+    `baris bil dipulihkan kepada RM ${codAsal} (dev DB bersih)`);
+
+  // ================================================================
+  // Kes SEBENAR yang sebab 'fx_adjustment' direka untuk: order Singapura yang
+  // selling_price-nya RM tetap, tapi duit yang masuk KURANG SEDIKIT sebab kadar
+  // tukaran mata wang. Snapshot dev tiada kes macam tu (sebab itu bahagian 7c
+  // terpaksa uji fx_adjustment atas baris belum_remit), jadi di sini kita BINA
+  // satu: ambil baris 'tally' yang selamat dan tolak RM12.50 dari amaun bil.
+  // Nilainya KURANG SEDIKIT , bukan NULL, bukan 0 , itu yang membezakan
+  // bahagian ni daripada bahagian F.
+  // Semua tulisan dipulihkan dalam `finally` dan pemulihan tu DISAHKAN selepas.
+  console.log(`\n=== G. AMOUNT_MISMATCH SINTETIK (kes Singapura + fx_adjustment) ===`);
+  await clearResolutions();
+
+  const FX_GAP = 12.5;                              // beza kecil, bawah ambang
+  const BIG_GAP = round2(adminThreshold() + 20);    // beza besar, atas ambang
+  const fxPick = await pickTallyLine(BIG_GAP + 20);
+  ok(!!fxPick, `ada baris tally jnt selamat dengan selling_price > RM `
+    + `${BIG_GAP + 20} untuk dijadikan mismatch sintetik (${fxPick?.orderId ?? "TIADA"})`);
+
+  if (fxPick) {
+    try {
+      // --- 1. Bina kes: duit masuk KURANG RM12.50 dari selling_price.
+      await setLineAmount(fxPick, round2(fxPick.price - FX_GAP));
+      const f1 = await orderFact(fxPick.orderId);
+      ok(f1?.category === "amount_mismatch",
+        `kes sintetik jatuh kategori 'amount_mismatch' dalam recon (${f1?.category})`);
+      ok(f1?.amountUnreadable === false,
+        "amaun BOLEH dibaca (kes beza nombor, bukan nilai hilang macam bahagian F)");
+      ok(f1?.lines === 1 && f1?.mixed === false,
+        "satu baris hidup, tak bercampur (guard multi line tak menghalang)");
+      ok(f1 !== undefined && f1.amount > 0,
+        `duit masuk masih > 0, bukan sifar dan bukan NULL (RM ${f1?.amount})`);
+      ok(f1 !== undefined && round2(f1.expected - f1.amount) === FX_GAP,
+        `beza tepat RM ${FX_GAP} (jangka ${f1?.expected}, masuk ${f1?.amount})`);
+
+      // --- 2. Alur penuh fx_adjustment atas kes tu.
+      const rawBeforeSg = await streamSummaryImpl("jnt", REMIT_PENDING_DAYS);
+      const pSg = await proposeResolutions({
+        items: [{ subjectType: "order", subjectId: fxPick.orderId, stream: "jnt" }],
+        reason: "fx_adjustment", adjustAmount: -FX_GAP,
+        note: "order Singapura, duit masuk kurang sebab kadar tukaran",
+        actor: MAKER, isAdminActor: false, now: NOW, todayYmd: TODAY,
+      });
+      ok(pSg.created.length === 1,
+        `fx_adjustment dicadang atas baris amount_mismatch `
+        + `(${pSg.rejected[0]?.why ?? "diterima"})`);
+      const liveSg = (await getResolutions())[0];
+      ok(liveSg?.categorySnapshot === "amount_mismatch",
+        `snapshot kategori = amount_mismatch (${liveSg?.categorySnapshot})`);
+      ok(liveSg?.amountSnapshot === round2(fxPick.price - FX_GAP)
+        && liveSg?.expectedSnapshot === fxPick.price,
+        `snapshot amaun sebenar disimpan (${liveSg?.amountSnapshot} lawan `
+        + `jangka ${liveSg?.expectedSnapshot})`);
+      ok(liveSg?.adjustAmount === -FX_GAP,
+        `pelarasan = -${FX_GAP}, sama besar dengan beza (${liveSg?.adjustAmount})`);
+      ok(liveSg?.expiresOn === null,
+        `tiada tarikh luput, kelas cost bukan snooze (${liveSg?.expiresOn})`);
+
+      // Sebelum diluluskan, baris tu MASIH terbuka (menunggu checker).
+      const aPre = decorate(rawBeforeSg, await resolutionContext("jnt", TODAY))
+        .resolutionSummary;
+      ok(aPre.proposedN === 1 && aPre.settledN === 0,
+        `sebelum kelulusan: menunggu checker, belum settled `
+        + `(proposedN=${aPre.proposedN} settledN=${aPre.settledN})`);
+      ok(aPre.openN === aPre.exceptionN,
+        "sebelum kelulusan: baris masih dikira TERBUKA");
+
+      // Laluan kelulusan ikut ambang: RM12.50 di bawah RM300, peer memadai.
+      const dSg = await decideResolutions({
+        resolutionIds: [pSg.created[0].resolutionId], action: "approve",
+        actor: CHECKER, isAdminActor: false, now: NOW,
+      });
+      ok(dSg.changed.length === 1,
+        `peer boleh lulus (adjust RM ${FX_GAP} bawah ambang RM ${adminThreshold()})`);
+      ok(dSg.seen[0]?.amount === round2(fxPick.price - FX_GAP),
+        `bukti keputusan simpan amaun sebenar, bukan RM0 (${dSg.seen[0]?.amount})`);
+
+      // INVARIAN DUIT: settle tak menggerakkan sesen pun angka mentah.
+      const rawAfterSg = await streamSummaryImpl("jnt", REMIT_PENDING_DAYS);
+      eq(rawAfterSg, rawBeforeSg,
+        "INVARIAN: streamSummary IDENTIK (deep equal) selepas kes mismatch di-settle");
+
+      const decSg = decorate(rawAfterSg, await resolutionContext("jnt", TODAY));
+      const aSg = decSg.resolutionSummary;
+      ok(aSg.settledN === 1 && aSg.snoozedN === 0 && aSg.staleN === 0,
+        `kes SETTLED terus selepas lulus (settledN=${aSg.settledN} `
+        + `snoozedN=${aSg.snoozedN} staleN=${aSg.staleN})`);
+      ok(aSg.openN === aSg.exceptionN - 1,
+        `baris KELUAR dari senarai terbuka (openN=${aSg.openN} `
+        + `daripada exceptionN=${aSg.exceptionN})`);
+      const rowSg = decSg.integ.find((r) => r.order_id === fxPick.orderId);
+      ok(!!rowSg, "baris mismatch muncul dalam senarai integriti (boleh dilencana)");
+      ok(rowSg?.resolution?.settled === true && rowSg?.resolution?.stale === false,
+        "lencana baris: settled DAN tidak stale");
+      ok(rowSg?.resolution?.reason === "fx_adjustment"
+        && rowSg?.resolution?.kelas === "cost",
+        `lencana baris bawa sebab + kelas betul (${rowSg?.resolution?.reason} / `
+        + `${rowSg?.resolution?.kelas})`);
+      ok(rowSg?.resolution?.adjustAmount === -FX_GAP,
+        `lencana baris bawa pelarasan -${FX_GAP} (${rowSg?.resolution?.adjustAmount})`);
+
+      // Cap jari tak menyala PALSU: tulis semula amaun yang SAMA (re-upload
+      // penyata identik) mesti biarkan kes kekal settled.
+      await setLineAmount(fxPick, round2(fxPick.price - FX_GAP));
+      const aSame = decorate(await streamSummaryImpl("jnt", REMIT_PENDING_DAYS),
+        await resolutionContext("jnt", TODAY)).resolutionSummary;
+      ok(aSame.settledN === 1 && aSame.staleN === 0,
+        `re-upload amaun IDENTIK: kes kekal settled (staleN=${aSame.staleN})`);
+      // Kontras (bukti cap jari memang hidup, bukan sekadar tak pernah menyala):
+      // amaun bergerak RM2.50 -> kes terbuka semula.
+      await setLineAmount(fxPick, round2(fxPick.price - FX_GAP - 2.5));
+      const aMoved = decorate(await streamSummaryImpl("jnt", REMIT_PENDING_DAYS),
+        await resolutionContext("jnt", TODAY)).resolutionSummary;
+      ok(aMoved.settledN === 0 && aMoved.staleN === 1,
+        `amaun bergerak RM2.50: kes jadi stale dan terbuka semula `
+        + `(settledN=${aMoved.settledN} staleN=${aMoved.staleN})`);
+
+      // --- 3. KES KAWALAN: beza melebihi ambang RM300 mesti naik admin.
+      await clearResolutions();
+      await setLineAmount(fxPick, round2(fxPick.price - BIG_GAP));
+      const f2 = await orderFact(fxPick.orderId);
+      ok(f2?.category === "amount_mismatch"
+        && f2 !== undefined && round2(f2.expected - f2.amount) === BIG_GAP,
+        `kes besar: beza RM ${BIG_GAP} kekal amount_mismatch (${f2?.category})`);
+      ok(f2 !== undefined && f2.amount > 0,
+        `duit masuk kes besar masih > 0 (RM ${f2?.amount})`);
+      const pBigSg = await proposeResolutions({
+        items: [{ subjectType: "order", subjectId: fxPick.orderId, stream: "jnt" }],
+        reason: "fx_adjustment", adjustAmount: -BIG_GAP,
+        actor: MAKER, isAdminActor: false, now: NOW, todayYmd: TODAY,
+      });
+      ok(pBigSg.created.length === 1,
+        `kes fx RM ${BIG_GAP} boleh DICADANG oleh peer `
+        + `(${pBigSg.rejected[0]?.why ?? "diterima"})`);
+      let threwBigSg: ResolutionError | null = null;
+      try {
+        await decideResolutions({
+          resolutionIds: [pBigSg.created[0].resolutionId], action: "approve",
+          actor: CHECKER, isAdminActor: false, now: NOW,
+        });
+      } catch (e) { threwBigSg = e as ResolutionError; }
+      ok(threwBigSg?.status === 403 && threwBigSg.message.includes("ambang"),
+        `peer lulus fx RM ${BIG_GAP}: DITOLAK 403 `
+        + `(${threwBigSg?.message ?? "tiada ralat"})`);
+      const dBigSg = await decideResolutions({
+        resolutionIds: [pBigSg.created[0].resolutionId], action: "approve",
+        actor: ADMIN, isAdminActor: true, now: NOW,
+      });
+      ok(dBigSg.changed.length === 1, "admin lulus kes fx besar: OK");
+      const aBigSg = decorate(await streamSummaryImpl("jnt", REMIT_PENDING_DAYS),
+        await resolutionContext("jnt", TODAY)).resolutionSummary;
+      ok(aBigSg.settledN === 1 && aBigSg.staleN === 0,
+        `kes besar settled selepas admin lulus (settledN=${aBigSg.settledN})`);
+
+      // NOTA DASAR (dicatat, bukan diandaikan): ambang admin dinilai atas
+      // adjustAmount, BUKAN atas saiz beza baris. Jadi beza melebihi ambang yang
+      // di-settle TANPA pelarasan bernombor (adjust 0) masih laluan peer.
+      // Ujian ni merakam kelakuan sebenar , kalau dasar bertukar jadi "ambang
+      // ikut beza baris", ia yang berbunyi dahulu.
+      await clearResolutions();
+      const pZero = await proposeResolutions({
+        items: [{ subjectType: "order", subjectId: fxPick.orderId, stream: "jnt" }],
+        reason: "fx_adjustment", adjustAmount: 0,
+        actor: MAKER, isAdminActor: false, now: NOW, todayYmd: TODAY,
+      });
+      const dZero = await decideResolutions({
+        resolutionIds: [pZero.created[0].resolutionId], action: "approve",
+        actor: CHECKER, isAdminActor: false, now: NOW,
+      });
+      ok(dZero.changed.length === 1,
+        `DASAR SEMASA: beza RM ${BIG_GAP} dengan adjust 0 masih boleh diluluskan `
+        + "peer (ambang menilai adjustAmount, bukan beza baris)");
+    } finally {
+      // Pulih baris bil, walau apa pun yang gagal di atas.
+      await setLineAmount(fxPick, fxPick.codAsal);
+      await clearResolutions();
+    }
+    const sgPulih = await getPool().query(
+      "SELECT cod_amount FROM cod_bill_lines WHERE awb = $1 AND bill_id = $2",
+      [fxPick.awb, fxPick.billId]);
+    ok(Number(sgPulih.rows[0]?.cod_amount) === fxPick.codAsal,
+      `baris bil dipulihkan kepada RM ${fxPick.codAsal} (dev DB bersih)`);
+    ok((await orderFact(fxPick.orderId)) === undefined,
+      "order kembali 'tally' (keluar semula dari populasi boleh-settle)");
+    ok((await getResolutions()).length === 0,
+      "tiada kes ujian tertinggal dalam recon_resolutions");
+  }
+
+  // ================================================================
+  console.log(`\n=== H. GREP , fail resolutions TAK BOLEH menulis ke jadual duit ===`);
   const here = dirname(fileURLToPath(import.meta.url));
   const src = readFileSync(join(here, "..", "lib", "resolutions.ts"), "utf8");
   // Buang komen dulu supaya nota penjelasan tak jadi positif palsu.

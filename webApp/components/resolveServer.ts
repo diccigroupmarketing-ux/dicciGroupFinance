@@ -274,6 +274,10 @@ export function casesUI(
     stream: r.streamSnapshot,
     category: r.categorySnapshot,
     amount: r.amountSnapshot,
+    // Snapshot NULL = amaun tak dapat dibaca masa kes dicadang (lihat
+    // lib/resolutions.ts, proposeResolutions). Kes lama sentiasa ada nombor,
+    // jadi bendera ni tak pernah menyala palsu untuk kes sedia ada.
+    amountUnreadable: r.amountSnapshot == null,
     expected: r.expectedSnapshot,
     reason: r.reason,
     reasonLabel: labelOf(r.reason),

@@ -91,6 +91,10 @@ export interface CaseUI {
   stream: string | null;
   category: string | null;
   amount: number | null;
+  // TRUE = amaun baris ni tak dapat dibaca masa kes dicadang (snapshot NULL),
+  // jadi `amount` di atas TIADA nilai. Ia mesti dipapar sebagai "Amount
+  // unreadable", JANGAN sekali kali sebagai RM 0.00 atau "—".
+  amountUnreadable: boolean;
   expected: number | null;
   reason: string;
   reasonLabel: string;
@@ -147,6 +151,8 @@ const WHY_RULES: { test: RegExp; text: string }[] = [
     text: "That reason only applies to money rows (bill or payment lines)." },
   { test: /tidak munasabah lawan beza/i,
     text: "The adjustment does not fit the difference on this row. It must point the same way and cannot be larger." },
+  { test: /amaun baris tak dapat dibaca/i,
+    text: "The amount on this row could not be read from the file, so an adjustment cannot be sized against it. Re-upload a clean statement first." },
   { test: /kes hidup untuk subjek ni sudah wujud/i,
     text: "Someone else just opened a case on this row." },
   { test: /subjek berganda/i,
@@ -189,6 +195,13 @@ export function apiErrorEnglish(
   if (status === 401) return "Your session expired. Sign in again and retry.";
 
   if (status === 403) {
+    // Didahulukan: teksnya turut mengandungi "ambang" dan "wajib diputuskan
+    // admin", jadi ia mesti diperiksa SEBELUM dua peraturan generik di bawah.
+    if (/tak dapat dibaca/.test(msg) && limits) {
+      return "The amount on this row could not be read, so nobody can show it is "
+        + `under RM ${limits.adminThreshold.toFixed(2)}. The finance lead has to `
+        + "decide it.";
+    }
     if (/ambang|melebihi ambang/.test(msg) && limits) {
       return `This case is over RM ${limits.adminThreshold.toFixed(2)}, `
         + "it needs approval from the finance lead.";

@@ -13,6 +13,7 @@
 import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { fmtInt, fmtRM } from "@/lib/format";
+import AmountCell, { AMOUNT_UNREADABLE } from "@/components/AmountCell";
 import {
   apiErrorEnglish, whyEnglish,
   type CaseUI, type DecideReply, type ResolveLimits,
@@ -55,6 +56,10 @@ function unitsOf(cases: CaseUI[]): Unit[] {
   return units.sort((a, b) => b.value - a.value);
 }
 
+// Duit yang terlibat pada satu kes. Bila amaun masuk tak dapat dibaca, `amount`
+// memang NULL, jadi ia jatuh pada `expected` (nilai yang KITA MEMANG TAHU),
+// bukan pada 0. Sifar di sini akan menyusun baris paling rosak ke bawah senarai
+// dan membuatnya nampak remeh.
 function caseValue(c: CaseUI): number {
   return Math.abs(c.amount ?? c.expected ?? 0);
 }
@@ -152,6 +157,11 @@ function UnitCard({
   const overPeer = !limits.isAdmin && n > limits.peerBatchMax;
   const overThreshold = !limits.isAdmin
     && unit.cases.some((c) => Math.abs(c.adjustAmount) > limits.adminThreshold);
+  // Amaun tak dapat dibaca = nilainya TAK DIKETAHUI, jadi tiada siapa boleh
+  // buktikan ia di bawah ambang. Backbone menolak peer 403 (GUARD 2b); di sini
+  // kita cakap awal awal supaya orang tak klik Approve untuk dapat ralat.
+  const unknownN = unit.cases.filter((c) => c.amountUnreadable).length;
+  const overUnknown = !limits.isAdmin && unknownN > 0;
 
   const act = async (action: "approve" | "reject" | "withdraw") => {
     setBusy(true); setErr(null); setReply(null);
@@ -195,6 +205,16 @@ function UnitCard({
           </div>
           <div className="approvalMeta">
             {fmtRM(unit.value)} involved
+            {unknownN > 0 && (
+              <>
+                <span className="sep"> · </span>
+                <span className="amtUnread">
+                  {unknownN === n
+                    ? AMOUNT_UNREADABLE
+                    : `${fmtInt(unknownN)} rows with the amount unreadable`}
+                </span>
+              </>
+            )}
             <span className="sep"> · </span>
             proposed by {head.proposedBy ?? "unknown"}
             <span className="sep"> · </span>
@@ -262,12 +282,20 @@ function UnitCard({
         </div>
       )}
 
-      {(overPeer || overThreshold) && (
+      {(overPeer || overThreshold || overUnknown) && (
         <div className="cauPanel" style={{ marginTop: 8 }}>
           <div>
             <b>The finance lead has to decide this one.</b>
             {overThreshold && (
               <p>An adjustment here is over RM {limits.adminThreshold.toFixed(2)}.</p>
+            )}
+            {overUnknown && (
+              <p>
+                {unknownN === 1 ? "One row here has" : `${fmtInt(unknownN)} rows here have`}
+                {" "}an amount that could not be read from the file, so nobody can
+                show it is under RM {limits.adminThreshold.toFixed(2)}. The honest
+                fix is a clean re-upload, not an approval.
+              </p>
             )}
             {overPeer && (
               <p>{fmtInt(n)} rows is over the peer limit of {fmtInt(limits.peerBatchMax)}.</p>
@@ -293,7 +321,11 @@ function UnitCard({
                   <td>{c.stream ?? "—"}</td>
                   <td>{c.category ?? "—"}</td>
                   <td className="num">{c.expected != null ? fmtRM(c.expected) : "—"}</td>
-                  <td className="num">{c.amount != null ? fmtRM(c.amount) : "—"}</td>
+                  {/* Snapshot NULL + hasPayment = "Amount unreadable", bukan
+                      RM 0.00 dan bukan "—" (komponen sama macam jadual stream). */}
+                  <td className="num">
+                    <AmountCell value={c.amount} hasPayment={c.amountUnreadable} />
+                  </td>
                   <td className="num">{c.adjustAmount ? fmtRM(c.adjustAmount) : "—"}</td>
                 </tr>
               ))}
@@ -320,7 +352,10 @@ function UnitCard({
                   <div className="approvalSeenRow" key={s.resolutionId}>
                     expected {s.expected != null ? fmtRM(s.expected) : "—"}
                     <span className="sep"> · </span>
-                    received {s.amount != null ? fmtRM(s.amount) : "—"}
+                    {/* amount NULL dalam `seen` cuma berlaku bila nilainya
+                        gagal dibaca (backbone tak pernah simpan NULL selain
+                        itu), jadi ia dinamakan, bukan dipapar "—". */}
+                    received {s.amount != null ? fmtRM(s.amount) : AMOUNT_UNREADABLE}
                     <span className="sep"> · </span>
                     adjustment {fmtRM(s.adjustAmount)}
                     <span className="sep"> · </span>
