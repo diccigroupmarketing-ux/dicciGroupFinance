@@ -61,13 +61,13 @@ async function seedProbeRows(): Promise<void> {
 
 async function main() {
   console.log("== isAdmin ==");
-  process.env.ADMIN_EMAILS = "impactdicci@gmail.com, boss@dicci.com";
-  ok(isAdmin("impactdicci@gmail.com"), "allowlisted email = admin");
-  ok(isAdmin("IMPACTDICCI@GMAIL.COM"), "case-insensitive match");
+  process.env.ADMIN_EMAILS = "admin@example.com, boss@example.com";
+  ok(isAdmin("admin@example.com"), "allowlisted email = admin");
+  ok(isAdmin("ADMIN@EXAMPLE.COM"), "case-insensitive match");
   ok(!isAdmin("random@x.com"), "outsider != admin");
   ok(!isAdmin(null), "null != admin");
   process.env.ADMIN_EMAILS = "";
-  ok(!isAdmin("impactdicci@gmail.com"), "empty ADMIN_EMAILS = nobody admin");
+  ok(!isAdmin("admin@example.com"), "empty ADMIN_EMAILS = nobody admin");
 
   console.log("== saveSkuMap (self-restoring) ==");
   const original: SkuRow[] = await skuMap();

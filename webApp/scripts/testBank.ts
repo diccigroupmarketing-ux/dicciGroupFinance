@@ -22,14 +22,14 @@ async function main() {
   ok(start[bill] === undefined, "bil belum ada deposit (mula bersih)");
 
   await saveBankDeposit({ bill_id: bill, actual_amount: 12345.67, deposited_on: null,
-    note: "ujian", entered_by: "test@dicci.com", now: "2026-07-05T00:00:00Z" });
+    note: "ujian", entered_by: "test@example.com", now: "2026-07-05T00:00:00Z" });
   const after = await getBankDeposits();
   ok(after[bill]?.actual_amount === 12345.67, `deposit disimpan (${after[bill]?.actual_amount})`);
-  ok(after[bill]?.entered_by === "test@dicci.com", "entered_by direkod");
+  ok(after[bill]?.entered_by === "test@example.com", "entered_by direkod");
 
   // Upsert: tukar jumlah.
   await saveBankDeposit({ bill_id: bill, actual_amount: 9999, deposited_on: null,
-    note: null, entered_by: "test2@dicci.com", now: "2026-07-05T01:00:00Z" });
+    note: null, entered_by: "test2@example.com", now: "2026-07-05T01:00:00Z" });
   const upd = await getBankDeposits();
   ok(upd[bill]?.actual_amount === 9999, `upsert tukar jumlah (${upd[bill]?.actual_amount})`);
   ok(Object.keys(upd).length === Object.keys(start).length + 1, "tiada baris berganda selepas upsert");
