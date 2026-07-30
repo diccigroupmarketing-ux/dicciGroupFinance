@@ -360,6 +360,14 @@ tbody tr:hover{background:#FAF7EF}
 th.num{text-align:right}
 .cellMain{font-weight:700;color:var(--inkStrong)}
 .cellSub{font-size:11px;color:var(--muted);margin-top:1px}
+/* Amount yang gagal dibaca masa ingest (NULL, bukan 0). Sengaja TIDAK dipapar
+   sebagai angka supaya ia tak pernah disalah baca sebagai RM 0.00. */
+.amtUnread{
+  display:inline-flex;align-items:center;gap:3px;white-space:nowrap;
+  font-size:11.5px;font-weight:700;font-style:italic;color:var(--cau);
+  background:var(--cauBg);border-radius:6px;padding:2px 7px;
+  font-variant-numeric:normal;
+}
 .rowMuted td{color:var(--faint)}
 .rowMuted .cellMain{color:var(--faint);font-weight:600}
 .totalRow td{

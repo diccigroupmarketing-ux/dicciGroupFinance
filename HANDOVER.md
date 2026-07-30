@@ -243,8 +243,12 @@ siap + deploy Vercel produksi (deploy decoupled dari git, 4 deploy READY):
   remit, Tally, Exceptions) supaya team finance baru boleh onboard sendiri.
 - **Upload PDF DHL Payment Advice + J&T COD Statement LIVE** (pdfplumber): parse_dhl_pdf +
   parse_jnt_pdf dalam ingest.py (kesan magic byte %PDF). J&T PDF ada tally-guard lawan
-  GRAND TOTAL (tolak fail kalau tak tally), bill_id ikut laluan Excel (parse_bill_meta,
-  elak konflik palsu silang format), settlement date dari kandungan statement. Engine
+  GRAND TOTAL (tolak fail kalau tak tally), settlement date dari kandungan statement.
+  [KEMASKINI 31 Jul: bill_id J&T kini HARIAN ikut kandungan, akaun-YYYYMMDD per baris
+  (jnt_bill_id), statement J&T memang harian, XLS dan PDF hari sama keluar id sama.
+  KEPUTUSAN OWNER 31 Jul untuk prod: pilihan (b), padam data J&T prod dan team re-upload
+  dengan nama fail asal J&T, BUKAN backfillJntBillId.py --write; rujukan bank_deposits
+  J&T lama perlu ditaip semula finance selepas tu.] Engine
   disync ke api/engine (kini AUTO-sync, lihat sesi 24-25 Jul). Suite parser kini 65 ujian.
 - **Allowlist Clerk**: email diccifinancehq@gmail.com ditambah untuk team finance login.
   ADMIN_EMAILS Vercel TAK diubah (tak perlu).

@@ -6,6 +6,7 @@
 import { getPool } from "./db";
 import { ensureGiftTable } from "./giftsSchema";
 import { ensureOrderUploadsTable } from "./orderUploadsSchema";
+import { ensureUploadVouchTables } from "./uploadVouchSchema";
 import { ensureBillConflictsTable } from "./billConflictsSchema";
 import { ensureAppEventsTable } from "./audit";
 import { ensureBankTable } from "./bank";
@@ -176,7 +177,8 @@ export async function saveGifts(sku: string, gifts: GiftInput[]): Promise<number
 const RESET_TABLES = [
   "orders", "order_skus", "cod_bill_lines", "cod_bills",
   "wallet_txns", "prepaid_payments",
-  "app_events", "order_uploads", "bank_deposits", "bill_line_conflicts",
+  "app_events", "order_uploads", "wallet_uploads", "prepaid_uploads",
+  "bank_deposits", "bill_line_conflicts",
   "recon_resolution_events", "recon_resolutions",
 ];
 
@@ -186,6 +188,7 @@ export async function resetStore(): Promise<void> {
   // rollback SELURUH reset. Jamin semua wujud dulu, di LUAR transaksi padam.
   await ensureAppEventsTable();
   await ensureOrderUploadsTable();
+  await ensureUploadVouchTables();
   await ensureBankTable();
   await ensureBillConflictsTable();
   await ensureResolutionTables();
@@ -223,12 +226,31 @@ export async function resetStore(): Promise<void> {
 //                fix ni wujud)                           -> KEKAL, dilaporkan.
 //                Tiada jejak untuk sahkan ia eksklusif, jadi padam senyap =
 //                bahaya (boleh buang duit sah). Kekal + beritahu finance.
+//
+// FIX F05 (wallet + prepaid): lubang yang SAMA wujud untuk wallet_txns
+// (PK txn_id) dan prepaid_payments (PK gateway, order_ref) , upsert mengalihkan
+// source_file ke fail TERAKHIR, jadi padam fail A boleh buang baris yang fail B
+// masih tuntut, atau tinggalkan baris yatim yang tuding fail dah tiada. Dua dua
+// kini ikut corak vouch yang SAMA (wallet_uploads / prepaid_uploads), dengan
+// tiga kelas yang sama: EXCLUSIVE padam, SHARED kekal + re-point, LEGACY kekal +
+// dilaporkan.
+//
+// Kenapa BUKAN jalan lebih ringkas "jangan alih source_file masa upsert, kekal
+// padam ikut source_file": ia tak menutup lubang. Fail B yang membawa versi
+// terkini baris yang sama (contoh status wallet Pending -> Approved) tetap perlu
+// menimpa nilai, dan baris tu kekal tuding fail A; padam A kemudian membuang
+// baris yang B masih tuntut. Vouch pula merekod tuntutan setiap fail secara
+// eksplisit, jadi jawapannya datang dari data, bukan dari tekaan.
 export interface DeleteUploadResult {
   orders: number; orderSkus: number; billLines: number; bills: number;
   prepaid: number; wallet: number; total: number;
   conflicts: number;         // baris parkir bill_line_conflicts fail ni dibuang
   ordersKeptShared: number;  // order dikekalkan sebab fail lain masih vouch
   ordersKeptLegacy: number;  // order dikekalkan sebab tiada jejak (pra-fix B1)
+  walletKeptShared: number;  // txn wallet dikekalkan sebab fail lain masih vouch
+  walletKeptLegacy: number;  // txn wallet tanpa jejak (pra-fix F05)
+  prepaidKeptShared: number; // bayaran prepaid dikekalkan sebab fail lain vouch
+  prepaidKeptLegacy: number; // bayaran prepaid tanpa jejak (pra-fix F05)
 }
 
 export async function deleteUpload(file: string): Promise<DeleteUploadResult> {
@@ -236,6 +258,7 @@ export async function deleteUpload(file: string): Promise<DeleteUploadResult> {
   if (!f) throw new Error("nama fail kosong");
   // Jamin jadual jejak wujud (prod: dicipta malas kalau ingest belum jalan).
   await ensureOrderUploadsTable();
+  await ensureUploadVouchTables();
   // Jamin jadual kuarantin bil wujud juga (dicipta malas): DELETE di bawah pecah
   // kalau jadual belum ada, dan roll-back seluruh padam.
   await ensureBillConflictsTable();
@@ -324,10 +347,67 @@ export async function deleteUpload(file: string): Promise<DeleteUploadResult> {
           [deletedBillIds]);
       }
     }
+    // --- Prepaid (fix F05: hormati vouch many-to-many prepaid_uploads) ---
+    // Bentuk predikat SAMA macam orders, cuma kuncinya (gateway, order_ref).
+    const PREPAID_EXCLUSIVE = `
+      p.source_file = $1
+      AND EXISTS (SELECT 1 FROM prepaid_uploads u
+                  WHERE u.gateway = p.gateway AND u.order_ref = p.order_ref
+                    AND u.source_file = $1)
+      AND NOT EXISTS (SELECT 1 FROM prepaid_uploads u
+                      WHERE u.gateway = p.gateway AND u.order_ref = p.order_ref
+                        AND u.source_file <> $1)`;
     const prepaid = await client.query(
-      "DELETE FROM prepaid_payments WHERE source_file = $1", [f]);
+      `DELETE FROM prepaid_payments p WHERE ${PREPAID_EXCLUSIVE}`, [f]);
+    // LEGACY prepaid: tuding fail ni tapi TIADA langsung pasangan vouch. Kekal
+    // (baris ni bukti duit masuk; padam tanpa jejak boleh buang bayaran sah yang
+    // turut wujud dalam statement lain, lalu order nampak tak berbayar).
+    const prepaidLegacy = await client.query(
+      `SELECT COUNT(*)::int AS n FROM prepaid_payments p
+         WHERE p.source_file = $1
+           AND NOT EXISTS (SELECT 1 FROM prepaid_uploads u
+                           WHERE u.gateway = p.gateway AND u.order_ref = p.order_ref)`,
+      [f]);
+    const prepaidKeptLegacy = (prepaidLegacy.rows[0]?.n as number) ?? 0;
+    await client.query("DELETE FROM prepaid_uploads WHERE source_file = $1", [f]);
+    // SHARED prepaid: masih ada vouch fail lain -> re-point source_file ke fail
+    // vouch TERKINI supaya baris tak tergantung pada fail yang dah dipadam.
+    const prepaidRepointed = await client.query(
+      `UPDATE prepaid_payments p SET source_file = sub.sf
+         FROM (
+           SELECT DISTINCT ON (gateway, order_ref) gateway, order_ref,
+                  source_file AS sf
+           FROM prepaid_uploads
+           ORDER BY gateway, order_ref, ingested_at DESC, source_file DESC
+         ) sub
+        WHERE p.gateway = sub.gateway AND p.order_ref = sub.order_ref
+          AND p.source_file = $1`, [f]);
+    const prepaidKeptShared = prepaidRepointed.rowCount ?? 0;
+    // --- Wallet (fix F05: hormati vouch many-to-many wallet_uploads) ---
+    const WALLET_EXCLUSIVE = `
+      w.source_file = $1
+      AND EXISTS (SELECT 1 FROM wallet_uploads u
+                  WHERE u.txn_id = w.txn_id AND u.source_file = $1)
+      AND NOT EXISTS (SELECT 1 FROM wallet_uploads u
+                      WHERE u.txn_id = w.txn_id AND u.source_file <> $1)`;
     const wallet = await client.query(
-      "DELETE FROM wallet_txns WHERE source_file = $1", [f]);
+      `DELETE FROM wallet_txns w WHERE ${WALLET_EXCLUSIVE}`, [f]);
+    const walletLegacy = await client.query(
+      `SELECT COUNT(*)::int AS n FROM wallet_txns w
+         WHERE w.source_file = $1
+           AND NOT EXISTS (SELECT 1 FROM wallet_uploads u WHERE u.txn_id = w.txn_id)`,
+      [f]);
+    const walletKeptLegacy = (walletLegacy.rows[0]?.n as number) ?? 0;
+    await client.query("DELETE FROM wallet_uploads WHERE source_file = $1", [f]);
+    const walletRepointed = await client.query(
+      `UPDATE wallet_txns w SET source_file = sub.sf
+         FROM (
+           SELECT DISTINCT ON (txn_id) txn_id, source_file AS sf
+           FROM wallet_uploads
+           ORDER BY txn_id, ingested_at DESC, source_file DESC
+         ) sub
+        WHERE w.txn_id = sub.txn_id AND w.source_file = $1`, [f]);
+    const walletKeptShared = walletRepointed.rowCount ?? 0;
     // Baris kuarantin bill_line_conflicts diparkir MASA ingest fail ni (source_file
     // = fail yang bawa bill_id_new bertindih). Padam ikut source_file sahaja: baris
     // tu memang rekod fail ni, bila failnya hilang rekodnya jadi yatim dalam seksyen
@@ -362,6 +442,7 @@ export async function deleteUpload(file: string): Promise<DeleteUploadResult> {
       orders: n(orders), orderSkus: n(orderSkus), billLines: n(billLines),
       bills: n(bills), prepaid: n(prepaid), wallet: n(wallet), total: 0,
       conflicts: n(conflicts), ordersKeptShared, ordersKeptLegacy,
+      walletKeptShared, walletKeptLegacy, prepaidKeptShared, prepaidKeptLegacy,
     };
     out.total = out.orders + out.billLines + out.prepaid + out.wallet;
     return out;

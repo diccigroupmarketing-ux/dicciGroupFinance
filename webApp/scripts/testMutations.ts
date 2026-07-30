@@ -7,6 +7,7 @@ import { skuMapImpl as skuMap, storeCountsImpl as storeCounts, type SkuRow } fro
 import { getPool } from "../lib/db";
 import { ensureAppEventsTable } from "../lib/audit";
 import { ensureOrderUploadsTable } from "../lib/orderUploadsSchema";
+import { ensureUploadVouchTables } from "../lib/uploadVouchSchema";
 import { ensureBankTable } from "../lib/bank";
 import { ensureBillConflictsTable } from "../lib/billConflictsSchema";
 
@@ -39,6 +40,7 @@ async function countRows(table: string): Promise<number> {
 async function seedProbeRows(): Promise<void> {
   await ensureAppEventsTable();
   await ensureOrderUploadsTable();
+  await ensureUploadVouchTables();
   await ensureBankTable();
   await ensureBillConflictsTable();
   await getPool().query(
@@ -49,6 +51,17 @@ async function seedProbeRows(): Promise<void> {
     `INSERT INTO order_uploads (order_id, source_file, ingested_at)
      VALUES ('probe-reset', 'probe.xlsx', 'now')
      ON CONFLICT (order_id, source_file) DO NOTHING`);
+  // Jejak vouch wallet + prepaid (fix F05): sama peranan macam order_uploads,
+  // jadi reset mesti bersihkan ia juga (kalau tidak, vouch basi tuding baris
+  // yang dah lenyap dan padam fail seterusnya "kekalkan" baris hantu).
+  await getPool().query(
+    `INSERT INTO wallet_uploads (txn_id, source_file, ingested_at)
+     VALUES ('probe-reset', 'probe.xlsx', 'now')
+     ON CONFLICT (txn_id, source_file) DO NOTHING`);
+  await getPool().query(
+    `INSERT INTO prepaid_uploads (gateway, order_ref, source_file, ingested_at)
+     VALUES ('chip', 'probe-reset', 'probe.xlsx', 'now')
+     ON CONFLICT (gateway, order_ref, source_file) DO NOTHING`);
   await getPool().query(
     `INSERT INTO bank_deposits (bill_id, actual_amount, entered_by, updated_at)
      VALUES ('probe-reset', 1, 'test', 'now')
@@ -137,10 +150,14 @@ async function main() {
   // Jadual era webApp turut dipadam bersih.
   const events = await countRows("app_events");
   const uploads = await countRows("order_uploads");
+  const wUploads = await countRows("wallet_uploads");
+  const pUploads = await countRows("prepaid_uploads");
   const bank = await countRows("bank_deposits");
   const conflicts = await countRows("bill_line_conflicts");
   ok(events === 0 && uploads === 0 && bank === 0 && conflicts === 0,
     `jadual webApp dipadam (app_events=${events} order_uploads=${uploads} bank_deposits=${bank} bill_line_conflicts=${conflicts})`);
+  ok(wUploads === 0 && pUploads === 0,
+    `jejak vouch F05 dipadam (wallet_uploads=${wUploads} prepaid_uploads=${pUploads})`);
   // sku_gifts = config, mesti KEKAL (tak dipadam oleh reset).
   const giftsAfter = await countRows("sku_gifts");
   ok(giftsAfter === giftsBefore, `sku_gifts KEKAL (${giftsAfter}, jangka ${giftsBefore})`);

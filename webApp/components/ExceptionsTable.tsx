@@ -8,6 +8,7 @@
 //   , Angka mentah baris tak pernah diubah. Adjustment cuma catatan sebab.
 import { useMemo, useState } from "react";
 import { fmtRM, trackingOrDash } from "@/lib/format";
+import AmountCell from "@/components/AmountCell";
 import ResolveButton from "@/components/ResolveButton";
 import { ToneChip } from "@/components/ResolutionChip";
 import { badgeState } from "@/components/resolveTypes";
@@ -90,7 +91,9 @@ export default function ExceptionsTable({
                   {showTracking && <td>{trackingOrDash(r.tracking)}</td>}
                   <td><ToneChip tone={tone(r.category)}>{r.categoryLabel}</ToneChip></td>
                   <td className="num">{r.expected != null ? fmtRM(r.expected) : "—"}</td>
-                  <td className="num">{r.amount != null ? fmtRM(r.amount) : "—"}</td>
+                  <td className="num">
+                    <AmountCell value={r.amount} hasPayment={r.hasPayment} />
+                  </td>
                   <td>
                     <ResolveButton target={r} reasons={reasons} limits={limits} compact />
                   </td>

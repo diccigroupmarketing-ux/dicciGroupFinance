@@ -12,6 +12,7 @@
 //   , Susunan lalai: nilai RM paling besar dahulu. Toggle "Oldest first" ada.
 import { useMemo, useState } from "react";
 import { fmtInt, fmtRM, trackingOrDash } from "@/lib/format";
+import AmountCell from "@/components/AmountCell";
 import TableFilter from "@/components/TableFilter";
 import ResolveModal from "@/components/ResolveModal";
 import ResolutionChip, { ToneChip } from "@/components/ResolutionChip";
@@ -259,7 +260,9 @@ export default function ReviewOpen({
                     <td><ToneChip tone={tone(r.category)}>{r.categoryLabel}</ToneChip></td>
                     <td className="num">{r.ageDays != null ? `${fmtInt(r.ageDays)}d` : "—"}</td>
                     <td className="num">{r.expected != null ? fmtRM(r.expected) : "—"}</td>
-                    <td className="num">{r.amount != null ? fmtRM(r.amount) : "—"}</td>
+                    <td className="num">
+                      <AmountCell value={r.amount} hasPayment={r.hasPayment} />
+                    </td>
                     <td className="num"><b>{fmtRM(r.value)}</b></td>
                     <td>{r.badge ? <ResolutionChip badge={r.badge} /> : <span className="cellSub">open</span>}</td>
                   </tr>

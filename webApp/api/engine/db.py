@@ -287,6 +287,25 @@ CREATE TABLE IF NOT EXISTS prepaid_payments (
 );
 CREATE INDEX IF NOT EXISTS idx_prepaid_ref ON prepaid_payments(order_ref);
 
+-- Jejak MANY-TO-MANY bayaran prepaid <-> fail statement (fix F05, cermin
+-- order_uploads). prepaid_payments.source_file cuma muat SATU fail (upsert
+-- last-writer-wins), jadi bila dua statement CHIP bertindih (julat tarikh
+-- bersilang, atau statement di-download semula), baris nampak datang dari fail
+-- TERAKHIR sahaja. Padam ikut source_file boleh buang bukti bayaran yang
+-- sebenarnya turut wujud dalam statement lain. Jadual ni rakam SETIAP
+-- (gateway, order_ref, fail) yang pernah sebut bayaran itu, supaya delete boleh
+-- kekalkan baris yang masih ada fail lain "vouch" untuknya. Additive, diisi masa
+-- ingest CHIP (idempotent). Tiada kesan pada logik recon.
+CREATE TABLE IF NOT EXISTS prepaid_uploads (
+    gateway     TEXT,
+    order_ref   TEXT,
+    source_file TEXT,
+    ingested_at TEXT,
+    PRIMARY KEY (gateway, order_ref, source_file)
+);
+CREATE INDEX IF NOT EXISTS idx_prepaid_uploads_file ON prepaid_uploads(source_file);
+CREATE INDEX IF NOT EXISTS idx_prepaid_uploads_ref ON prepaid_uploads(gateway, order_ref);
+
 CREATE TABLE IF NOT EXISTS wallet_txns (
     txn_id       TEXT PRIMARY KEY,
     txn_date     TEXT,
@@ -306,6 +325,23 @@ CREATE TABLE IF NOT EXISTS wallet_txns (
 );
 CREATE INDEX IF NOT EXISTS idx_wallet_order ON wallet_txns(order_id);
 CREATE INDEX IF NOT EXISTS idx_wallet_seller ON wallet_txns(seller_name);
+
+-- Jejak MANY-TO-MANY transaksi wallet <-> fail upload (fix F05, cermin
+-- order_uploads). wallet_txns.source_file cuma muat SATU fail (upsert
+-- last-writer-wins) sedangkan export Wallet Fighter bertindih sama macam export
+-- order (team download julat bersilang). Padam ikut source_file boleh buang
+-- transaksi komisen sah yang turut wujud dalam fail lain. Jadual ni rakam SETIAP
+-- (txn_id, fail) yang pernah sebut transaksi itu, supaya delete boleh kekalkan
+-- baris yang masih ada fail lain "vouch" untuknya. Additive, diisi masa ingest
+-- Wallet (idempotent). Tiada kesan pada logik recon.
+CREATE TABLE IF NOT EXISTS wallet_uploads (
+    txn_id      TEXT,
+    source_file TEXT,
+    ingested_at TEXT,
+    PRIMARY KEY (txn_id, source_file)
+);
+CREATE INDEX IF NOT EXISTS idx_wallet_uploads_file ON wallet_uploads(source_file);
+CREATE INDEX IF NOT EXISTS idx_wallet_uploads_txn ON wallet_uploads(txn_id);
 
 CREATE TABLE IF NOT EXISTS app_meta (
     key   TEXT PRIMARY KEY,

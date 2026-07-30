@@ -221,21 +221,29 @@ class TestDhlParser(unittest.TestCase):
 
 
 # =====================================================================
-# 3b. Parser bill_meta end-to-end (nama fail -> bill_id + tarikh ISO)
+# 3b. Parser bill_meta end-to-end (nama fail -> akaun/bill_id + tarikh ISO)
 # =====================================================================
 class TestBillMeta(unittest.TestCase):
-    def test_jnt_bill_meta_from_filename(self):
-        # bill_no regex (JTMY\w+) tamak (\w termasuk underscore) -> id mesti
+    def test_jnt_meta_from_filename(self):
+        # regex akaun (JTMY\w+) tamak (\w termasuk underscore) -> token mesti
         # ditamatkan aksara bukan-word (dash). settlement dari \d{8} PERTAMA, jadi
-        # id tak boleh kandung larian 8-digit sendiri (nanti tersalah baca tarikh).
-        bill_id, settlement = ingest.parse_bill_meta("JTMYABC123-20260618.csv")
-        self.assertEqual(bill_id, "JTMYABC123")
+        # akaun tak boleh kandung larian 8-digit sendiri (nanti tersalah tarikh).
+        account, settlement = ingest.parse_jnt_meta("JTMYABC123-20260618.csv")
+        self.assertEqual(account, "JTMYABC123")
         self.assertEqual(settlement, "2026-06-18")
 
-    def test_jnt_bill_meta_no_date_fallback(self):
-        bill_id, settlement = ingest.parse_bill_meta("randomBill.csv")
-        self.assertEqual(bill_id, "randomBill")
+    def test_jnt_meta_no_date_fallback(self):
+        account, settlement = ingest.parse_jnt_meta("randomBill.csv")
+        self.assertEqual(account, "randomBill")
         self.assertIsNone(settlement)
+
+    def test_jnt_meta_real_vendor_filenames(self):
+        # Dua konvensyen nama fail vendor SEBENAR. Kedua duanya bawa token akaun
+        # yang SAMA , bukti nama fail sahaja tak boleh jadi identiti bil.
+        xls = "COD账单-明细列表导出 JTMY031691 20260611184046.xlsx"
+        pdf = "2026-07-JTMY031691-DICCI IMPACT SDN. BHD.-0653.pdf"
+        self.assertEqual(ingest.parse_jnt_meta(xls), ("JTMY031691", "2026-06-11"))
+        self.assertEqual(ingest.parse_jnt_meta(pdf), ("JTMY031691", None))
 
     def test_ninja_bill_meta_from_filename(self):
         bill_id, settlement = ingest.parse_nv_meta("NV_SOA_20260701_20260709.xlsx")
@@ -347,12 +355,30 @@ class TestChipParser(unittest.TestCase):
 #     kena dua kali: Postgres RAISE, SQLite senyap last-wins).
 # =====================================================================
 class _CaptureConn:
-    """Conn tiruan: rakam params yang dihantar ke execute (tanpa DB sebenar)."""
+    """Conn tiruan: rakam params yang dihantar ke execute (tanpa DB sebenar).
+
+    ingest_chip panggil execute DUA kali sejak fix F05 (upsert bayaran + rekod
+    jejak vouch prepaid_uploads), jadi kita simpan SEMUA panggilan dan pilih ikut
+    penyata. `captured` kekal bermaksud payload PREPAID_UPSERT (macam dulu)."""
     def __init__(self):
-        self.captured = None
+        self.calls = []
 
     def execute(self, stmt, params=None):
-        self.captured = params
+        self.calls.append((stmt, params))
+
+    def _params_for(self, stmt):
+        for s, params in self.calls:
+            if s is stmt:
+                return params
+        return None
+
+    @property
+    def captured(self):
+        return self._params_for(ingest.PREPAID_UPSERT)
+
+    @property
+    def vouched(self):
+        return self._params_for(ingest.PREPAID_UPLOADS_UPSERT)
 
     def commit(self):
         pass
@@ -410,6 +436,13 @@ class TestChipDedup(unittest.TestCase):
         self.assertEqual(len(conn.captured), 1)                   # de-dup jadi 1
         self.assertEqual(conn.captured[0]["order_ref"], "DUPORDER")
         self.assertEqual(conn.captured[0]["amount"], 125.0)       # 100 + 25
+        # Jejak vouch (fix F05) ikut set yang SAMA selepas de-dup: satu pasangan
+        # (gateway, order_ref, fail), bukan satu per baris mentah.
+        self.assertEqual(len(conn.vouched), 1)
+        self.assertEqual(conn.vouched[0],
+                         {"gateway": "chip", "order_ref": "DUPORDER",
+                          "source_file": "chipStatement2026-07-16.xlsx",
+                          "ingested_at": conn.captured[0]["ingested_at"]})
 
 
 # =====================================================================
@@ -495,17 +528,110 @@ class TestOrderUploadsTracking(unittest.TestCase):
 
 
 # =====================================================================
+# 6b. FIX F05: ingest_wallet + ingest_chip mengisi jejak many-to-many
+#     wallet_uploads / prepaid_uploads (corak SAMA macam order_uploads di atas).
+#     Tanpa jejak ni, padam satu fail wallet/CHIP boleh buang baris duit yang
+#     fail LAIN masih tuntut (source_file cuma muat satu fail). Guna SQLite
+#     dalam-ingatan; data sintetik sepenuhnya. `_wallet_df` / `_chip_df`
+#     ditakrif lebih bawah dalam fail ni (dipanggil masa runtime, bukan import).
+# =====================================================================
+class TestWalletPrepaidUploadsTracking(unittest.TestCase):
+    def setUp(self):
+        self.eng = create_engine("sqlite://")
+        self.conn = self.eng.connect()
+        db.init_db(self.conn)
+
+    def tearDown(self):
+        self.conn.close()
+
+    def _wallet_pairs(self):
+        rows = self.conn.execute(
+            text("SELECT txn_id, source_file FROM wallet_uploads "
+                 "ORDER BY txn_id, source_file")).fetchall()
+        return [(r[0], r[1]) for r in rows]
+
+    def _prepaid_pairs(self):
+        rows = self.conn.execute(
+            text("SELECT gateway, order_ref, source_file FROM prepaid_uploads "
+                 "ORDER BY order_ref, source_file")).fetchall()
+        return [(r[0], r[1], r[2]) for r in rows]
+
+    # ---- Wallet ----
+    def test_wallet_records_txn_file_pairs(self):
+        ingest.ingest_wallet(_wallet_df([("TXN1", "10.00"), ("TXN2", "20.00")]),
+                             "walletA.xlsx", self.conn)
+        self.assertEqual(self._wallet_pairs(),
+                         [("TXN1", "walletA.xlsx"), ("TXN2", "walletA.xlsx")])
+
+    def test_wallet_overlapping_files_keep_both_vouches(self):
+        # walletA sebut TXN1,TXN2 ; walletB sebut TXN2,TXN3 (TXN2 bertindih).
+        ingest.ingest_wallet(_wallet_df([("TXN1", "10.00"), ("TXN2", "20.00")]),
+                             "walletA.xlsx", self.conn)
+        ingest.ingest_wallet(_wallet_df([("TXN2", "20.00"), ("TXN3", "30.00")]),
+                             "walletB.xlsx", self.conn)
+        self.assertEqual(self._wallet_pairs(), [
+            ("TXN1", "walletA.xlsx"), ("TXN2", "walletA.xlsx"),
+            ("TXN2", "walletB.xlsx"), ("TXN3", "walletB.xlsx")])
+        # wallet_txns.source_file = penulis TERAKHIR (last-writer-wins) = walletB,
+        # iaitu sebab kenapa jejak berasingan ni perlu.
+        sf = self.conn.execute(
+            text("SELECT source_file FROM wallet_txns WHERE txn_id = 'TXN2'")).scalar()
+        self.assertEqual(sf, "walletB.xlsx")
+
+    def test_wallet_reingest_same_file_idempotent(self):
+        df = _wallet_df([("TXN1", "10.00"), ("TXN2", "20.00")])
+        ingest.ingest_wallet(df, "walletA.xlsx", self.conn)
+        ingest.ingest_wallet(df, "walletA.xlsx", self.conn)
+        self.assertEqual(self._wallet_pairs(),
+                         [("TXN1", "walletA.xlsx"), ("TXN2", "walletA.xlsx")])
+
+    # ---- Prepaid (CHIP) ----
+    def _chip(self, refs, source_file):
+        return ingest.ingest_chip(
+            _chip_df([{"Reference Nr.": r} for r in refs]), source_file, self.conn)
+
+    def test_prepaid_records_ref_file_pairs(self):
+        self._chip(["REF1", "REF2"], "chipA.xlsx")
+        self.assertEqual(self._prepaid_pairs(), [
+            ("chip", "REF1", "chipA.xlsx"), ("chip", "REF2", "chipA.xlsx")])
+
+    def test_prepaid_overlapping_statements_keep_both_vouches(self):
+        # Dua statement CHIP dengan julat bertindih: REF2 disebut kedua duanya.
+        self._chip(["REF1", "REF2"], "chipA.xlsx")
+        self._chip(["REF2", "REF3"], "chipB.xlsx")
+        self.assertEqual(self._prepaid_pairs(), [
+            ("chip", "REF1", "chipA.xlsx"), ("chip", "REF2", "chipA.xlsx"),
+            ("chip", "REF2", "chipB.xlsx"), ("chip", "REF3", "chipB.xlsx")])
+        sf = self.conn.execute(text(
+            "SELECT source_file FROM prepaid_payments WHERE order_ref = 'REF2'")).scalar()
+        self.assertEqual(sf, "chipB.xlsx")
+
+    def test_prepaid_reingest_same_file_idempotent(self):
+        self._chip(["REF1", "REF2"], "chipA.xlsx")
+        self._chip(["REF1", "REF2"], "chipA.xlsx")
+        self.assertEqual(self._prepaid_pairs(), [
+            ("chip", "REF1", "chipA.xlsx"), ("chip", "REF2", "chipA.xlsx")])
+
+    def test_prepaid_duplicate_ref_in_one_file_vouched_once(self):
+        # Dua baris purchase order_ref SAMA dalam satu statement digabung
+        # (_dedup_chip_recs), jadi jejak vouch pun mesti SATU pasangan sahaja.
+        self._chip(["REF1", "REF1"], "chipA.xlsx")
+        self.assertEqual(self._prepaid_pairs(), [("chip", "REF1", "chipA.xlsx")])
+
+
+# =====================================================================
 # 7. Kuarantin bil bertindih (isu D3, PK awb global). AWB sama dari BIL BERBEZA
 #    tak boleh timpa senyap; ia diparkir ke bill_line_conflicts. Guna SQLite
 #    dalam-ingatan (deterministik, tiada rangkaian). Data sintetik sepenuhnya.
 # =====================================================================
-def _jnt_df(rows):
-    """rows = senarai (awb, cod, fee). DataFrame bil J&T minimum (nilai rekaan)."""
+def _jnt_df(rows, delivered="2026-06-18"):
+    """rows = senarai (awb, cod, fee). DataFrame bil J&T minimum (nilai rekaan).
+    `delivered` = tarikh penghantaran semua baris (ia yang tentukan bill_id)."""
     return pd.DataFrame({
         ingest.J_AWB: [r[0] for r in rows],
         ingest.J_COD: [r[1] for r in rows],
         ingest.J_FEE: [r[2] for r in rows],
-        ingest.J_DELIVERED: ["2026-06-18"] * len(rows),
+        ingest.J_DELIVERED: [delivered] * len(rows),
         ingest.J_PICKUP: ["2026-06-17"] * len(rows),
     })
 
@@ -537,40 +663,48 @@ class TestBillLineConflicts(unittest.TestCase):
         self.assertEqual(len(self._conflicts()), 0)
         lines = self._lines()
         self.assertEqual(len(lines), 1)
-        self.assertEqual(lines[0][1], "JTMYAAA")          # bill_id kekal
-        self.assertEqual(lines[0][2], 100.0)              # cod kekal
+        self.assertEqual(lines[0][1], "JTMYAAA-20260618")  # bill_id kekal
+        self.assertEqual(lines[0][2], 100.0)               # cod kekal
 
     def test_same_awb_different_bill_quarantined_and_idempotent(self):
         # (ii) AWB sama dari bil BERBEZA = baris lama KEKAL + 1 baris kuarantin.
-        ingest.ingest_jnt(_jnt_df([("1234567890", "100.00", "5.00")]),
+        # AKAUN SAMA, hari penghantaran BERBEZA = dua statement harian berbeza,
+        # iaitu kes double-bill sebenar. Dengan derivasi LAMA (bill_id = akaun
+        # dari nama fail) kedua duanya jadi "JTMYAAA" dan kuarantin tak pernah
+        # menyala , itu bug yang ujian ni jaga.
+        ingest.ingest_jnt(_jnt_df([("1234567890", "100.00", "5.00")],
+                                  delivered="2026-06-18"),
                           "JTMYAAA-20260618.csv", self.conn)
-        ingest.ingest_jnt(_jnt_df([("1234567890", "200.00", "7.00")]),
-                          "JTMYBBB-20260619.csv", self.conn)
-        # Baris asal TAK ditimpa (bill_id + cod kekal billA).
+        ingest.ingest_jnt(_jnt_df([("1234567890", "200.00", "7.00")],
+                                  delivered="2026-06-19"),
+                          "JTMYAAA-20260619.csv", self.conn)
+        # Baris asal TAK ditimpa (bill_id + cod kekal bil 18 hb).
         lines = self._lines()
         self.assertEqual(len(lines), 1)
-        self.assertEqual(lines[0][1], "JTMYAAA")
+        self.assertEqual(lines[0][1], "JTMYAAA-20260618")
         self.assertEqual(lines[0][2], 100.0)
         # Tepat satu baris kuarantin dengan kedua bil + amaun untuk banding.
         conf = self._conflicts()
         self.assertEqual(len(conf), 1)
-        self.assertEqual(conf[0][0], "1234567890")        # awb
-        self.assertEqual(conf[0][1], "JTMYBBB")           # bill_id_new
-        self.assertEqual(conf[0][2], "JTMYAAA")           # bill_id_existing
-        self.assertEqual(conf[0][3], 200.0)               # cod_new
-        self.assertEqual(conf[0][4], 100.0)               # cod_existing
+        self.assertEqual(conf[0][0], "1234567890")            # awb
+        self.assertEqual(conf[0][1], "JTMYAAA-20260619")      # bill_id_new
+        self.assertEqual(conf[0][2], "JTMYAAA-20260618")      # bill_id_existing
+        self.assertEqual(conf[0][3], 200.0)                   # cod_new
+        self.assertEqual(conf[0][4], 100.0)                   # cod_existing
         # Re-upload fail konflik SAMA tak gandakan baris kuarantin (PK awb+new).
-        ingest.ingest_jnt(_jnt_df([("1234567890", "200.00", "7.00")]),
-                          "JTMYBBB-20260619.csv", self.conn)
+        ingest.ingest_jnt(_jnt_df([("1234567890", "200.00", "7.00")],
+                                  delivered="2026-06-19"),
+                          "JTMYAAA-20260619.csv", self.conn)
         self.assertEqual(len(self._conflicts()), 1)
-        self.assertEqual(ingest.conflicts_count(self.conn, "JTMYBBB-20260619.csv"), 1)
+        self.assertEqual(ingest.conflicts_count(self.conn, "JTMYAAA-20260619.csv"), 1)
 
     def test_non_conflicting_awbs_ingest_normally(self):
         # AWB baru (tiada dalam DB) tak diparkir; masuk cod_bill_lines biasa.
         ingest.ingest_jnt(_jnt_df([("1111111111", "50.00", "2.00")]),
                           "JTMYAAA-20260618.csv", self.conn)
-        ingest.ingest_jnt(_jnt_df([("2222222222", "60.00", "3.00")]),
-                          "JTMYBBB-20260619.csv", self.conn)
+        ingest.ingest_jnt(_jnt_df([("2222222222", "60.00", "3.00")],
+                                  delivered="2026-06-19"),
+                          "JTMYAAA-20260619.csv", self.conn)
         self.assertEqual(len(self._conflicts()), 0)
         self.assertEqual(len(self._lines()), 2)
 
@@ -766,10 +900,12 @@ _JNT_PDF = os.path.join(
     _SAMPLE_JNT, "2026-07-JTMY031691-DICCI IMPACT SDN. BHD.-0653.pdf")
 
 
-def _jnt_stmt_text(rows, grand, *, date="2026-07-22", signature=True):
+def _jnt_stmt_text(rows, grand, *, date="2026-07-22", signature=True,
+                   account=None):
     """Jana teks COD Statement J&T sintetik (bentuk sama extract_text pdfplumber).
     `rows` = senarai (awb, deliv, cod, txn, sst, net) STRING (txn/sst berkurungan).
-    `grand` = (cod, txn, sst, net) STRING."""
+    `grand` = (cod, txn, sst, net) STRING.
+    `account` = kalau diberi, cetak baris "Account No :..." macam statement betul."""
     head = "J&T EXPRESS (MALAYSIA) SDN BHD" if signature else "SOME COURIER"
     lines = [
         head, "COD Statement", "Date :%s" % date,
@@ -777,6 +913,8 @@ def _jnt_stmt_text(rows, grand, *, date="2026-07-22", signature=True):
         "DETAIL DAILY TRANSACTION LIST (DOMESTIC)",
         "No AWB No. Delivery Date COD (RM) Transaction Fee (RM) SST (RM) Net Amount (RM)",
     ]
+    if account:
+        lines.insert(3, "Account No :%s" % account)
     for i, (awb, deliv, cod, txn, sst, net) in enumerate(rows, 1):
         lines.append("%d %s %s %s %s %s %s" % (i, awb, deliv, cod, txn, sst, net))
     return "\n".join(lines)
@@ -792,28 +930,36 @@ _JNT_GOOD_GRAND = ("477.00", "5.27", "0.32", "471.41")
 
 class TestJntPdfParser(unittest.TestCase):
     def test_good_text_shape_and_rows(self):
-        df, settlement = ingest._jnt_parse_text(
+        df, settlement, account = ingest._jnt_parse_text(
             _jnt_stmt_text(_JNT_GOOD_ROWS, _JNT_GOOD_GRAND))
         self.assertEqual(len(df), 2)
         self.assertEqual(list(df[ingest.J_AWB]), ["632111663453", "632118893604"])
         self.assertEqual(settlement, "2026-07-22")
+        self.assertIsNone(account)          # statement ni tiada baris "Account No :"
+
+    def test_account_no_read_from_statement_body(self):
+        # Akaun datang dari KANDUNGAN bila statement mencetaknya (macam fail
+        # sebenar), bukan dari nama fail.
+        _, _, account = ingest._jnt_parse_text(
+            _jnt_stmt_text(_JNT_GOOD_ROWS, _JNT_GOOD_GRAND, account="JTMY031691"))
+        self.assertEqual(account, "JTMY031691")
 
     def test_fee_is_txn_plus_sst_positive(self):
         # Fee disimpan POSITIF = |txn| + |sst| (selaras "Total Processing Fee").
-        df, _ = ingest._jnt_parse_text(
+        df, _, _ = ingest._jnt_parse_text(
             _jnt_stmt_text(_JNT_GOOD_ROWS, _JNT_GOOD_GRAND))
         self.assertEqual(list(df[ingest.J_FEE]), [3.47, 2.12])  # 3.27+0.20, 2.00+0.12
 
     def test_parentheses_are_deductions_net_consistent(self):
         # Sahkan tanda dijaga: cod - fee = net statement (kurungan = tolakan).
-        df, _ = ingest._jnt_parse_text(
+        df, _, _ = ingest._jnt_parse_text(
             _jnt_stmt_text(_JNT_GOOD_ROWS, _JNT_GOOD_GRAND))
         for i, (_, _, cod, _, _, net) in enumerate(_JNT_GOOD_ROWS):
             self.assertAlmostEqual(
                 float(cod) - df[ingest.J_FEE].iloc[i], float(net), places=2)
 
     def test_pickup_date_absent(self):
-        df, _ = ingest._jnt_parse_text(
+        df, _, _ = ingest._jnt_parse_text(
             _jnt_stmt_text(_JNT_GOOD_ROWS, _JNT_GOOD_GRAND))
         self.assertTrue(df[ingest.J_PICKUP].isna().all())
 
@@ -867,16 +1013,19 @@ class TestJntPdfDbIdempotent(unittest.TestCase):
         return lines, conf
 
     def test_pdf_reingest_idempotent(self):
-        df, s = ingest._jnt_parse_text(
+        df, s, a = ingest._jnt_parse_text(
             _jnt_stmt_text(_JNT_GOOD_ROWS, _JNT_GOOD_GRAND))
         fn = "2026-07-JTMY099999-x.pdf"
-        ingest.ingest_jnt(df, fn, self.conn, settlement_override=s)
-        ingest.ingest_jnt(df, fn, self.conn, settlement_override=s)
+        ingest.ingest_jnt(df, fn, self.conn, settlement_override=s,
+                          account_override=a)
+        ingest.ingest_jnt(df, fn, self.conn, settlement_override=s,
+                          account_override=a)
         self.assertEqual(self._counts(), (2, 0))   # 2 baris, tiada dua kali
 
     def test_cross_format_same_bill_no_double_count(self):
-        # Excel dulu (bill_id JTMY099999 dari nama fail), pastu PDF bil SAMA
-        # (awb sama, bill_id sama) , 2 baris kekal, TIADA konflik palsu.
+        # Excel dulu, pastu PDF statement HARI yang sama. Kedua duanya keluar
+        # bill_id JTMY099999-20260721 (akaun + hari penghantaran) , 2 baris
+        # kekal, TIADA konflik palsu antara format.
         xdf = pd.DataFrame({
             ingest.J_AWB: ["632111663453", "632118893604"],
             ingest.J_COD: [297.0, 180.0],
@@ -885,10 +1034,10 @@ class TestJntPdfDbIdempotent(unittest.TestCase):
             ingest.J_PICKUP: [None, None],
         })
         ingest.ingest_jnt(xdf, "JTMY099999-excel.xlsx", self.conn)
-        df, s = ingest._jnt_parse_text(
+        df, s, a = ingest._jnt_parse_text(
             _jnt_stmt_text(_JNT_GOOD_ROWS, _JNT_GOOD_GRAND))
         ingest.ingest_jnt(df, "2026-07-JTMY099999-x.pdf", self.conn,
-                          settlement_override=s)
+                          settlement_override=s, account_override=a)
         self.assertEqual(self._counts(), (2, 0))   # no double, no false conflict
 
 
@@ -900,15 +1049,20 @@ class TestJntPdfSample(unittest.TestCase):
             data = fh.read()
         out = ingest.parse_jnt_pdf(data)
         self.assertIsNotNone(out)
-        df, settlement = out
+        df, settlement, account = out
         self.assertEqual(len(df), 19)                       # 19 baris detail
         self.assertEqual(settlement, "2026-07-22")
         self.assertAlmostEqual(df[ingest.J_COD].sum(), 4037.00, places=2)  # = GRAND
         self.assertAlmostEqual(df[ingest.J_FEE].sum(), 48.00, places=2)    # txn+SST
         self.assertTrue(df[ingest.J_AWB].str.isdigit().all())
-        # bill_id ikut laluan Excel (parse_bill_meta nama fail) untuk idempotency.
-        bill_id, _ = ingest.parse_bill_meta(os.path.basename(_JNT_PDF))
-        self.assertEqual(bill_id, "JTMY031691")
+        # Akaun dibaca dari KANDUNGAN statement, dan bill_id = akaun + hari
+        # penghantaran. Sampel ni semua barisnya dihantar 2026-07-21 (statement
+        # bertarikh 22 hb), jadi ia SATU bil harian.
+        self.assertEqual(account, "JTMY031691")
+        days = {str(d)[:10] for d in df[ingest.J_DELIVERED]}
+        self.assertEqual(days, {"2026-07-21"})
+        self.assertEqual(ingest.jnt_bill_id(account, df[ingest.J_DELIVERED].iloc[0]),
+                         "JTMY031691-20260721")
 
     def test_real_sample_ingests_idempotent(self):
         with open(_JNT_PDF, "rb") as fh:
@@ -928,8 +1082,160 @@ class TestJntPdfSample(unittest.TestCase):
             conf = conn.execute(
                 text("SELECT COUNT(*) FROM bill_line_conflicts")).scalar()
             self.assertEqual(conf, 0)
+            # SATU bil harian, id dari kandungan, settlement dari "Date :".
+            bills = conn.execute(text(
+                "SELECT bill_id, settlement_date, courier FROM cod_bills")).fetchall()
+            self.assertEqual(len(bills), 1)
+            self.assertEqual(bills[0][0], "JTMY031691-20260721")
+            self.assertEqual(bills[0][1], "2026-07-22")
+            self.assertEqual(bills[0][2], "J&T Express")
         finally:
             conn.close()
+
+
+# =====================================================================
+# 10b. IDENTITI BIL J&T (bill_id) , akaun + HARI penghantaran.
+#      Dulu bill_id = token (JTMY\w+) dari NAMA fail, iaitu nombor AKAUN. Dua
+#      dua konvensyen nama fail vendor sebenar bawa token yang sama, jadi SEMUA
+#      statement runtuh jadi satu bil: settlement_date bertimpa, satu sahaja
+#      bank_deposits boleh ditaip, dan kuarantin double-bill mati. Ujian di sini
+#      mengunci peraturan baru + sifat idempotent yang mesti kekal.
+# =====================================================================
+_JNT_XLS_REAL_NAME = "COD\u8d26\u5355-\u660e\u7ec6\u5217\u8868\u5bfc\u51fa JTMY031691 20260611184046.xlsx"
+_JNT_PDF_REAL_NAME = "2026-07-JTMY031691-DICCI IMPACT SDN. BHD.-0653.pdf"
+
+
+class TestJntBillIdDerivation(unittest.TestCase):
+    def test_same_account_different_day_is_different_bill(self):
+        # (b) Statement hari/bulan berbeza = bil berbeza. INI yang derivasi lama
+        # gagal: kedua duanya jadi "JTMY031691".
+        a = ingest.jnt_bill_id("JTMY031691", "2026-06-30 10:00:00")
+        b = ingest.jnt_bill_id("JTMY031691", "2026-07-21 22:28:06")
+        self.assertEqual(a, "JTMY031691-20260630")
+        self.assertEqual(b, "JTMY031691-20260721")
+        self.assertNotEqual(a, b)
+
+    def test_bill_id_is_not_just_the_account(self):
+        # Penggera anti-regresi: kalau sesiapa pulangkan derivasi lama (nama fail
+        # -> akaun sahaja), nilai ni jadi "JTMY031691" dan ujian ni gagal.
+        self.assertNotEqual(ingest.jnt_bill_id("JTMY031691", "2026-07-21"),
+                            "JTMY031691")
+
+    def test_same_day_same_id_regardless_of_time(self):
+        # (a) Idempotent: masa pada baris tak boleh mengubah identiti bil.
+        self.assertEqual(ingest.jnt_bill_id("JTMY031691", "2026-07-21 08:00:00"),
+                         ingest.jnt_bill_id("JTMY031691", "2026-07-21 23:59:59"))
+
+    def test_undated_row_goes_to_explicit_bucket(self):
+        # (d) Tiada tarikh boleh dibaca = bucket bernama, bukan senyap.
+        self.assertEqual(ingest.jnt_bill_id("JTMY031691", None),
+                         "JTMY031691-UNDATED")
+        self.assertEqual(ingest.jnt_bill_id("JTMY031691", ""),
+                         "JTMY031691-UNDATED")
+        self.assertEqual(ingest.jnt_bill_id("JTMY031691", "bukan tarikh"),
+                         "JTMY031691-UNDATED")
+
+    def test_account_prefers_content_then_filename_then_stem(self):
+        self.assertEqual(ingest.jnt_account(_JNT_XLS_REAL_NAME), "JTMY031691")
+        self.assertEqual(ingest.jnt_account(_JNT_PDF_REAL_NAME), "JTMY031691")
+        # Kandungan menang atas nama fail (statement dinamakan semula kerani).
+        self.assertEqual(ingest.jnt_account("apa apa.pdf", "JTMY031691"),
+                         "JTMY031691")
+        # Tiada token langsung = batang nama fail (fail akaun lain tak bercampur).
+        self.assertEqual(ingest.jnt_account("bilLain.xlsx"), "bilLain")
+
+
+class TestJntBillIdInDb(unittest.TestCase):
+    def setUp(self):
+        self.eng = create_engine("sqlite://")
+        self.conn = self.eng.connect()
+        db.init_db(self.conn)
+
+    def tearDown(self):
+        self.conn.close()
+
+    def _bills(self):
+        return [r[0] for r in self.conn.execute(text(
+            "SELECT bill_id FROM cod_bills ORDER BY bill_id"))]
+
+    def test_one_file_many_days_becomes_many_bills(self):
+        # Export XLSX J&T ialah senarai DETAIL merentas julat tarikh, jadi satu
+        # fail memang mengandungi banyak bil harian. Ia mesti pecah, bukan runtuh.
+        df = pd.concat([
+            _jnt_df([("6320000001", "100.00", "2.00")], delivered="2026-05-20"),
+            _jnt_df([("6320000002", "180.00", "2.12")], delivered="2026-05-21"),
+            _jnt_df([("6320000003", "297.00", "3.47")], delivered="2026-05-21"),
+        ], ignore_index=True)
+        n = ingest.ingest_jnt(df, _JNT_XLS_REAL_NAME, self.conn)
+        self.assertEqual(n, 3)
+        self.assertEqual(self._bills(),
+                         ["JTMY031691-20260520", "JTMY031691-20260521"])
+        # Idempotent: fail SAMA sekali lagi = tiada bil baru, tiada konflik.
+        ingest.ingest_jnt(df, _JNT_XLS_REAL_NAME, self.conn)
+        self.assertEqual(len(self._bills()), 2)
+        self.assertEqual(self.conn.execute(text(
+            "SELECT COUNT(*) FROM bill_line_conflicts")).scalar(), 0)
+
+    def test_two_months_do_not_collapse_into_one_bill(self):
+        # Dua fail vendor, akaun sama, bulan berbeza. Dulu dua duanya "JTMY031691"
+        # dan settlement_date bil pertama ditimpa senyap.
+        ingest.ingest_jnt(_jnt_df([("6320000001", "100.00", "2.00")],
+                                  delivered="2026-06-30"),
+                          "COD bill JTMY031691 20260701090000.xlsx", self.conn)
+        ingest.ingest_jnt(_jnt_df([("6320000002", "200.00", "3.00")],
+                                  delivered="2026-07-21"),
+                          _JNT_PDF_REAL_NAME, self.conn,
+                          settlement_override="2026-07-22",
+                          account_override="JTMY031691")
+        self.assertEqual(self._bills(),
+                         ["JTMY031691-20260630", "JTMY031691-20260721"])
+        dates = dict(self.conn.execute(text(
+            "SELECT bill_id, settlement_date FROM cod_bills")).fetchall())
+        # Setiap bil kekal dengan tarikh settlement SENDIRI (tiada bertimpa).
+        self.assertEqual(dates["JTMY031691-20260630"], "2026-07-01")
+        self.assertEqual(dates["JTMY031691-20260721"], "2026-07-22")
+
+    def test_undated_rows_land_in_undated_bill(self):
+        df = _jnt_df([("6320000001", "100.00", "2.00"),
+                      ("6320000002", "180.00", "2.12"),
+                      ("6320000003", "297.00", "3.47")],
+                     delivered="2026-05-20")
+        df.loc[2, ingest.J_DELIVERED] = None
+        ingest.ingest_jnt(df, _JNT_XLS_REAL_NAME, self.conn)
+        self.assertEqual(self._bills(),
+                         ["JTMY031691-20260520", "JTMY031691-UNDATED"])
+
+
+class TestJntCrossFormatSameDay(unittest.TestCase):
+    """(c) XLS dan PDF untuk HARI yang sama mesti keluar bill_id SAMA, supaya
+    upload dua format tak mencetuskan ribut konflik palsu."""
+    def setUp(self):
+        self.eng = create_engine("sqlite://")
+        self.conn = self.eng.connect()
+        db.init_db(self.conn)
+
+    def tearDown(self):
+        self.conn.close()
+
+    def test_xls_then_pdf_same_day_one_bill_no_conflict(self):
+        xls = _jnt_df([("632111663453", "297.00", "3.47")],
+                      delivered="2026-07-21 22:28:06")
+        ingest.ingest_jnt(xls, _JNT_XLS_REAL_NAME, self.conn)
+        pdf_df, s, a = ingest._jnt_parse_text(_jnt_stmt_text(
+            [_JNT_GOOD_ROWS[0]], ("297.00", "3.27", "0.20", "293.53"),
+            account="JTMY031691"))
+        ingest.ingest_jnt(pdf_df, _JNT_PDF_REAL_NAME, self.conn,
+                          settlement_override=s, account_override=a)
+        bills = self.conn.execute(text(
+            "SELECT bill_id, settlement_date FROM cod_bills")).fetchall()
+        self.assertEqual(len(bills), 1)
+        self.assertEqual(bills[0][0], "JTMY031691-20260721")
+        # PDF membetulkan settlement_date bil harian tu (statement > tarikh export).
+        self.assertEqual(bills[0][1], "2026-07-22")
+        self.assertEqual(self.conn.execute(text(
+            "SELECT COUNT(*) FROM cod_bill_lines")).scalar(), 1)
+        self.assertEqual(self.conn.execute(text(
+            "SELECT COUNT(*) FROM bill_line_conflicts")).scalar(), 0)
 
 
 # =====================================================================
@@ -2335,21 +2641,21 @@ class TestJntPdfLineTally(unittest.TestCase):
         # +3.47 dan baris ni akan gagal semakan COD - fee = Net.
         rows = list(_JNT_GOOD_ROWS) + [_JNT_REVERSAL_ROW]
         grand = ("180.00", "2.00", "0.12", "177.88")   # 477-297 , 471.41-293.53
-        df, _ = ingest._jnt_parse_text(_jnt_stmt_text(rows, grand))
+        df, _, _ = ingest._jnt_parse_text(_jnt_stmt_text(rows, grand))
         self.assertEqual(len(df), 3)
         self.assertAlmostEqual(df[ingest.J_FEE].iloc[2], -3.47, places=2)
         self.assertAlmostEqual(df[ingest.J_COD].iloc[2], -297.00, places=2)
 
     def test_normal_rows_keep_positive_fee(self):
         # Perangai baris biasa TIDAK berubah (kos kekal positif).
-        df, _ = ingest._jnt_parse_text(
+        df, _, _ = ingest._jnt_parse_text(
             _jnt_stmt_text(_JNT_GOOD_ROWS, _JNT_GOOD_GRAND))
         self.assertEqual(list(df[ingest.J_FEE]), [3.47, 2.12])
 
     def test_every_line_satisfies_cod_minus_fee_equals_net(self):
         rows = list(_JNT_GOOD_ROWS) + [_JNT_REVERSAL_ROW]
         grand = ("180.00", "2.00", "0.12", "177.88")
-        df, _ = ingest._jnt_parse_text(_jnt_stmt_text(rows, grand))
+        df, _, _ = ingest._jnt_parse_text(_jnt_stmt_text(rows, grand))
         for i, r in enumerate(rows):
             net = ingest._jnt_pdf_num(r[5])
             self.assertAlmostEqual(
@@ -2358,7 +2664,7 @@ class TestJntPdfLineTally(unittest.TestCase):
     def test_cent_rounding_on_a_line_still_passes(self):
         rows = [("632111663453", "2026-07-21 22:28:06", "297.00", "(3.27)",
                  "(0.20)", "293.54")]        # 1 sen beza = pembundaran
-        df, _ = ingest._jnt_parse_text(
+        df, _, _ = ingest._jnt_parse_text(
             _jnt_stmt_text(rows, ("297.00", "3.27", "0.20", "293.54")))
         self.assertEqual(len(df), 1)
 

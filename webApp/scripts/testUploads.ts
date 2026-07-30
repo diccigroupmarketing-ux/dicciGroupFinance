@@ -4,6 +4,7 @@
 import { deleteUpload } from "../lib/mutations";
 import { uploadedFiles, stockistDetail, billLineConflicts } from "../lib/recon";
 import { getPool } from "../lib/db";
+import { ensureUploadVouchTables } from "../lib/uploadVouchSchema";
 
 if (!(process.env.DATABASE_URL ?? "").includes("localhost")) {
   console.error("TOLAK: DATABASE_URL mesti dev lokal (localhost). Skrip ni memadam data.");
@@ -244,6 +245,151 @@ async function main() {
   ok(confAfter.some((c) => c.awb === "9991000002"),
     "(DEL) konflik dari fail LAIN KEKAL (source_file != fail dipadam)");
   await cleanDel();
+
+  // =====================================================================
+  // 11) FIX F05: vouch many-to-many untuk WALLET (wallet_uploads) dan PREPAID
+  //     (prepaid_uploads). Lubang yang SAMA macam B1: upsert mengalihkan
+  //     source_file ke fail TERBARU, jadi padam fail A boleh buang baris duit
+  //     yang fail B masih tuntut. Data SINTETIK (prefix F05*), dibersih selepas,
+  //     jadi blok ni tak bergantung pada snapshot dev.
+  // =====================================================================
+  // Jadual vouch dicipta MALAS (ensure*), dan blok ni menyentuhnya SEBELUM
+  // deleteUpload pertama, jadi jamin ia wujud dulu.
+  await ensureUploadVouchTables();
+  const W_IDS = ["F05WSHARED", "F05WONLYA", "F05WONLYB", "F05WLEGACY"];
+  const P_REFS = ["F05PSHARED", "F05PONLYA", "F05PONLYB", "F05PLEGACY"];
+  const cleanF05 = async () => {
+    await pool.query("DELETE FROM wallet_uploads WHERE txn_id = ANY($1::text[])", [W_IDS]);
+    await pool.query("DELETE FROM wallet_txns WHERE txn_id = ANY($1::text[])", [W_IDS]);
+    await pool.query("DELETE FROM prepaid_uploads WHERE order_ref = ANY($1::text[])", [P_REFS]);
+    await pool.query("DELETE FROM prepaid_payments WHERE order_ref = ANY($1::text[])", [P_REFS]);
+  };
+  const hasWallet = async (id: string) =>
+    (await pool.query("SELECT 1 FROM wallet_txns WHERE txn_id = $1", [id])).rowCount! > 0;
+  const wSf = async (id: string): Promise<string | null> =>
+    (await pool.query("SELECT source_file FROM wallet_txns WHERE txn_id = $1", [id]))
+      .rows[0]?.source_file ?? null;
+  const hasPrepaid = async (ref: string) =>
+    (await pool.query("SELECT 1 FROM prepaid_payments WHERE order_ref = $1", [ref])).rowCount! > 0;
+  const pSf = async (ref: string): Promise<string | null> =>
+    (await pool.query("SELECT source_file FROM prepaid_payments WHERE order_ref = $1", [ref]))
+      .rows[0]?.source_file ?? null;
+
+  // Semai keadaan yang ingest sebenar hasilkan: fileA + fileB bertindih pada
+  // satu baris, source_file = penulis TERAKHIR (fileB), plus satu baris LEGACY
+  // (tuding fileB tapi langsung tiada pasangan vouch, iaitu data pra-fix F05).
+  const seedF05 = async () => {
+    await cleanF05();
+    const w = (id: string, sf: string) => pool.query(
+      `INSERT INTO wallet_txns (txn_id, txn_date, order_id, seller_name, txn_type,
+                                source, status, amount, source_file, ingested_at)
+       VALUES ($1, '2026-06-18 10:00:00', 'F05ORDER', 'Rekaan Stockist', 'IN',
+               'Sales', 'Approved', 10, $2, $3)`, [id, sf, "2026-06-02 00:00:00"]);
+    await w("F05WSHARED", "f05WalletB.xlsx");
+    await w("F05WONLYA", "f05WalletA.xlsx");
+    await w("F05WONLYB", "f05WalletB.xlsx");
+    await w("F05WLEGACY", "f05WalletB.xlsx");   // SENGAJA tiada wallet_uploads
+    const wu = (id: string, sf: string, t: string) => pool.query(
+      `INSERT INTO wallet_uploads (txn_id, source_file, ingested_at)
+       VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`, [id, sf, t]);
+    await wu("F05WSHARED", "f05WalletA.xlsx", "2026-06-01 00:00:00");
+    await wu("F05WSHARED", "f05WalletB.xlsx", "2026-06-02 00:00:00");
+    await wu("F05WONLYA", "f05WalletA.xlsx", "2026-06-01 00:00:00");
+    await wu("F05WONLYB", "f05WalletB.xlsx", "2026-06-02 00:00:00");
+
+    const p = (ref: string, sf: string) => pool.query(
+      `INSERT INTO prepaid_payments (gateway, order_ref, amount, fee, status,
+                                     paid_on, source_file, ingested_at)
+       VALUES ('chip', $1, 100, 2, 'paid', '2026-06-18 09:00:00', $2, $3)`,
+      [ref, sf, "2026-06-02 00:00:00"]);
+    await p("F05PSHARED", "f05ChipB.xlsx");
+    await p("F05PONLYA", "f05ChipA.xlsx");
+    await p("F05PONLYB", "f05ChipB.xlsx");
+    await p("F05PLEGACY", "f05ChipB.xlsx");     // SENGAJA tiada prepaid_uploads
+    const pu = (ref: string, sf: string, t: string) => pool.query(
+      `INSERT INTO prepaid_uploads (gateway, order_ref, source_file, ingested_at)
+       VALUES ('chip', $1, $2, $3) ON CONFLICT DO NOTHING`, [ref, sf, t]);
+    await pu("F05PSHARED", "f05ChipA.xlsx", "2026-06-01 00:00:00");
+    await pu("F05PSHARED", "f05ChipB.xlsx", "2026-06-02 00:00:00");
+    await pu("F05PONLYA", "f05ChipA.xlsx", "2026-06-01 00:00:00");
+    await pu("F05PONLYB", "f05ChipB.xlsx", "2026-06-02 00:00:00");
+  };
+
+  // (F05-i) Padam fail KEDUA (B): baris kongsi KEKAL + re-point ke A, baris
+  // eksklusif-B padam, baris fail A tak disentuh, baris legacy KEKAL.
+  await seedF05();
+  const w1 = await deleteUpload("f05WalletB.xlsx");
+  ok(await hasWallet("F05WSHARED"), "(F05-i) txn wallet kongsi KEKAL selepas padam fileB");
+  ok((await wSf("F05WSHARED")) === "f05WalletA.xlsx",
+    "(F05-i) source_file wallet kongsi di-re-point ke fileA");
+  ok(!(await hasWallet("F05WONLYB")), "(F05-i) txn wallet eksklusif fileB terpadam");
+  ok(await hasWallet("F05WONLYA"), "(F05-i) txn wallet fileA tak disentuh");
+  ok(await hasWallet("F05WLEGACY"), "(F05-i) txn wallet legacy KEKAL (tiada jejak)");
+  ok(w1.wallet === 1, `(F05-i) wallet deleted = 1 (dapat ${w1.wallet})`);
+  ok(w1.walletKeptShared === 1, `(F05-i) walletKeptShared = 1 (dapat ${w1.walletKeptShared})`);
+  ok(w1.walletKeptLegacy === 1, `(F05-i) walletKeptLegacy = 1 (dapat ${w1.walletKeptLegacy})`);
+
+  const p1 = await deleteUpload("f05ChipB.xlsx");
+  ok(await hasPrepaid("F05PSHARED"), "(F05-i) bayaran prepaid kongsi KEKAL selepas padam fileB");
+  ok((await pSf("F05PSHARED")) === "f05ChipA.xlsx",
+    "(F05-i) source_file prepaid kongsi di-re-point ke fileA");
+  ok(!(await hasPrepaid("F05PONLYB")), "(F05-i) bayaran eksklusif fileB terpadam");
+  ok(await hasPrepaid("F05PONLYA"), "(F05-i) bayaran fileA tak disentuh");
+  ok(await hasPrepaid("F05PLEGACY"), "(F05-i) bayaran legacy KEKAL (tiada jejak)");
+  ok(p1.prepaid === 1, `(F05-i) prepaid deleted = 1 (dapat ${p1.prepaid})`);
+  ok(p1.prepaidKeptShared === 1, `(F05-i) prepaidKeptShared = 1 (dapat ${p1.prepaidKeptShared})`);
+  ok(p1.prepaidKeptLegacy === 1, `(F05-i) prepaidKeptLegacy = 1 (dapat ${p1.prepaidKeptLegacy})`);
+
+  // (F05-ii) Dari keadaan SEGAR, padam fail PERTAMA (A): eksklusif-A padam,
+  // baris kongsi KEKAL (masih dituntut fileB) dan tetap tuding fileB.
+  await seedF05();
+  const w2 = await deleteUpload("f05WalletA.xlsx");
+  ok(!(await hasWallet("F05WONLYA")), "(F05-ii) txn wallet eksklusif fileA terpadam");
+  ok(await hasWallet("F05WSHARED"), "(F05-ii) txn wallet kongsi KEKAL bila padam fileA");
+  ok((await wSf("F05WSHARED")) === "f05WalletB.xlsx", "(F05-ii) kongsi kekal tuding fileB");
+  ok(w2.wallet === 1, `(F05-ii) wallet deleted = 1 (dapat ${w2.wallet})`);
+  ok(w2.walletKeptLegacy === 0, `(F05-ii) tiada legacy tuding fileA (dapat ${w2.walletKeptLegacy})`);
+  const p2 = await deleteUpload("f05ChipA.xlsx");
+  ok(!(await hasPrepaid("F05PONLYA")), "(F05-ii) bayaran eksklusif fileA terpadam");
+  ok(await hasPrepaid("F05PSHARED"), "(F05-ii) bayaran kongsi KEKAL bila padam fileA");
+  ok((await pSf("F05PSHARED")) === "f05ChipB.xlsx", "(F05-ii) kongsi kekal tuding fileB");
+  ok(p2.prepaid === 1, `(F05-ii) prepaid deleted = 1 (dapat ${p2.prepaid})`);
+
+  // (F05-iii) Padam fail TERAKHIR selepas (ii): baris kongsi kini dituntut fileB
+  // SAHAJA, jadi ia mesti BENAR benar hilang (bukan tinggal yatim).
+  const w3 = await deleteUpload("f05WalletB.xlsx");
+  ok(!(await hasWallet("F05WSHARED")), "(F05-iii) padam fail terakhir buang txn kongsi betul betul");
+  ok(w3.wallet === 2, `(F05-iii) wallet deleted = 2 kongsi+eksklusifB (dapat ${w3.wallet})`);
+  const p3 = await deleteUpload("f05ChipB.xlsx");
+  ok(!(await hasPrepaid("F05PSHARED")), "(F05-iii) padam fail terakhir buang bayaran kongsi betul betul");
+  ok(p3.prepaid === 2, `(F05-iii) prepaid deleted = 2 (dapat ${p3.prepaid})`);
+  const leftVouch = Number((await pool.query(
+    `SELECT (SELECT COUNT(*) FROM wallet_uploads WHERE txn_id = ANY($1::text[]))
+          + (SELECT COUNT(*) FROM prepaid_uploads WHERE order_ref = ANY($2::text[])) AS n`,
+    [W_IDS, P_REFS])).rows[0].n);
+  ok(leftVouch === 0, `(F05-iii) tiada baris vouch yatim tertinggal (dapat ${leftVouch})`);
+
+  // (F05-iv) Data LAMA tanpa vouch (fail yang cuma ada baris legacy): TIDAK
+  // dipadam senyap, dikira dan dilapor supaya finance tahu perlu re-upload dulu.
+  await cleanF05();
+  await pool.query(
+    `INSERT INTO wallet_txns (txn_id, txn_date, seller_name, txn_type, source,
+                              status, amount, source_file, ingested_at)
+     VALUES ('F05WLEGACY', '2026-06-18 10:00:00', 'Rekaan Stockist', 'IN', 'Sales',
+             'Approved', 10, 'f05LegacyOnly.xlsx', '2026-06-02 00:00:00')`);
+  await pool.query(
+    `INSERT INTO prepaid_payments (gateway, order_ref, amount, fee, status, paid_on,
+                                   source_file, ingested_at)
+     VALUES ('chip', 'F05PLEGACY', 100, 2, 'paid', '2026-06-18 09:00:00',
+             'f05LegacyOnly.xlsx', '2026-06-02 00:00:00')`);
+  const d4 = await deleteUpload("f05LegacyOnly.xlsx");
+  ok(await hasWallet("F05WLEGACY"), "(F05-iv) txn wallet legacy TIDAK dipadam senyap");
+  ok(await hasPrepaid("F05PLEGACY"), "(F05-iv) bayaran prepaid legacy TIDAK dipadam senyap");
+  ok(d4.wallet === 0 && d4.prepaid === 0,
+    `(F05-iv) tiada baris dipadam (wallet=${d4.wallet} prepaid=${d4.prepaid})`);
+  ok(d4.walletKeptLegacy === 1 && d4.prepaidKeptLegacy === 1,
+    `(F05-iv) legacy dilapor (wallet=${d4.walletKeptLegacy} prepaid=${d4.prepaidKeptLegacy})`);
+  await cleanF05();
 
   console.log(fail ? `\n${fail} GAGAL` : "\nSEMUA PASS");
   console.log("NOTA: dev DB dah diubah. Restore: python3 scripts/loadDevDb.py + backfillAutoSkus.py");

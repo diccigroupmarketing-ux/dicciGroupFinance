@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { fmtDate, fmtDay, fmtInt, fmtRM, trackingOrDash } from "@/lib/format";
+import AmountCell from "@/components/AmountCell";
 import ExportCsv from "@/components/ExportCsv";
 import InfoTip from "@/components/InfoTip";
 import ResolveButton from "@/components/ResolveButton";
@@ -349,7 +350,13 @@ export default function BillsTable({
                                     <td><span className={"chip " + (TONE_CLASS[p.katTone] ?? "chipMut")}>
                                       <span className="cdot" /> {p.katLabel}</span></td>
                                     <td className="num">{p.selling_price != null ? fmtRM(p.selling_price) : "—"}</td>
-                                    <td className="num">{p.cod_amount != null ? fmtRM(p.cod_amount) : "—"}</td>
+                                    <td className="num">
+                                      {/* Baris ni memang datang dari SATU bil, jadi
+                                          amount NULL = nilai gagal dibaca, bukan
+                                          "tiada bayaran". */}
+                                      <AmountCell value={p.cod_amount}
+                                        hasPayment={p.awb != null} />
+                                    </td>
                                     <td className="num">{p.fee != null ? fmtRM(p.fee) : "—"}</td>
                                     <td className="num">{p.remit != null ? fmtRM(p.remit) : "—"}</td>
                                     <td>

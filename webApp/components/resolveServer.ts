@@ -111,6 +111,10 @@ export function targetsFrom(
       expected: r.selling_price,
       value: r.cod_amount ?? r.selling_price ?? 0,
       ageDays: r.umur_hari,
+      // awb bukan NULL = baris bil (COD) atau baris statement (prepaid,
+      // order_ref) memang padan. Kalau amount pula NULL, itu nilai gagal dibaca,
+      // bukan "belum bayar" , paparan sahaja, tiada kesan pada kiraan.
+      hasPayment: r.awb != null,
       badge: r.resolution,
     });
   }
@@ -150,6 +154,9 @@ export function notCollectedTargets(
       category: r.kategori, categoryLabel: labelOf(r.kategori),
       amount: null, expected: r.selling_price,
       value: r.selling_price ?? 0, ageDays: r.umur_hari,
+      // "Not collected" = memang tiada baris duit masuk, jadi amount NULL di
+      // sini betul betul bermaksud "tiada bayaran" ("—", bukan gagal dibaca).
+      hasPayment: false,
       badge: badged[i]?.resolution,
     };
   });
@@ -174,6 +181,9 @@ export function ghostTargets(
       category: "duit_hantu", categoryLabel: labelOf("duit_hantu"),
       amount: r.cod_amount, expected: null,
       value: r.cod_amount ?? 0, ageDays: null,
+      // Baris ghost SENTIASA datang dari baris duit masuk, jadi amount NULL di
+      // sini bermakna nilainya gagal dibaca.
+      hasPayment: true,
       badge: badged[i]?.resolution,
     };
   });

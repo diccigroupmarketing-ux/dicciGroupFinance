@@ -1,5 +1,6 @@
 import { searchOrders } from "@/lib/recon";
 import { fmtDate, fmtInt, fmtRM, trackingOrDash } from "@/lib/format";
+import AmountCell from "@/components/AmountCell";
 import SearchBox from "@/components/SearchBox";
 import ExportCsv from "@/components/ExportCsv";
 
@@ -101,13 +102,17 @@ export default async function SearchPage(
                             )}
                           </td>
                           <td className="num">
+                            {/* Dalam dua cabang ni baris duit memang WUJUD (ada
+                                bil, atau ada bayaran gateway), jadi amount NULL
+                                bermakna nilainya gagal dibaca masa ingest. Papar
+                                RM 0.00 di sini = salah diagnosis "bayar kurang". */}
                             {settled ? (
                               <>
-                                <b>{fmtRM(r.cod_amount ?? 0)}</b>
+                                <AmountCell value={r.cod_amount} hasPayment bold />
                                 <div className="cellSub">fee {fmtRM(r.fee ?? 0)}</div>
                               </>
                             ) : prepaid ? (
-                              <b>{fmtRM(r.prepaid_amount ?? 0)}</b>
+                              <AmountCell value={r.prepaid_amount} hasPayment bold />
                             ) : "—"}
                           </td>
                         </tr>

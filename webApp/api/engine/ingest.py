@@ -346,9 +346,10 @@ def _ingest_bytes_inner(data, filename, conn):
                               filename, conn)
         jnt_pdf = parse_jnt_pdf(data)
         if jnt_pdf is not None:
-            jnt_df, jnt_settlement = jnt_pdf
+            jnt_df, jnt_settlement, jnt_acct = jnt_pdf
             return _ingest_ok("jnt", ingest_jnt(jnt_df, filename, conn,
-                                                settlement_override=jnt_settlement),
+                                                settlement_override=jnt_settlement,
+                                                account_override=jnt_acct),
                               filename, conn)
         raise IngestError(REASON_UNKNOWN, detected_type="pdf")
     chip = parse_chip(data, filename)
@@ -1058,6 +1059,18 @@ WALLET_UPSERT = text("""
         source_file=excluded.source_file, ingested_at=excluded.ingested_at
 """)
 
+# Rakam pasangan (txn_id, fail) untuk jejak many-to-many (fix F05, cermin
+# ORDER_UPLOADS_UPSERT). Setiap kali fail sebut transaksi, pasangan direkod; PK
+# (txn_id, source_file) buat ia idempotent (re-upload fail sama = update
+# ingested_at, bukan baris baru). deleteUpload guna jadual ni untuk kekalkan
+# transaksi yang masih ada fail lain vouch untuknya.
+WALLET_UPLOADS_UPSERT = text("""
+    INSERT INTO wallet_uploads (txn_id, source_file, ingested_at)
+    VALUES (:txn_id, :source_file, :ingested_at)
+    ON CONFLICT(txn_id, source_file) DO UPDATE SET
+        ingested_at=excluded.ingested_at
+""")
+
 
 def _strip_dot0(series):
     # Lajur numerik yang ada null dibaca float ("6479145.0"); buang .0, null/kosong -> None.
@@ -1110,14 +1123,108 @@ def ingest_wallet(df, source_file, conn):
     rows = db.to_records(w)
     if rows:  # fail sah tapi kosong (header sahaja) tak patut crash executemany
         conn.execute(WALLET_UPSERT, rows)
+        # Rakam pasangan (txn_id, fail) ni untuk jejak vouch many-to-many.
+        # ingested_at sama dengan wallet_txns supaya delete boleh pilih fail
+        # vouch TERKINI bila re-point source_file baris yang dikongsi.
+        wu_rows = [{"txn_id": r["txn_id"], "source_file": r["source_file"],
+                    "ingested_at": r["ingested_at"]} for r in rows]
+        conn.execute(WALLET_UPLOADS_UPSERT, wu_rows)
     conn.commit()
     return len(rows)
 
 
 # ---------- J&T bil COD ----------
-def parse_bill_meta(filename):
-    bill_no = re.search(r"(JTMY\w+)", filename)
-    bill_id = bill_no.group(1) if bill_no else filename.rsplit(".", 1)[0]
+# =====================================================================
+# IDENTITI BIL J&T (bill_id) , dibaiki 30 Jul 2026
+# ---------------------------------------------------------------------
+# "Apa maksudnya": bill_id sepatutnya menjawab "duit ni datang dari BIL yang
+# mana". Dulu ia diambil dari NAMA fail dengan regex (JTMY\w+), dan dua dua
+# konvensyen nama fail vendor sebenar mengandungi token yang SAMA:
+#     COD账单-明细列表导出 JTMY031691 20260611184046.xlsx  -> JTMY031691
+#     2026-07-JTMY031691-DICCI IMPACT SDN. BHD.-0653.pdf   -> JTMY031691
+# JTMY031691 ialah nombor AKAUN pengirim, bukan nombor bil. Ia kekal sama untuk
+# SETIAP statement Dicci sepanjang hayat akaun. Akibatnya SEMUA bil J&T runtuh
+# jadi SATU baris cod_bills: settlement_date ditimpa statement terbaru, satu
+# sahaja bank_deposits boleh ditaip untuk semua bil, dan kuarantin double-bill
+# MATI sepenuhnya (dua bil berbeza tak pernah dikira "bill_id berbeza").
+#
+# Apa yang BENAR benar ada dalam kandungan fail:
+#   PDF "COD Statement" , INVOICE NO (C-JTMY031691-2607-0022), "Account No :",
+#       "Date :2026-07-22", dan senarai "DETAIL DAILY TRANSACTION LIST" yang
+#       semua barisnya satu HARI penghantaran (sampel: 2026-07-21).
+#   XLSX "COD账单-明细列表导出" , TIADA nombor bil, TIADA akaun, TIADA tarikh
+#       statement. Cuma baris: AWB, pick up, delivery, COD, fee. Sampel sebenar
+#       merentas 2026-05-20 sampai 2026-05-30 (11 hari) , iaitu satu fail export
+#       mengandungi BANYAK bil harian, bukan satu bil.
+#
+# Jadi identiti yang kedua dua format kongsi ialah AKAUN + HARI PENGHANTARAN
+# (J&T settle COD ikut hari; nombor invois 2607-0022 = statement ke-22 bulan
+# 2026-07, bertarikh 22 hb). Itulah kunci baru:
+#       bill_id = <akaun>-<YYYYMMDD hari penghantaran>   cth JTMY031691-20260721
+# Sifatnya:
+#   (a) fail SAMA di-upload dua kali  -> bill_id sama (idempotent kekal),
+#   (b) statement bulan/hari berbeza  -> bill_id berbeza (kuarantin hidup semula),
+#   (c) XLS dan PDF hari yang SAMA    -> bill_id SAMA (tiada konflik palsu antara
+#       format), dan satu XLS julat luas pecah jadi bil harian yang betul,
+#   (d) baris tanpa tarikh penghantaran yang boleh dibaca -> bucket eksplisit
+#       "<akaun>-UNDATED" (nampak pelik di skrin finance, bukan sorok senyap).
+#
+# FALLBACK AKAUN (jujur, bukan senyap): XLSX langsung TIADA nombor akaun dalam
+# kandungan, jadi akaun datang dari nama fail. Data live sebenar menunjukkan team
+# finance kadang menamakan semula fail ("jnt jul 2026 impact.xlsx"), jadi tiada
+# token JTMY langsung , kita guna batang nama fail sebagai ruang nama. Kesannya:
+# dua fail yang dinamakan berlainan TAK akan bergabung walaupun harinya sama,
+# jadi baris bertindih akan masuk kuarantin (nampak di skrin finance) dan BUKAN
+# bergabung senyap. Sengaja pilih arah tu: over-split yang KELIHATAN lebih
+# selamat daripada gabung yang senyap. Ubatnya mudah , upload fail dengan nama
+# asal dari J&T (ada JTMY...), atau upload PDF statement (akaun dari kandungan).
+#
+# SENGAJA BUKAN nombor invois: ia hanya wujud dalam PDF. Kalau PDF pakai invois
+# dan XLS pakai benda lain, setiap parcel yang muncul dalam kedua dua format
+# akan dikuarantin sebagai "double-billed" walhal ia dokumen yang sama , ribut
+# amaran palsu. cod_bills pula tiada lajur untuk simpan nombor invois berasingan
+# (schema db.py di luar skop pembaikan ni).
+# =====================================================================
+_JNT_ACCOUNT_RE = re.compile(r"(JTMY\w+)")
+# Baris "Account No :JTMY031691" dalam PDF COD Statement.
+_JNT_ACCOUNT_LINE = re.compile(r"Account\s*No\s*:\s*([A-Za-z0-9]+)")
+
+
+def jnt_account(filename, content_account=None):
+    """Ruang nama bil J&T = nombor AKAUN pengirim (contoh JTMY031691).
+
+    Utamakan akaun dari KANDUNGAN (PDF statement mencetaknya). Kalau tiada,
+    ambil token JTMY... dari nama fail (kedua dua konvensyen vendor ada token
+    ni). Kalau dua dua tiada, guna batang nama fail supaya fail dari akaun
+    berlainan tak bercampur , dan ia nampak pelik bila finance pandang."""
+    if content_account:
+        return str(content_account).strip()
+    m = _JNT_ACCOUNT_RE.search(filename or "")
+    if m:
+        return m.group(1)
+    return (filename or "unknown").rsplit(".", 1)[0]
+
+
+def jnt_bill_id(account, delivered):
+    """Identiti SATU bil COD J&T = akaun + HARI penghantaran (YYYYMMDD).
+
+    `delivered` = tarikh penghantaran baris tu (string ISO 'YYYY-MM-DD...' atau
+    None). Tiada tarikh boleh dibaca = bucket '<akaun>-UNDATED' (lihat nota (d)
+    di atas)."""
+    day = str(delivered)[:10].replace("-", "") if delivered else ""
+    ok = len(day) == 8 and day.isdigit()
+    return "%s-%s" % (account, day if ok else "UNDATED")
+
+
+def parse_jnt_meta(filename):
+    """(akaun, tarikh dari nama fail) untuk bil J&T. BUKAN identiti bil.
+
+    Tarikh: larian 8-digit PERTAMA dalam nama fail. Untuk export XLSX ia tarikh
+    EXPORT (bila kerani tekan download), bukan tarikh settlement sebenar , kita
+    kekalkan sebagai anggaran terbaik yang ada (laluan PDF menimpanya dengan
+    'Date :' statement yang betul, dan bila PDF hari sama masuk kemudian ia
+    membetulkan settlement_date bil harian itu)."""
+    account = jnt_account(filename)
     d = re.search(r"(\d{8})", filename)
     settlement = None
     if d:
@@ -1125,7 +1232,7 @@ def parse_bill_meta(filename):
             settlement = datetime.strptime(d.group(1), "%Y%m%d").strftime("%Y-%m-%d")
         except ValueError:
             settlement = None
-    return bill_id, settlement
+    return account, settlement
 
 
 BILLS_UPSERT = text("""
@@ -1214,7 +1321,8 @@ def conflicts_count(conn, source_file):
     ).scalar() or 0
 
 
-def ingest_jnt(df, source_file, conn, settlement_override=None):
+def ingest_jnt(df, source_file, conn, settlement_override=None,
+               account_override=None):
     # Guard pintu DULU (sebelum BILLS_UPSERT), supaya laporan J&T yang bukan bil
     # tak tinggalkan baris bil kosong atau meletup jadi KeyError mentah.
     guard_feed_columns("jnt", df.columns)
@@ -1225,19 +1333,27 @@ def ingest_jnt(df, source_file, conn, settlement_override=None):
     # Guard nilai duit SEBELUM apa apa tulisan DB (termasuk header bil): bil COD
     # yang lajur duitnya tak boleh dibaca bukan bukti duit sampai bank.
     guard_feed_values("jnt", df)
-    bill_id, settlement = parse_bill_meta(source_file)
+    account, settlement = parse_jnt_meta(source_file)
+    # account_override: laluan PDF baca "Account No :" dari KANDUNGAN statement.
     # settlement_override: laluan PDF (COD Statement) baca tarikh dari kandungan
     # statement (nama fail J&T PDF tiada larian 8-digit). Default None kekalkan
     # perangai Excel sedia ada (tarikh dari nama fail sahaja).
+    if account_override:
+        account = str(account_override).strip()
     if settlement_override:
         settlement = settlement_override
 
+    delivered = iso(db.parse_dt(df[J_DELIVERED], dayfirst=False))
     l = pd.DataFrame({
         "awb": db.norm_trk(df[J_AWB]),
-        "bill_id": bill_id,
+        # bill_id ditentukan PER BARIS (akaun + hari penghantaran), sebab satu
+        # fail export J&T boleh merentas banyak hari = banyak bil. Lihat nota
+        # "IDENTITI BIL J&T" di atas.
+        "bill_id": pd.Series([jnt_bill_id(account, d) for d in delivered],
+                             index=delivered.index),
         "cod_amount": db.to_num(df[J_COD]),
         "fee": db.to_num(df[J_FEE]),
-        "delivered_date": iso(db.parse_dt(df[J_DELIVERED], dayfirst=False)),
+        "delivered_date": delivered,
         "pickup_date": iso(db.parse_dt(df[J_PICKUP], dayfirst=False)),
         "source_file": source_file,
         "ingested_at": now_iso(),
@@ -1245,10 +1361,21 @@ def ingest_jnt(df, source_file, conn, settlement_override=None):
     # Duplikat AWB DALAM fail ni disaring SEBELUM apa apa ditulis (termasuk header
     # bil), sama corak dengan guard lajur/nilai: fail ditolak = sifar kesan DB.
     rows = guard_duplicate_rows("jnt", db.to_records(l))
-    conn.execute(BILLS_UPSERT, {
-        "bill_id": bill_id, "courier": "J&T Express", "settlement_date": settlement,
-        "source_file": source_file, "ingested_at": now_iso(),
-    })
+    # Satu header cod_bills untuk SETIAP bil harian dalam fail ni (turutan tetap
+    # supaya jalannya deterministik). Fail sah tapi kosong = tiada bil ditulis,
+    # bukan satu header hantu tanpa baris.
+    stamp = now_iso()
+    seen, bills = set(), []
+    for r in rows:
+        if r["bill_id"] not in seen:
+            seen.add(r["bill_id"])
+            bills.append({
+                "bill_id": r["bill_id"], "courier": "J&T Express",
+                "settlement_date": settlement, "source_file": source_file,
+                "ingested_at": stamp,
+            })
+    if bills:
+        conn.execute(BILLS_UPSERT, bills)
     if rows:  # fail sah tapi kosong (header sahaja) tak patut crash executemany
         rows, _ = _quarantine_conflicts(conn, rows, source_file)
         if rows:
@@ -1291,8 +1418,8 @@ def _jnt_pdf_num(tok):
 
 
 def _jnt_parse_text(full):
-    """Baca teks COD Statement J&T -> (DataFrame bentuk bil J&T Excel, settlement)
-    kalau ia betul betul statement J&T, else None. LEMPAR IngestError
+    """Baca teks COD Statement J&T -> (DataFrame bentuk bil J&T Excel, settlement,
+    akaun) kalau ia betul betul statement J&T, else None. LEMPAR IngestError
     (tally_mismatch) kalau jumlah baris detail tak tally dengan GRAND TOTAL, atau
     kalau ada baris yang `COD - fee != Net`. Fungsi TULEN (atas teks) supaya
     boleh diuji tanpa PDF sebenar."""
@@ -1353,6 +1480,14 @@ def _jnt_parse_text(full):
     m = _JNT_STMT_DATE.search(full)
     if m:
         settlement = m.group(1)
+    # Akaun dari KANDUNGAN ("Account No :JTMY031691"), bukan nama fail. Ia yang
+    # jadi ruang nama bill_id, jadi statement yang dinamakan semula oleh kerani
+    # tetap masuk bawah akaun yang betul. None = biar ingest_jnt jatuh ke nama
+    # fail (fallback berperingkat dalam jnt_account).
+    account = None
+    ma = _JNT_ACCOUNT_LINE.search(full)
+    if ma:
+        account = ma.group(1)
     # Bentuk DataFrame IDENTIK lajur bil J&T Excel, supaya ingest_jnt guna semula.
     df = pd.DataFrame({
         J_AWB: [r["awb"] for r in rows],
@@ -1361,12 +1496,12 @@ def _jnt_parse_text(full):
         J_DELIVERED: [r["deliv"] for r in rows],
         J_PICKUP: [None] * len(rows),   # statement tiada tarikh pick up
     })
-    return df, settlement
+    return df, settlement, account
 
 
 def parse_jnt_pdf(data):
-    """Pulang (DataFrame bentuk bil J&T Excel, settlement) kalau `data` ialah
-    J&T COD Statement PDF, else None. LEMPAR IngestError(tally_mismatch) kalau
+    """Pulang (DataFrame bentuk bil J&T Excel, settlement, akaun) kalau `data`
+    ialah J&T COD Statement PDF, else None. LEMPAR IngestError(tally_mismatch) kalau
     baris detail tak tally dengan GRAND TOTAL atau dengan Net per baris (tolak
     fail, jangan simpan senyap)."""
     if not data[:5].startswith(b"%PDF"):
@@ -1797,6 +1932,16 @@ PREPAID_UPSERT = text("""
         ingested_at=excluded.ingested_at
 """)
 
+# Rakam pasangan (gateway, order_ref, fail) untuk jejak many-to-many (fix F05,
+# cermin ORDER_UPLOADS_UPSERT). Kunci ikut PK prepaid_payments (gateway,
+# order_ref) + fail. Idempotent: re-upload statement sama = update ingested_at.
+PREPAID_UPLOADS_UPSERT = text("""
+    INSERT INTO prepaid_uploads (gateway, order_ref, source_file, ingested_at)
+    VALUES (:gateway, :order_ref, :source_file, :ingested_at)
+    ON CONFLICT(gateway, order_ref, source_file) DO UPDATE SET
+        ingested_at=excluded.ingested_at
+""")
+
 
 def _num(v):
     # Terima juga teks berformat statement: "RM 51.90" dan "(10.00)" (kurungan =
@@ -1967,6 +2112,13 @@ def ingest_chip(df, source_file, conn):
     if recs:
         recs = _dedup_chip_recs(recs)
         conn.execute(PREPAID_UPSERT, recs)
+        # Rakam pasangan (gateway, order_ref, fail) untuk jejak vouch. Selepas
+        # _dedup_chip_recs, order_ref dalam recs dijamin unik, jadi tiada baris
+        # PK sama dua kali dalam satu batch.
+        conn.execute(PREPAID_UPLOADS_UPSERT,
+                     [{"gateway": r["gateway"], "order_ref": r["order_ref"],
+                       "source_file": r["source_file"],
+                       "ingested_at": r["ingested_at"]} for r in recs])
     conn.commit()
     return len(recs)
 

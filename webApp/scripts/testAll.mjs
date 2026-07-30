@@ -8,7 +8,7 @@
 //   1. Restore bersih (loadDevDb) supaya mula dari data kenal.
 //   2. Jana rujukan parity (parityDump -> scripts/parityPython.json).
 //   3. Suite tak-memadam: parityCheck, testStockistDetail, testBank,
-//      testReconEdgeCases.ts (suntik+buang perangkap sendiri).
+//      testReconEdgeCases.ts + testGifts (suntik+buang perangkap sendiri).
 //   4. Suite memadam: restore, testMutations, restore, testUploads, restore,
 //      testResolutions, restore akhir.
 //   5. Ringkasan PASS/FAIL; exit 1 kalau mana mana suite ATAU restore gagal.
@@ -104,6 +104,14 @@ async function main() {
   //     Ia bersihkan sendiri, tapi kita restore selepasnya sebagai jaring.
   record("testReconEdgeCases.ts", run("testReconEdgeCases.ts (E3 kes tepi)",
     "npx", ["tsx", "scripts/testReconEdgeCases.ts"]));
+
+  // 3c) Invariant free gift: sifar fan-out botol + kos derive lawan oracle bebas.
+  //     Ia MENULIS (backfill sku_bottles bertanda, seed sku_gifts, satu baris
+  //     cod_bill_lines sintetik) tapi pulih sendiri dalam finally dan mengesahkan
+  //     pemulihan tu dengan assert. Duduk di sini, sebelum restore (pra-mutations),
+  //     supaya restore tu jadi jaring , penting sebab testMutations pin
+  //     `sku_bottles jangka 9`.
+  record("testGifts", run("testGifts", "npx", ["tsx", "scripts/testGifts.ts"]));
 
   // 4) Suite memadam , restore sebelum & selepas.
   record("restore (pra-mutations)", restore("pra-mutations"));

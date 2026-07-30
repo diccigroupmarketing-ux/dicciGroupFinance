@@ -74,6 +74,11 @@ export interface ResolveTarget {
   expected: number | null;    // duit dijangka
   value: number;
   ageDays: number | null;
+  // PAPARAN sahaja: ada baris bayaran padan (baris bil / statement) untuk baris
+  // ni. Bila true DAN amount NULL, maknanya nilai gagal dibaca masa ingest,
+  // bukan "tiada bayaran" , lihat components/AmountCell.tsx. Tidak dihantar ke
+  // API dan tidak menyentuh apa apa kiraan.
+  hasPayment?: boolean;
   badge?: RowBadgeUI;
 }
 

@@ -15,6 +15,7 @@ import {
   fmtDate, fmtInt, fmtRM, type Grain, GRAIN_LABEL, groupByGrain, parseGrain,
   trackingOrDash,
 } from "@/lib/format";
+import AmountCell from "@/components/AmountCell";
 import { KatChip, katTone } from "@/components/Chip";
 import GrainSwitcher from "@/components/GrainSwitcher";
 import WeeklyChart from "@/components/WeeklyChart";
@@ -383,6 +384,9 @@ function AuditTable({ rows }: {
     cod_amount: number | null;
   }[];
 }) {
+  // awb bukan NULL = baris bil (COD) atau baris statement (prepaid: order_ref)
+  // memang padan, jadi cod_amount NULL di situ = nilai gagal dibaca masa ingest,
+  // BUKAN RM 0.00 dan bukan "belum bayar". Lihat components/AmountCell.tsx.
   return (
     <div className="tableWrap">
       <table>
@@ -400,7 +404,9 @@ function AuditTable({ rows }: {
               <td>{trackingOrDash(r.tracking ?? r.awb)}</td>
               <td><KatChip kat={r.kategori} /></td>
               <td className="num">{r.selling_price != null ? fmtRM(r.selling_price) : "—"}</td>
-              <td className="num">{r.cod_amount != null ? fmtRM(r.cod_amount) : "—"}</td>
+              <td className="num">
+                <AmountCell value={r.cod_amount} hasPayment={r.awb != null} />
+              </td>
             </tr>
           ))}
         </tbody>

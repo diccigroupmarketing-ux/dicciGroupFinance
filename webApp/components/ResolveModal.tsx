@@ -44,8 +44,14 @@ export default function ResolveModal({
 
   const [code, setCode] = useState(() => pickDefaultReason(targets, reasons));
   const [note, setNote] = useState("");
+  // Baris yang amount-nya gagal dibaca masa ingest (NULL, bukan 0). rowDiff()
+  // akan menganggapnya 0 dan pra-isi "beza" sebesar harga jualan penuh, iaitu
+  // angka yang mengarut untuk kes ni. Jadi pra-isi kekal 0 dan borang berkata
+  // terus terang kenapa. Tiada logik lain disentuh.
+  const unreadable = targets.filter((t) => t.amount == null && t.hasPayment);
+  const prefillOk = targets.length === 1 && unreadable.length === 0;
   const [adjust, setAdjust] = useState(
-    () => (targets.length === 1 ? String(rowDiff(targets[0])) : "0"));
+    () => (prefillOk ? String(rowDiff(targets[0])) : "0"));
   const [counterparty, setCounterparty] = useState("");
   const [duplicateRef, setDuplicateRef] = useState("");
   const snoozeMax = ymdAdd(limits.todayYmd, limits.maxSnoozeDays);
@@ -187,6 +193,24 @@ export default function ResolveModal({
           </div>
         </div>
 
+        {unreadable.length > 0 && (
+          <div className="cauPanel" style={{ marginTop: 4 }}>
+            <div>
+              <b>
+                {unreadable.length === 1
+                  ? "The amount on this row could not be read from the uploaded file."
+                  : `${fmtInt(unreadable.length)} of these rows have an amount that could `
+                    + "not be read from the uploaded file."}
+              </b>
+              <p>
+                It is stored as unknown, not as RM 0.00, so this is not evidence that
+                anyone paid less. Re-upload a clean statement for the line before
+                closing it as a payment difference.
+              </p>
+            </div>
+          </div>
+        )}
+
         {!done && (
           <>
             <label className="resolveField">
@@ -240,7 +264,9 @@ export default function ResolveModal({
               <input className="cellInput num" type="number" step="0.01" value={adjust}
                 disabled={busy} onChange={(e) => setAdjust(e.target.value)} />
               <span className="resolveHelp">
-                {batch
+                {!prefillOk && !batch
+                  ? "Left at 0 on purpose: the amount on this row could not be read, so there is no difference to pre-fill."
+                  : batch
                   ? "Applied to every selected row, so leave it at 0 unless they all share the same difference."
                   : "Pre-filled with the difference on this row. It is recorded as an explanation only, it does not change any total."}
               </span>

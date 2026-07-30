@@ -44,6 +44,34 @@ const GIFTS_B: GiftDef[] = [{ name: "Ujian Beg", cost: 3.5, qty: 1 }];
 // tepat (termasuk sisa dari run yang mati separuh jalan).
 const SYNTH_BILL = "UJIAN-RM0-testGifts";
 
+// ====================================================================
+// BACKFILL katalog SKU untuk ujian (penanda sendiri, dibuang dalam finally).
+//
+// Kenapa perlu: pemilih skuA/skuB di bawah JOIN sku_bottles (katalog SKU),
+// sebab kos gift hanya bermakna untuk SKU yang app kenal. Snapshot dev
+// (backups/*/sku_bottles.csv) cuma ada 9 SKU lama (JAG-MY-*, KK-JAQ-*, ...),
+// sedangkan SEMUA order yang duitnya disahkan dalam snapshot tu duduk atas SKU
+// MYSE-* / MYS-*. Hasilnya skuA jatuh pada SKU yang confirmed = 0, jadi assert
+// `expConf > 0` gagal dan seluruh cabang "confirmed" (byGiftType, stockistGifts)
+// diuji atas sifar , iaitu ujian tanpa gigi.
+//
+// Kenapa di sini, bukan dalam snapshot backup: sku_bottles snapshot ialah
+// baseline berkongsi , testMutations pin `jangka 9` dan NOTA restore dalam
+// testAll.mjs sengaja TAK jalankan backfillAutoSkus.py atas sebab sama.
+// Jadi backfill ni self-contained: disuntik di awal, dibuang dalam finally.
+//
+// Nilai paid/free = OUTPUT SEBENAR ingest.derive_bottles() untuk nama SKU tu
+// (corak sama yang backfillAutoSkus.py guna), bukan nombor rekaan.
+const SYNTH_SKU_NOTE = "UJIAN-testGifts";
+interface BottleDef { sku: string; paid: number; free: number; }
+const SEED_BOTTLES: BottleDef[] = [
+  // Pembawa "confirmed" paling banyak dalam snapshot (jadi calon skuA).
+  { sku: "MYSE-JAG-2", paid: 2, free: 0 },
+  // Pembawa "at-risk" paling banyak (jadi calon skuB). Dua duanya menang
+  // ranking dengan margin lebar, jadi pilihan SKU kekal stabil.
+  { sku: "MYS-JAG2-AGM1", paid: 2, free: 1 },
+];
+
 // Ungkapan conf GUNA SEMULA CONF_SQL dari recon.ts, bukan salinan tangan.
 // Sebab: yang diuji di sini ialah matematik agregat kos gift, BUKAN definisi
 // "duit disahkan" (definisi tu ada gate sendiri, parity harness lawan
@@ -73,6 +101,22 @@ async function bottleSnapshot(): Promise<{ stockists: string; daily: string }> {
 async function main() {
   await ensureGiftTable();
   const p = getPool();
+
+  // Backfill katalog SKU (lihat SEED_BOTTLES). Buang sisa run yang mati dulu,
+  // pastu suntik. ON CONFLICT DO NOTHING supaya baris SEBENAR yang dah wujud
+  // tak dicop dengan penanda ujian (dan tak dipadam oleh cleanup).
+  await p.query("DELETE FROM sku_bottles WHERE product_name = $1", [SYNTH_SKU_NOTE]);
+  const bottlesBefore = Number((await p.query(
+    "SELECT COUNT(*) AS n FROM sku_bottles")).rows[0].n);
+  for (const b of SEED_BOTTLES) {
+    await p.query(
+      `INSERT INTO sku_bottles (sku, product_name, paid, free) VALUES ($1, $2, $3, $4)
+       ON CONFLICT (sku) DO NOTHING`, [b.sku, SYNTH_SKU_NOTE, b.paid, b.free]);
+  }
+  const seeded = await p.query(
+    "SELECT sku FROM sku_bottles WHERE sku = ANY($1)", [SEED_BOTTLES.map((b) => b.sku)]);
+  ok(seeded.rowCount === SEED_BOTTLES.length,
+    `katalog SKU ujian sedia (${seeded.rowCount}/${SEED_BOTTLES.length} SKU)`);
 
   // Snapshot sku_gifts sedia ada untuk restore di akhir.
   const giftBackup = (await p.query(
@@ -238,6 +282,9 @@ async function main() {
   } finally {
     // Buang baris bil sintetik (ikut bill_id, jadi sisa run yang crash pun kena).
     await p.query("DELETE FROM cod_bill_lines WHERE bill_id = $1", [SYNTH_BILL]);
+    // Buang backfill katalog SKU (ikut penanda product_name, jadi baris sebenar
+    // dengan sku sama TAK tersentuh).
+    await p.query("DELETE FROM sku_bottles WHERE product_name = $1", [SYNTH_SKU_NOTE]);
     // Pulihkan sku_gifts asal walau ujian gagal separuh jalan.
     await p.query("DELETE FROM sku_gifts");
     for (const g of giftBackup) {
@@ -249,6 +296,10 @@ async function main() {
   const restored = await p.query("SELECT COUNT(*) AS n FROM sku_gifts");
   ok(Number(restored.rows[0].n) === giftBackup.length,
     `sku_gifts dipulihkan (${restored.rows[0].n} baris, jangka ${giftBackup.length})`);
+  const bottlesAfter = Number((await p.query(
+    "SELECT COUNT(*) AS n FROM sku_bottles")).rows[0].n);
+  ok(bottlesAfter === bottlesBefore,
+    `sku_bottles dipulihkan (${bottlesAfter} baris, jangka ${bottlesBefore})`);
 
   console.log(fail === 0 ? "\nSEMUA LULUS" : `\n${fail} GAGAL`);
   await getPool().end();

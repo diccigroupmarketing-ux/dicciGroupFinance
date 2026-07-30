@@ -6,7 +6,8 @@
 // ikut AWB.
 import { useMemo, useState } from "react";
 import Link from "next/link";
-import { fmtDate, fmtInt, fmtRM, trackingOrDash } from "@/lib/format";
+import { fmtDate, fmtInt, trackingOrDash } from "@/lib/format";
+import AmountCell from "@/components/AmountCell";
 import TableFilter from "@/components/TableFilter";
 import ExportCsv from "@/components/ExportCsv";
 import InfoTip from "@/components/InfoTip";
@@ -135,7 +136,11 @@ export default function GhostTable({
                       )}
                     </td>
                     <td>{fmtDate(r.settlement_date)}</td>
-                    <td className="num"><b>{r.cod_amount != null ? fmtRM(r.cod_amount) : "—"}</b></td>
+                    <td className="num">
+                      {/* Ghost = baris duit masuk, jadi amount NULL bermakna
+                          nilainya gagal dibaca masa ingest. */}
+                      <AmountCell value={r.cod_amount} hasPayment bold />
+                    </td>
                     <td>
                       {t
                         ? <ResolveButton target={t} reasons={reasons} limits={limits} compact />
