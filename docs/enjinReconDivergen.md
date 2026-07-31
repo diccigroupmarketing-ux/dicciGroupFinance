@@ -333,6 +333,15 @@ Postgres + `reconcile._r2` bundar ikut TEKS (100.01) manakala SQLite bundar ikut
 mentah (100.00). Prod = Postgres, jadi E1/E2pg/E3 selari; hanya sqlite dev lokal beza.
 Diuji dan dikunci sebagai gap sedar dalam `TestGapDialekSen`.
 
+Kunci tambahan (2026-07-31): gap dialek ni SEMPIT, ia tak kena semua nilai digit
+ke-3. `TestGapDialekSen` kini simpan kawalan persetujuan 99.995 (semua enjin ->
+100.00) dan 0.005 (semua -> 0.01), membuktikan hanya 100.005 yang terbelah antara
+sqlite dan Postgres/teks. Sisi POSTGRES (prod) pula dikunci berasingan di
+`testReconEdgeCases.ts` (E3 dev PG): 100.005->100.01, 99.995->100.00, 0.005->0.01,
+disahkan lewat probe dev PG dan SELARI `reconcile._r2` (oracle). Maknanya TIADA
+divergen oracle lawan prod pada digit ke-3, cuma sqlite dev yang jadi outlier pada
+satu nilai.
+
 ### D6. `all_trk` diport terlalu ketat: match_luar_skop jadi duit_hantu (DIBAIKI 2026-07-27)
 
 > Regresi yang masuk bersama baik D4. Keputusan owner: **ikut reconcile.py**.
@@ -491,8 +500,8 @@ rasmi banding E2 lawan E3 , dua dua di sebelah teks-mentah yang sama , dan boleh
 
 | Fail | Apa dijaga |
 |---|---|
-| `webApp/api/engine/tests/testReconEdgeCases.py` | 34 ujian: E1 lawan E2 (sqlite) baris demi baris atas fixture kes tepi sintetik + tiga gap didokumen + penjaga anti-cascade tarikh |
-| `webApp/scripts/testReconEdgeCases.ts` | 12 semakan: E3 atas dev PG, suntik baris perangkap, semak kategori + `CONF_SQL`, buang balik |
+| `webApp/api/engine/tests/testReconEdgeCases.py` | 43 ujian: E1 lawan E2 (sqlite) baris demi baris atas fixture kes tepi sintetik + tiga gap didokumen + penjaga anti-cascade tarikh + kawalan sempadan sen (99.995, 0.005 selari) + tarikh tepi kalendar (hujung bulan 31/30, tahun lompat 29 Feb, hujung tahun, NULL/NaT aging) |
+| `webApp/scripts/testReconEdgeCases.ts` | 24 semakan: E3 atas dev PG, suntik baris perangkap, semak kategori + `CONF_SQL`, buang balik, termasuk kunci pembundaran sen sisi POSTGRES (100.005->100.01, 99.995->100.00, 0.005->0.01) selari oracle |
 | `webApp/api/engine/tests/testIngestParsers.py` (`TestFighterDateGuard`) | tarikh dikanonikkan / ditolak di pintu |
 
 Ketiga tiga dijalankan oleh `npm test` (`scripts/testAll.mjs`).

@@ -730,9 +730,22 @@ class TestGapTarikhBukanKanonik(FixtureCase):
 # isyarat padam ujian ni, bukan bug.
 # =====================================================================
 GAP_SEN_ORDERS = [
+    # (1) GAP: 100.005 lawan bil 100.00. E1 ikut teks -> 100.01 (mismatch),
+    #     E2 SQLITE bundar double mentah 100.00499... -> 100.00 (tally). BEZA.
     ("TEST-SEN3", "2026-06-10 10:00:00", COMPLETED, JNT, "COD", "7780000001", 100.005),
+    # (2) KAWALAN persetujuan: 99.995 lawan bil 100.00. E1 teks -> 100.00,
+    #     E2 sqlite double -> 100.00 juga. DUA DUA tally. Ni kunci yang gap
+    #     dialek SEMPIT: bukan semua nilai digit ke-3 terbelah, cuma 100.005.
+    ("TEST-SEN3-99995", "2026-06-10 10:00:00", COMPLETED, JNT, "COD", "7780000002", 99.995),
+    # (3) KAWALAN persetujuan: 0.005 lawan bil 0.01. E1 -> 0.01, E2 sqlite -> 0.01.
+    #     DUA DUA tally. Sisi 'kecil' spektrum, tetap selari.
+    ("TEST-SEN3-0005", "2026-06-10 10:00:00", COMPLETED, JNT, "COD", "7780000003", 0.005),
 ]
-GAP_SEN_LINES = [("7780000001", BILL_A, 100.00)]
+GAP_SEN_LINES = [
+    ("7780000001", BILL_A, 100.00),   # 100.005 lawan 100.00
+    ("7780000002", BILL_A, 100.00),   # 99.995 lawan 100.00
+    ("7780000003", BILL_A, 0.01),     # 0.005 lawan 0.01
+]
 
 
 class TestGapDialekSen(FixtureCase):
@@ -746,6 +759,110 @@ class TestGapDialekSen(FixtureCase):
         self.assertEqual(peta(hasil_e1(self.conn, "jnt"))[kunci], "amount_mismatch")
         # E2 sqlite bundar double mentah 100.00499... -> 100.00, jadi tally.
         self.assertEqual(peta(hasil_e2(self.conn, "courier", "jnt"))[kunci], "tally")
+
+    def test_99995_dua_dua_dialek_setuju_tally(self):
+        # KAWALAN sempadan gap: 99.995 TIDAK terbelah antara E1 dan E2 sqlite.
+        # Probe: reconcile._r2(99.995) = 100.00, SQLite ROUND(99.995,2) = 100.00.
+        # Kalau suatu hari salah satu enjin berubah dan ni jadi beza, ujian
+        # menjerit , itu isyarat gap melebar, bukan senyap.
+        kunci = ("TEST-SEN3-99995", "7780000002")
+        self.assertEqual(peta(hasil_e1(self.conn, "jnt"))[kunci], "tally")
+        self.assertEqual(peta(hasil_e2(self.conn, "courier", "jnt"))[kunci], "tally")
+
+    def test_0005_dua_dua_dialek_setuju_tally(self):
+        # KAWALAN sisi kecil: 0.005 -> 0.01 di E1 DAN E2 sqlite. Selari.
+        kunci = ("TEST-SEN3-0005", "7780000003")
+        self.assertEqual(peta(hasil_e1(self.conn, "jnt"))[kunci], "tally")
+        self.assertEqual(peta(hasil_e2(self.conn, "courier", "jnt"))[kunci], "tally")
+
+
+# =====================================================================
+# TARIKH TEPI KALENDAR , hujung bulan, tahun lompat, hujung tahun, NULL/NaT
+# ---------------------------------------------------------------------
+# Kembangan liputan D7/D8. Selagi order_date KANONIK (YYYY-MM-DD HH:MM:SS) atau
+# NULL, E1 (pandas parse) dan E2 (banding teks) MESTI setuju , doc D7 kata
+# begitu, kelas ni membuktikannya atas tarikh tepi kalendar yang senang tersilap:
+#   , hujung bulan 31 lawan 30 (Jan 31, Mei 31, Jun 30)
+#   , tahun lompat 29 Feb yang SAH (2024-02-29) mesti parse, bukan crash
+#   , hujung tahun / masa depan (2026-12-31) = belum_remit dua dua
+#   , NULL di laluan aging = belum_remit dua dua (NaT tiada umur)
+# Fixture ni SENGAJA campur satu tarikh BUKAN kanonik ('01/07/2026') dengan
+# tracking TERKECIL, supaya ia jadi sel yang pandas teka dulu , membuktikan
+# format bercampur dalam satu fail TAK meracuni umur baris kanonik lain (anti
+# cascade D8) walaupun tarikh tepi kalendar.
+#
+# SATU baris SENGAJA gap: 2026-02-29 TAK WUJUD dalam kalendar (2026 bukan tahun
+# lompat). E1 pandas -> NaT -> belum_remit; E2 banding teks '2026-02-29...' <=
+# cutoff -> hilang_lewat. Ini corak gap D7 yang SAMA (tarikh tak boleh diparse
+# ditulis terus ke DB), bukan divergen baru , dikunci sebagai gap sedar.
+# =====================================================================
+TEPI_ORDERS = [
+    # Bukan kanonik + tracking TERKECIL = sel yang pandas teka = pemicu cascade.
+    ("TEST-TEPI-BADCANON", "01/07/2026", COMPLETED, JNT, "COD", "7795000000", 100.0),
+    ("TEST-TEPI-JAN31", "2026-01-31 10:00:00", COMPLETED, JNT, "COD", "7795000001", 100.0),
+    ("TEST-TEPI-LEAP", "2024-02-29 10:00:00", COMPLETED, JNT, "COD", "7795000002", 100.0),
+    ("TEST-TEPI-MEI31", "2026-05-31 10:00:00", COMPLETED, JNT, "COD", "7795000003", 100.0),
+    ("TEST-TEPI-JUN30", "2026-06-30 10:00:00", COMPLETED, JNT, "COD", "7795000004", 100.0),
+    ("TEST-TEPI-DIS31", "2026-12-31 23:59:59", COMPLETED, JNT, "COD", "7795000005", 100.0),
+    ("TEST-TEPI-NULL", None, COMPLETED, JNT, "COD", "7795000006", 100.0),
+    # Gap sedar: 29 Feb pada tahun BUKAN lompat = tarikh tak sah.
+    ("TEST-TEPI-FEB29BAD", "2026-02-29 10:00:00", COMPLETED, JNT, "COD", "7795000007", 100.0),
+]
+
+
+class TestTarikhTepiKalendar(FixtureCase):
+    orders = TEPI_ORDERS
+    lines = []
+    prepaid = []
+
+    def test_tarikh_kanonik_tepi_selari_dan_betul(self):
+        """Tarikh tepi kalendar yang KANONIK: E1 dan E2 mesti setuju + kategori
+        betul ikut umur. Walau ada tarikh bukan kanonik di baris pertama fixture
+        (cascade lama), baris ni mesti kekal betul (anti cascade D8)."""
+        p1 = peta(hasil_e1(self.conn, "jnt"))
+        p2 = peta(hasil_e2(self.conn, "courier", "jnt"))
+        jangka = {
+            ("TEST-TEPI-JAN31", ""): "hilang_lewat",   # 31 Jan, jauh sebelum cutoff
+            ("TEST-TEPI-LEAP", ""): "hilang_lewat",    # 29 Feb 2024 (lompat SAH), tua
+            ("TEST-TEPI-MEI31", ""): "hilang_lewat",   # 31 Mei, sebelum cutoff 3 Jun
+            ("TEST-TEPI-JUN30", ""): "belum_remit",    # 30 Jun, selepas today 18 Jun
+            ("TEST-TEPI-DIS31", ""): "belum_remit",    # 31 Dis, hujung tahun / depan
+        }
+        for kunci, kat in jangka.items():
+            self.assertEqual(p1[kunci], kat, f"E1 salah {kunci}")
+            self.assertEqual(p2[kunci], kat, f"E2 salah {kunci}")
+
+    def test_null_di_laluan_aging_belum_remit_dua_enjin(self):
+        # NULL (NaT) tiada umur, jatuh belum_remit dua dua enjin. Tak crash.
+        p1 = peta(hasil_e1(self.conn, "jnt"))
+        p2 = peta(hasil_e2(self.conn, "courier", "jnt"))
+        self.assertEqual(p1[("TEST-TEPI-NULL", "")], "belum_remit")
+        self.assertEqual(p2[("TEST-TEPI-NULL", "")], "belum_remit")
+
+    def test_umur_hari_paparan_nombor_bukan_nan_walau_ada_tarikh_rosak(self):
+        # Lajur 'Age (days)' yang finance baca mesti pulang NOMBOR untuk tarikh
+        # lompat yang sah, walaupun fixture ada tarikh bukan kanonik (D8 anti
+        # cascade). Kalau cascade hidup balik, umur jadi NaN dan ni menjerit.
+        import pandas as pd
+        s = reconSql.stream_summary(self.conn, "courier", "jnt", PENDING_DAYS)
+        umur = dict(zip(s["aged"]["order_id"], s["aged"]["umur_hari"]))
+        u_leap = umur.get("TEST-TEPI-LEAP")
+        self.assertIsNotNone(u_leap, "TEST-TEPI-LEAP tiada dalam baldi aged")
+        self.assertFalse(pd.isna(u_leap), "umur leap jadi NaN (cascade hidup?)")
+        # 2024-02-29 ke 2026-06-18 = lebih 800 hari; angka tepat tak penting,
+        # yang penting ia nombor waras, bukan NaN.
+        self.assertGreater(int(u_leap), 800)
+
+    def test_feb29_tak_sah_gap_sedar_didokumen(self):
+        # 2026-02-29 tak wujud. E1 pandas -> NaT -> belum_remit; E2 teks ->
+        # hilang_lewat. Corak gap D7 (tarikh tak boleh parse ditulis terus ke DB).
+        # DIKUNCI sebagai gap sedar, BUKAN dibaiki di enjin (ubatnya pintu ingest).
+        p1 = peta(hasil_e1(self.conn, "jnt"))
+        p2 = peta(hasil_e2(self.conn, "courier", "jnt"))
+        kunci = ("TEST-TEPI-FEB29BAD", "")
+        self.assertEqual(p1[kunci], "belum_remit")
+        self.assertEqual(p2[kunci], "hilang_lewat")
+        self.assertNotEqual(p1[kunci], p2[kunci])
 
 
 if __name__ == "__main__":

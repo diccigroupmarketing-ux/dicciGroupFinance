@@ -44,12 +44,13 @@ if (!existsSync(loadDev)) {
 }
 
 // Jalankan satu command; pulang true kalau exit 0. `outFile` (optional) tangkap stdout.
+// `opts.env` (optional) = medan tambahan yang menang atas childEnv untuk langkah ni sahaja.
 function run(label, cmd, args, opts = {}) {
   console.log(`\n>>> ${label}`);
   const stdout = opts.outFile ? openSync(opts.outFile, "w") : "inherit";
   const res = spawnSync(cmd, args, {
     cwd: opts.cwd ?? webApp,
-    env: childEnv,
+    env: opts.env ? { ...childEnv, ...opts.env } : childEnv,
     stdio: ["inherit", stdout, "inherit"],
   });
   if (opts.outFile) closeSync(stdout);
@@ -132,6 +133,51 @@ async function main() {
   record("restore (pra-resolutions)", restore("pra-resolutions"));
   record("testResolutions", run("testResolutions", "npx", ["tsx", "scripts/testResolutions.ts"]));
   record("restore (akhir)", restore("akhir"));
+
+  // 4b) Parity 3 enjin , LANGKAH AKHIR sengaja.
+  //     Ni gate paling BERAT dalam suite: ia bina db Postgres BERASINGAN
+  //     (parity_tapak), muat fixture, jana mirror recon.ts, lepas tu dump E1
+  //     (reconcile.py sqlite) + E2 sqlite + E2 postgres + E3 (recon.ts) dan
+  //     banding kategori tiap order baris demi baris. Sebab ia komposit (banyak
+  //     proses anak) ia makan masa lebih dari langkah lain, jadi diletak PALING
+  //     akhir dan masa lariannya dicatat.
+  //
+  //     RECON_TODAY dipaksa DI SINI (bukan harap env luaran). jalan.sh ada
+  //     default sama, ni jaring kedua supaya langkah tetap deterministik walau
+  //     dipanggil dari persekitaran yang berbeza.
+  //
+  //     Data fixture (parityHarness/data/fixture.db) dan baseline suci
+  //     (data/baselineRecon.db) dua duanya GITIGNORED sebab mengandungi order
+  //     SEBENAR (repo public). Pada mesin baru clone ia TIADA. Bila tiada,
+  //     langkah ni GAGAL KUAT dengan arahan pulih , BUKAN skip senyap dan BUKAN
+  //     lulus senyap , supaya penggera parity tak boleh mati diam diam.
+  {
+    const root = join(webApp, "..");
+    const fixture = join(root, "parityHarness", "data", "fixture.db");
+    const baseline = join(root, "data", "baselineRecon.db");
+    const missing = [];
+    if (!existsSync(fixture)) missing.push(fixture);
+    if (!existsSync(baseline)) missing.push(baseline);
+    if (missing.length) {
+      console.log("\n>>> parityHarness (3 enjin)");
+      console.error(
+        "SETUP GAGAL: data harness parity tiada (GITIGNORED, order sebenar):\n" +
+        missing.map((m) => `  , ${m}`).join("\n") +
+        "\nCara pulih (rujuk parityHarness/README.md seksyen \"Fixture datang dari mana\"):\n" +
+        "  1. data/baselineRecon.db : pulih dari backup projek, atau python3 syncFromNeon.py\n" +
+        "  2. parityHarness/data/fixture.db : cp data/baselineRecon.db parityHarness/data/fixture.db\n" +
+        "Langkah ni SENGAJA dikira GAGAL (bukan skip) supaya penggera parity 3 enjin tak senyap.");
+      console.log("<<< parityHarness (3 enjin): GAGAL (data setup tiada)");
+      record("parityHarness", false);
+    } else {
+      const t0 = Date.now();
+      const ok = run("parityHarness (3 enjin)", "bash", ["parityHarness/jalan.sh"],
+        { cwd: root, env: { RECON_TODAY: "2026-06-18" } });
+      const secs = ((Date.now() - t0) / 1000).toFixed(1);
+      console.log(`    (parityHarness masa larian: ${secs}s)`);
+      record("parityHarness", ok);
+    }
+  }
 
   // 5) Ringkasan.
   console.log("\n========== RINGKASAN ==========");

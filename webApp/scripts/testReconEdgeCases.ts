@@ -65,6 +65,17 @@ const ORDERS: [string, string, string, number, string][] = [
   ["TESTEDGE-WS-TAB", "J&T Express", "\t", 100.0, DATE_MUDA],
   ["TESTEDGE-WS-NL", "J&T Express", "\n", 100.0, DATE_MUDA],
   ["TESTEDGE-WS-NBSP", "J&T Express", "\u00a0", 100.0, DATE_MUDA],
+  // SEN digit ke-3 (kunci tingkah laku POSTGRES prod di E3). recon.ts R2 =
+  // ROUND(CAST(x AS numeric), 2), dan pada Postgres ia bundar ikut perwakilan
+  // TEKS float (probe dev PG disahkan): 100.005 -> 100.01, 99.995 -> 100.00,
+  // 0.005 -> 0.01. Ni SELARI reconcile._r2 (oracle), jadi tiada divergen oracle
+  // lawan prod , ujian ni kunci fakta tu supaya kalau Postgres/driver berubah,
+  // ia menjerit. (Sisi SQLite yang terbelah pada 100.005 dikunci di
+  // testReconEdgeCases.py TestGapDialekSen; di sini semata sisi Postgres.)
+  ["TESTEDGE-SEN-99995", "J&T Express", "7780000002", 99.995, DATE_MUDA],
+  ["TESTEDGE-SEN-0005", "J&T Express", "7780000003", 0.005, DATE_MUDA],
+  ["TESTEDGE-SEN-100005T", "J&T Express", "7780000004", 100.005, DATE_MUDA],
+  ["TESTEDGE-SEN-100005M", "J&T Express", "7780000005", 100.005, DATE_MUDA],
 ];
 
 // (awb, cod_amount)
@@ -81,6 +92,10 @@ const LINES: [string, number][] = [
   ["\t", 100.0],           // whitespace tab: JOIN menjadi di E3 (gap D9)
   ["\n", 100.0],           // whitespace newline
   ["\u00a0", 100.0],       // whitespace NBSP
+  ["7780000002", 100.00],  // 99.995 lawan 100.00 -> pg R2(99.995)=100.00 -> tally
+  ["7780000003", 0.01],    // 0.005 lawan 0.01    -> pg R2(0.005)=0.01    -> tally
+  ["7780000004", 100.01],  // 100.005 lawan 100.01 -> pg R2=100.01        -> tally
+  ["7780000005", 100.00],  // 100.005 lawan 100.00 -> pg R2=100.01 != 100.00 -> mismatch
 ];
 
 // Kategori dijangka untuk stream jnt, dikunci pada AWB.
@@ -94,6 +109,11 @@ const JANGKA: Record<string, string> = {
   // Order jatuh BALIK ke kategori ikut aging, sama macam order tanpa bil.
   "7770000002": "hilang_lewat",
   "7770000008": "tally",
+  // Sen digit ke-3, sisi Postgres (E3): dua arah float tak tepat.
+  "7780000002": "tally",           // 99.995 -> 100.00 == bil 100.00
+  "7780000003": "tally",           // 0.005  -> 0.01   == bil 0.01
+  "7780000004": "tally",           // 100.005 -> 100.01 == bil 100.01
+  "7780000005": "amount_mismatch", // 100.005 -> 100.01 != bil 100.00
 };
 
 // order_id -> adakah CONF_SQL (titik "duit disahkan" untuk botol + baldi
