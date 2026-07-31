@@ -9,6 +9,53 @@ salin ayat demi ayat dari buku "rujukan kebenaran", tapi lama lama ada ayat tert
 masa salin. Dokumen ni senaraikan setiap ayat yang tertinggal atau berubah, supaya
 bila kita gabung jadi satu buku, tiada silap kira duit yang terbawa masuk.
 
+---
+
+## Keputusan bentuk akhir (2026-07-31, owner ratifikasi Pilihan 1)
+
+Selepas semua divergen ditutup (D1 hingga D9, lihat bawah), owner ratifikasi
+**Pilihan 1** untuk bentuk akhir tiga enjin. Ini keputusan tetap, bukan lagi
+cadangan. Peranan kanonik:
+
+| Enjin | Fail | Peranan MUKTAMAD |
+|---|---|---|
+| E3 | `webApp/lib/recon.ts` | **ENJIN PRODUKSI KANONIK** , yang app LIVE jalankan runtime |
+| E1 | `reconcile.py` | **ORACLE beku** , rujukan kebenaran + jana baseline + gate parity (CLI/ujian sahaja, BUKAN runtime) |
+| E2 | `reconSql.py` | **BEKU** , bersara bersama Streamlit di tangga 5 |
+
+**Peta consumer sebenar** (disahkan lewat grep, bukan andaian):
+
+- `app.py` (Streamlit) guna **reconSql sahaja** untuk recon (`stream_summary`,
+  `bill_parcels`, `stockist_bottles`, dll). `reconcile` diimport di `app.py`
+  tapi HANYA masuk tuple `_PROJECT_MODULES` untuk handshake self-heal, TIDAK
+  dipanggil untuk kira recon.
+- `webApp` (Next.js LIVE) guna **recon.ts sahaja** (`@/lib/recon`), tiada laluan
+  Python recon di runtime. Fungsi `/api/pyIngest` guna salinan `api/engine` untuk
+  INGEST, bukan recon.
+- `reconcile.py` = **oracle**, dipanggil hanya dari CLI (`python reconcile.py`,
+  jana baseline) dan ujian (`testReconEdgeCases.py` E1 lawan E2, harness parity).
+
+**Kenapa Pilihan 1 (bukan gabung terus jadi satu fail)**: recon.ts sudah jadi
+laluan produksi sebenar (Vercel LIVE), jadi menjadikan ia kanonik = sifar migrasi
+consumer. reconcile.py pandas tulen kekal jadi oracle sebab ia paling senang
+dibaca manusia dan jadi buku rujukan yang jujur. reconSql.py tak dibuang SEKARANG
+sebab app.py Streamlit masih hidup (soft-retire) dan ia jadi jaring E2 dalam
+harness 3 enjin.
+
+**Fasa yang DITANGGUH** (bukan dibatalkan, cuma belum masanya):
+
+- **Fasa 4 , padam E2 (`reconSql.py`)**: ditangguh ke **tangga 5**, iaitu bila
+  app.py Streamlit betul betul bersara. Selagi Streamlit hidup, E2 kekal sebagai
+  enjin yang app tu guna DAN sebagai jaring parity.
+- **Fasa 5 , recon jadi SQL view tunggal**: ditangguh ke **tangga 6 hingga 7**
+  (fasa skala ratus ribu+ order, selari peraturan HANDOVER "jangan SQL-ify
+  sekarang"). Belum ada tekanan skala yang menuntutnya.
+
+Sehingga tangga tangga itu tiba, tiga enjin KEKAL dijaga selari oleh harness
+parity + guard konstan (`webApp/scripts/checkReconConstants.mjs`). Header setiap
+fail enjin kini membawa tanda peranan ni supaya sesiapa yang buka fail terus tahu
+mana kanonik, mana oracle, mana beku.
+
 ## Tiga enjin yang dibandingkan
 
 - `reconcile.py` (root), RUJUKAN KEBENARAN. Enjin pandas, kira dalam memori. Semua

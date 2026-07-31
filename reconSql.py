@@ -1,6 +1,20 @@
 """
 reconSql.py , dicciGroupFinance
 
+STATUS: BEKU (keputusan penyatuan enjin, 2026-07-31, owner ratifikasi Pilihan 1).
+--------------------------------------------------------------------------------
+Fail ni BEKU. Ia bersara bersama app Streamlit di tangga 5 urutan penyatuan.
+Peta peranan tiga enjin selepas keputusan:
+  - Enjin PRODUKSI KANONIK  = webApp/lib/recon.ts (laluan yang app LIVE guna).
+  - Rujukan kebenaran/ORACLE = reconcile.py (pandas, jana baseline + gate parity).
+  - reconSql.py (fail ni)    = BEKU, dipakai app.py Streamlit yang sedang bersara.
+Sebab ia kekal buat masa ni: app.py Streamlit MASIH baca laluan ni, dan harness
+parity 3 enjin MASIH banding ia sebagai E2 (jaring pukat yang menangkap kalau
+recon.ts atau reconcile.py terlari). Jadi ia BUKAN mati, cuma tak lagi menerima
+ciri baru. Bugfix DIBENARKAN HANYA bila parity harness menuntut (contoh port
+guard supaya E1==E2==E3 kekal selari), bukan untuk perubahan logik baru sendiri.
+Perubahan logik recon BERMULA di reconcile.py (oracle), lulus parity, baru rambat.
+
 Recon dikira DALAM database: SQL agregat + baris exception sahaja keluar ke app.
 Tujuan: pegang ratus ribu hingga jutaan order tanpa tarik semua row ke pandas
 (pandas penuh = 1.5GB RAM + puluhan saat pada 1 juta order, mati dalam container

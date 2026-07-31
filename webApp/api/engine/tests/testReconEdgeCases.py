@@ -480,6 +480,82 @@ class TestBilRm0BukanDuitMasuk(FixtureCase):
 
 
 # =====================================================================
+# ADVERSARIAL , AWB dikongsi KERAS (guard double-count, kelas D2)
+# ---------------------------------------------------------------------
+# Fixture utama sudah uji AWB dikongsi 2-hala (TEST-AWBKONGSI-1/2). Kelas ni
+# tekan guard lebih keras supaya kita tahu 3 enjin selari atas data KERAS, bukan
+# kebetulan atas satu bentuk sahaja:
+#   (1) 3 order kongsi SATU AWB + satu baris bil padan  -> SEMUA amount_mismatch
+#       (guard mesti kira N>1 betul, bukan hanya tepat 2).
+#   (2) 2 order kongsi AWB tapi TIADA baris bil          -> belum_remit dua duanya
+#       (guard hanya menyala untuk baris yang PADAN bil; tanpa bil, order jatuh
+#        balik ke laluan aging, sama macam order biasa , buktikan guard berskop).
+#   (3) 1 order solo padan bil tepat                     -> tally (guard JANGAN
+#       tersalah nyala pada AWB yang TAK dikongsi , penjaga arah bertentangan).
+# Semua REKAAN (tracking 7751xxxxxx, order TEST-*). E1 dan E2 mesti IDENTIK.
+# =====================================================================
+SHARED_ORDERS = [
+    # (1) 3-hala kongsi AWB, ada bil padan.
+    ("TEST-SHARED-3A", DELIVERED, COMPLETED, JNT, "COD", "7751000001", 100.0),
+    ("TEST-SHARED-3B", DELIVERED, COMPLETED, JNT, "COD", "7751000001", 100.0),
+    ("TEST-SHARED-3C", DELIVERED, COMPLETED, JNT, "COD", "7751000001", 100.0),
+    # (2) 2 order kongsi AWB, TIADA baris bil (muda = belum_remit).
+    ("TEST-SHARED-NOBIL-A", DELIVERED, COMPLETED, JNT, "COD", "7751000002", 100.0),
+    ("TEST-SHARED-NOBIL-B", DELIVERED, COMPLETED, JNT, "COD", "7751000002", 100.0),
+    # (3) solo kawalan, padan bil tepat.
+    ("TEST-SHARED-SOLO", DELIVERED, COMPLETED, JNT, "COD", "7751000003", 100.0),
+]
+SHARED_LINES = [
+    ("7751000001", BILL_A, 100.0),   # satu baris, 3 order kongsi = double-count
+    ("7751000003", BILL_A, 100.0),   # solo padan
+]
+JANGKA_SHARED = {
+    ("TEST-SHARED-3A", "7751000001"): "amount_mismatch",
+    ("TEST-SHARED-3B", "7751000001"): "amount_mismatch",
+    ("TEST-SHARED-3C", "7751000001"): "amount_mismatch",
+    ("TEST-SHARED-NOBIL-A", ""): "belum_remit",
+    ("TEST-SHARED-NOBIL-B", ""): "belum_remit",
+    ("TEST-SHARED-SOLO", "7751000003"): "tally",
+}
+
+
+class TestSharedAwbKeras(FixtureCase):
+    """AWB dikongsi 3-hala + skop guard, E1 lawan E2 mesti IDENTIK."""
+
+    orders = SHARED_ORDERS
+    lines = SHARED_LINES
+    prepaid = []
+
+    def test_e1_e2_selari_baris_demi_baris(self):
+        e1 = hasil_e1(self.conn, "jnt")
+        e2 = hasil_e2(self.conn, "courier", "jnt")
+        if e1 != e2:
+            hanya1 = [r for r in e1 if r not in e2]
+            hanya2 = [r for r in e2 if r not in e1]
+            self.fail(f"DIVERGEN AWB dikongsi:\n  hanya E1: {hanya1}\n  hanya E2: {hanya2}")
+
+    def test_kategori_dijangka_dua_enjin(self):
+        for label, rows in (("E1", hasil_e1(self.conn, "jnt")),
+                            ("E2", hasil_e2(self.conn, "courier", "jnt"))):
+            got = peta(rows)
+            salah = {k: (JANGKA_SHARED[k], got.get(k)) for k in JANGKA_SHARED
+                     if got.get(k) != JANGKA_SHARED[k]}
+            self.assertEqual(salah, {}, f"{label}: (jangka, dapat) tak padan")
+
+    def test_confirmed_paid_tolak_baris_amount_mismatch_dikongsi(self):
+        # Order AWB dikongsi = amount_mismatch (double-count disiasat), TAPI ia
+        # tetap ada baris bil bernilai > 0, jadi confirmed_paid_order_ids MEMANG
+        # kira ia "duit disahkan" (duit parcel tu betul betul masuk sekali).
+        # Yang guard cegah ialah tally BERGANDA, bukan pengesahan duit itu sendiri.
+        # Order tanpa bil (NOBIL) mesti TIADA dalam set duit disahkan.
+        paid = db.confirmed_paid_order_ids(self.conn)
+        for oid in ("TEST-SHARED-NOBIL-A", "TEST-SHARED-NOBIL-B"):
+            self.assertNotIn(oid, paid, f"{oid} tiada bil, tak boleh duit disahkan")
+        for oid in ("TEST-SHARED-SOLO", "TEST-SHARED-3A"):
+            self.assertIn(oid, paid, f"{oid} ada baris bil bernilai, patut disahkan")
+
+
+# =====================================================================
 # GAP DIDOKUMEN , tracking berisi whitespace BUKAN space
 # ---------------------------------------------------------------------
 # Penemuan verify 2026-07-29. Tracking yang isinya cuma tab / newline / NBSP

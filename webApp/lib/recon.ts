@@ -1,5 +1,11 @@
 // Recon dikira DALAM database , port setia dari reconSql.py (Postgres sahaja).
 //
+// ENJIN PRODUKSI KANONIK (keputusan penyatuan enjin 2026-07-31, owner ratifikasi
+// Pilihan 1). Fail INI ialah enjin yang app LIVE (Next.js/Vercel) jalankan waktu
+// runtime untuk kira recon. reconSql.py = BEKU (bersara dengan Streamlit tangga 5);
+// reconcile.py = ORACLE (rujukan kebenaran + baseline, bukan runtime). Fail ni
+// DIJAGA parity lawan oracle reconcile.py lewat parityHarness (E1 vs E2 vs E3).
+//
 // PERATURAN (dari HANDOVER): logik kategori = salinan SETIA reconcile.py
 // (rujukan kebenaran). Kalau logik recon berubah: ubah reconcile.py dulu,
 // lulus parity, sync reconSql.py, BARU sync fail ini. parityCheck

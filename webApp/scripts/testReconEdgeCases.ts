@@ -52,6 +52,19 @@ const ORDERS: [string, string, string, number, string][] = [
   ["TESTEDGE-RM0-TUA", "J&T Express", "7770000002", 150.0, DATE_TUA],
   // Kawalan arah bertentangan: 1 sen tetap duit, mesti kekal tally.
   ["TESTEDGE-RM0-KAWALAN-SEN", "J&T Express", "7770000008", 0.01, DATE_TUA],
+  // AWB DIKONGSI (kelas D2, guard double-count). Dua order kongsi SATU tracking
+  // padan satu baris bil: duit satu parcel tak boleh tally berganda, jadi guard
+  // recon.ts:135 tandakan DUA DUA amount_mismatch. E3 sebelum ni TIADA liputan
+  // shared-AWB langsung , ini tutup lubang tu.
+  ["TESTEDGE-SHARED-A", "J&T Express", "7751000001", 100.0, DATE_MUDA],
+  ["TESTEDGE-SHARED-B", "J&T Express", "7751000001", 100.0, DATE_MUDA],
+  // WHITESPACE tracking (gap D9). Tab / newline / NBSP: TRIM() Postgres buang
+  // SPACE sahaja, jadi nilai KEKAL dan JOIN menjadi, E3 label 'tally' (sama sisi
+  // dengan E2). reconcile.py (.strip) label match_luar_skop , itu gap DIDOKUMEN,
+  // bukan bug. Ujian kunci sisi E3 supaya perubahan jadi sedar, bukan senyap.
+  ["TESTEDGE-WS-TAB", "J&T Express", "\t", 100.0, DATE_MUDA],
+  ["TESTEDGE-WS-NL", "J&T Express", "\n", 100.0, DATE_MUDA],
+  ["TESTEDGE-WS-NBSP", "J&T Express", "\u00a0", 100.0, DATE_MUDA],
 ];
 
 // (awb, cod_amount)
@@ -64,6 +77,10 @@ const LINES: [string, number][] = [
   ["7730000009", 100.0],   // tiada order langsung
   ["7770000002", 0.0],     // RM0 = sifar duit masuk
   ["7770000008", 0.01],    // kawalan
+  ["7751000001", 100.0],   // AWB dikongsi: satu baris, dua order padan
+  ["\t", 100.0],           // whitespace tab: JOIN menjadi di E3 (gap D9)
+  ["\n", 100.0],           // whitespace newline
+  ["\u00a0", 100.0],       // whitespace NBSP
 ];
 
 // Kategori dijangka untuk stream jnt, dikunci pada AWB.
@@ -155,6 +172,38 @@ async function main() {
       const got = confBy.get(oid);
       ok(got === (jangka ? 1 : 0),
         `order ${oid}: duit disahkan jangka ${jangka}, dapat ${got === 1}`);
+    }
+
+    // AWB dikongsi (kelas D2): dua order kongsi tracking padan satu baris bil.
+    // Guard recon.ts mesti tandakan DUA DUA amount_mismatch (bukan tally
+    // berganda). Dikunci pada order_id sebab awb sama = collision dalam byAwb.
+    console.log("== AWB dikongsi (guard double-count, D2) ==");
+    const byOid = new Map<string, string>();
+    for (const r of [...s.integ, ...s.aged]) {
+      if (r.order_id) byOid.set(r.order_id, r.kategori);
+    }
+    for (const oid of ["TESTEDGE-SHARED-A", "TESTEDGE-SHARED-B"]) {
+      const got = byOid.get(oid) ?? "tally/tiada";
+      ok(got === "amount_mismatch",
+        `order ${oid}: AWB dikongsi jangka amount_mismatch, dapat ${got}`);
+    }
+
+    // WHITESPACE tracking (gap D9): tab/newline/NBSP KEKAL selepas TRIM() Postgres
+    // (buang space sahaja), jadi JOIN menjadi dan E3 label 'tally' , tiada baris
+    // exception. reconcile.py (.strip) akan label match_luar_skop; itu gap
+    // DIDOKUMEN (owner: enjin tak diubah), ujian ni kunci sisi E3 sahaja. Kalau
+    // ia berubah, itu isyarat SEDAR (selaraskan enjin atau kemas di pintu ingest),
+    // bukan bug senyap. Selari dengan TestGapSentinelWhitespace di sisi Python.
+    console.log("== whitespace tracking (gap D9, sisi E3 = tally) ==");
+    const excOids = new Set([...s.integ, ...s.aged].map((r) => r.order_id));
+    const excAwbs = new Set([...s.integ, ...s.aged].map((r) => r.awb));
+    for (const oid of ["TESTEDGE-WS-TAB", "TESTEDGE-WS-NL", "TESTEDGE-WS-NBSP"]) {
+      ok(!excOids.has(oid),
+        `order ${oid}: whitespace jangka tally (bukan exception di E3)`);
+    }
+    for (const awb of ["\t", "\n", "\u00a0"]) {
+      ok(!excAwbs.has(awb),
+        `baris bil whitespace JOIN (bukan duit_hantu/match_luar_skop di E3)`);
     }
   } finally {
     await cleanup();

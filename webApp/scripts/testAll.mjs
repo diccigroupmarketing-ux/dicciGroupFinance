@@ -72,6 +72,14 @@ async function main() {
   //    dengan rujukan root. Tangkap kes lupa selaras SEBELUM suite lain jalan.
   record("check:engine", run("check:engine", "node", ["scripts/checkEngineSync.mjs"]));
 
+  // 0a) Gate drift KONSTAN recon merentas 3 enjin (tanpa DB, murah): konstan
+  //     kategori di recon.ts (salinan) mesti sama nilai dengan sumber kebenaran
+  //     Python (db.py / reconcile.py / theme.py), dan senarai status prepaid SQL
+  //     di reconSql + recon.ts mesti sama db.PREPAID_SUCCESS_STATUS. Tangkap kes
+  //     satu enjin ubah konstan tanpa yang lain.
+  record("checkReconConstants", run("checkReconConstants",
+    "node", ["scripts/checkReconConstants.mjs"]));
+
   // 0b) Suite Python murni (fixture sendiri, TAK sentuh dev PG walaupun
   //     DATABASE_URL dipaksa di atas , dua duanya bina engine sqlite sendiri).
   //     testReconEdgeCases banding reconcile.py (RUJUKAN KEBENARAN) lawan

@@ -1,6 +1,21 @@
 """
 reconcile.py , dicciGroupFinance Fasa 1
 
+PERANAN: ORACLE (rujukan kebenaran), keputusan penyatuan enjin 2026-07-31.
+--------------------------------------------------------------------------------
+Fail ni ialah pelaksanaan BEBAS KEDUA yang MENSAHKAN enjin produksi, BUKAN enjin
+yang app LIVE jalankan waktu runtime. Peranannya dua:
+  1. Jana + jaga BASELINE: `python reconcile.py` (default courier=jnt) mesti kekal
+     keluar tepat "RM 63,912.00 (369 order)". Angka tu = gate paling suci; kalau
+     berubah walau satu sen, itu isyarat merah (lihat doktrinFleet.md seksyen 6).
+  2. Jadi oracle harness parity 3 enjin (E1): dibanding baris demi baris lawan
+     reconSql.py (E2, BEKU) dan webApp/lib/recon.ts (E3, ENJIN PRODUKSI KANONIK).
+Sebab ia bukan runtime: app.py Streamlit baca reconSql.py, webApp baca recon.ts;
+reconcile.py hanya dipanggil dari CLI dan ujian. Kelebihannya, ia pandas tulen
+(senang dibaca, senang diperiksa manusia), jadi ia sesuai jadi "buku rujukan".
+PERATURAN emas: ubah logik recon = ubah SINI dulu, lulus parity, baru rambat ke
+recon.ts (produksi) dan reconSql.py (kalau parity menuntut). Bukan sebaliknya.
+
 Baca stor (recon.db), padan order Fighter (COD, J&T) dengan baris bil COD J&T
 ikut tracking, kategorikan, dan keluarkan report + exceptions.csv.
 
