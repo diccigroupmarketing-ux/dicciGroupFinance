@@ -1,0 +1,82 @@
+# CI subset sintetik untuk dicciGroupFinance.
+#
+# KENAPA CUMA SUBSET: repo ni PUBLIC, jadi data sebenar (backups/,
+# parityHarness/data/, data/baselineRecon.db) SEMUA gitignored dan TAK boleh
+# naik CI. Gate PENUH (npm test 21 langkah + parity 3 enjin + baseline) kekal
+# manual di mesin yang ada snapshot sebenar. Workflow ni jalankan HANYA langkah
+# 100% sintetik lewat scripts/testCi.mjs, yang cetak lejar jujur langkah yang
+# dilangkau supaya hijau CI tak disalah baca sebagai "semua ujian lulus".
+#
+# TIADA secret diperlukan. Postgres = service container kosong, schema dibina
+# dari db.py (db.init_db), testReconEdgeCases.ts seed data perangkap sendiri.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  synthetic:
+    name: Subset sintetik
+    runs-on: ubuntu-latest
+
+    # Postgres kosong. testReconEdgeCases.ts perlu SCHEMA sahaja (dibina bawah),
+    # bukan data sebenar. Port 5433 supaya DATABASE_URL sama corak dengan dev
+    # lokal (guard skrip ujian tuntut "localhost").
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: dev
+          POSTGRES_PASSWORD: dev
+          POSTGRES_DB: dicci
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U dev -d dicci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      # Guard skrip TS tuntut DATABASE_URL mengandungi "localhost"; service
+      # container dipetakan ke localhost pada runner.
+      DATABASE_URL: postgresql://dev:dev@localhost:5433/dicci
+      RECON_TODAY: "2026-06-18"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Python 3.12 selaras Streamlit Cloud (3.14 pecahkan import altair).
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Setup Node LTS
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: webApp/package-lock.json
+
+      - name: Install Python deps
+        run: pip install -r requirements.txt
+
+      - name: Install Node deps
+        working-directory: webApp
+        run: npm ci
+
+      # Bina schema Postgres dari sumber kebenaran db.py (bukan snapshot data).
+      # testReconEdgeCases.ts cuma perlu bentuk jadual, ia seed baris sendiri.
+      - name: Bina schema Postgres (db.init_db)
+        run: python3 -c "import db; db.init_db()"
+
+      - name: Jalankan subset CI sintetik
+        working-directory: webApp
+        run: node scripts/testCi.mjs
