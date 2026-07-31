@@ -81,6 +81,13 @@ async function main() {
   record("checkReconConstants", run("checkReconConstants",
     "node", ["scripts/checkReconConstants.mjs"]));
 
+  // 0a2) Ratchet titik query mentah (tanpa DB, murah): bilangan `.query(` dalam
+  //      webApp/lib TAK boleh membesar melebihi baseline, dan app/** mesti kekal
+  //      SIFAR. Injap sehala sebelum wrapper withCompany (tangga 4) wujud , tiap
+  //      query mentah baru = hutang migrasi + risiko bocor isolasi tenant.
+  record("checkRawQueryRatchet", run("checkRawQueryRatchet",
+    "node", ["scripts/checkRawQueryRatchet.mjs"]));
+
   // 0b) Suite Python murni (fixture sendiri, TAK sentuh dev PG walaupun
   //     DATABASE_URL dipaksa di atas , dua duanya bina engine sqlite sendiri).
   //     testReconEdgeCases banding reconcile.py (RUJUKAN KEBENARAN) lawan

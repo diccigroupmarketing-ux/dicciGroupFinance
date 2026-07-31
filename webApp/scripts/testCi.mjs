@@ -72,6 +72,11 @@ async function main() {
     "python3", ["api/engine/tests/testReconEdgeCases.py"]));
   record("testIngestParsers.py", run("testIngestParsers.py (parser + guard, fixture sintetik)",
     "python3", ["api/engine/tests/testIngestParsers.py"]));
+  // Mini-parity golden: fixture sintetik yang cetus SEMUA 15 kategori recon,
+  // E1 lawan E2 baris demi baris + assert liputan (fixture reput senyap = merah).
+  // Bina DB sqlite sendiri dalam tempdir, tiada data sebenar, tiada Postgres.
+  record("testGoldenParity.py", run("testGoldenParity.py (E1 lwn E2 + liputan 15 kategori)",
+    "python3", ["scripts/testGoldenParity.py"]));
 
   // --- Langkah PERLU Postgres tapi SEED DATA SENDIRI (sintetik) ---
   // testReconEdgeCases.ts suntik baris perangkap sendiri dan buang balik; ia
