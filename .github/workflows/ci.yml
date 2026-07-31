@@ -2,13 +2,16 @@
 #
 # KENAPA CUMA SUBSET: repo ni PUBLIC, jadi data sebenar (backups/,
 # parityHarness/data/, data/baselineRecon.db) SEMUA gitignored dan TAK boleh
-# naik CI. Gate PENUH (npm test 21 langkah + parity 3 enjin + baseline) kekal
-# manual di mesin yang ada snapshot sebenar. Workflow ni jalankan HANYA langkah
-# 100% sintetik lewat scripts/testCi.mjs, yang cetak lejar jujur langkah yang
-# dilangkau supaya hijau CI tak disalah baca sebagai "semua ujian lulus".
+# naik CI. Gate PENUH (npm test 22 langkah + parity 3 enjin atas fixture SEBENAR
+# + baseline) kekal manual di mesin yang ada snapshot sebenar. Workflow ni
+# jalankan langkah yang boleh DISINTETIKKAN lewat scripts/testCi.mjs, iaitu
+# sama ada tulen tanpa DB, atau perlu Postgres tapi SEED DATA SENDIRI (baris
+# perangkap / fixture emas). Ia cetak lejar jujur langkah yang dilangkau supaya
+# hijau CI tak disalah baca sebagai "semua ujian lulus".
 #
 # TIADA secret diperlukan. Postgres = service container kosong, schema dibina
-# dari db.py (db.init_db), testReconEdgeCases.ts seed data perangkap sendiri.
+# dari db.py (db.init_db). testReconEdgeCases.ts seed baris perangkap sendiri;
+# seedGoldenPg.py muat fixture emas SINTETIK untuk parity E2 vs E3 (parityCheck).
 name: CI
 
 on:
