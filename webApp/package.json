@@ -4,12 +4,14 @@
   "private": true,
   "scripts": {
     "dev": "next dev -p 4000",
-    "prebuild": "node scripts/syncEngine.mjs",
-    "build": "node scripts/checkEngineSync.mjs && next build",
+    "prebuild": "node scripts/syncEngine.mjs && node scripts/genReconConstants.mjs",
+    "build": "node scripts/checkEngineSync.mjs && node scripts/checkReconConstants.mjs && next build",
     "start": "next start",
     "lint": "eslint",
     "sync:engine": "node scripts/syncEngine.mjs",
     "check:engine": "node scripts/checkEngineSync.mjs",
+    "gen:constants": "node scripts/genReconConstants.mjs",
+    "check:constants": "node scripts/checkReconConstants.mjs",
     "test": "node scripts/testAll.mjs"
   },
   "dependencies": {

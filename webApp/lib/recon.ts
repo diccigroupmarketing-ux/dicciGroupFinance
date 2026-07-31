@@ -18,6 +18,13 @@ import { unstable_cache } from "next/cache";
 import { getPool } from "./db";
 import { ensureGiftTable } from "./giftsSchema";
 import { ensureBillConflictsTable } from "./billConflictsSchema";
+// Konstan kategori DIJANA dari sumber kebenaran Python (db.py/reconcile.py/
+// theme.py) ke ./reconConstants oleh scripts/genReconConstants.mjs (prebuild).
+// Kita import di sini, jadi recon.ts TIDAK lagi simpan salinan literal yang boleh
+// lari senyap. Guard: scripts/checkReconConstants.mjs (langkah dalam npm test).
+import {
+  COD_VALUES, INTEGRITY_EXC, AGED, KAT_LABEL, PREPAID_SUCCESS_STATUS,
+} from "./reconConstants";
 
 export const REMIT_PENDING_DAYS = 14;
 // Tarikh rujukan aging. Cermin logik db.py: baca env RECON_TODAY kalau ada
@@ -53,37 +60,14 @@ export function reconToday(): Date {
   return computeToday();
 }
 
-// Diekspot (bukan diubah) supaya lapisan tapis tarikh read-only di
-// lib/streamRange.ts boleh guna semula pemalam + pembina tmp_m yang SAMA. Tiada
-// logik kiraan disentuh di sini, cuma kata kunci `export` ditambah.
-export const COD_VALUES = ["COD"];
+// Re-eksport konstan dijana supaya pemanggil sedia ada (streamRange.ts,
+// uncollectedRange.ts, resolutions.ts, route + page) kekal dapat simbol yang
+// SAMA dari "./recon" tanpa perubahan. Nilai sebenar hidup di ./reconConstants
+// (dijana dari Python). Diekspot juga supaya lapisan tapis tarikh read-only guna
+// semula pemalam + pembina tmp_m yang SAMA. Tiada logik kiraan disentuh.
+export { COD_VALUES, INTEGRITY_EXC, AGED, KAT_LABEL };
 export const EXC_CAP = 5000;
 export const AUDIT_PREVIEW = 8;
-
-export const INTEGRITY_EXC = [
-  "duit_hantu", "amount_mismatch", "duit_masuk_order_returned",
-  "duit_masuk_order_rejected", "in_bil_tapi_intransit", "takde_awb_jnt",
-  "takde_tracking", "match_luar_skop",
-];
-export const AGED = ["hilang_lewat"];
-
-export const KAT_LABEL: Record<string, string> = {
-  tally: "Tally",
-  amount_mismatch: "Amount mismatch",
-  duit_hantu: "Ghost money",
-  duit_masuk_order_returned: "Paid, order returned",
-  duit_masuk_order_rejected: "Paid, order rejected",
-  in_bil_tapi_intransit: "In bill, in-transit",
-  takde_awb_jnt: "No J&T AWB",
-  takde_tracking: "No tracking",
-  match_luar_skop: "Out-of-scope match",
-  hilang_lewat: "Overdue / missing",
-  belum_remit: "Awaiting remit",
-  belum_bayar: "Awaiting payment",
-  returned: "Returned",
-  rejected: "Rejected",
-  pending: "Pending",
-};
 
 export type StreamKey = "jnt" | "dhl" | "ninja";
 
@@ -697,9 +681,12 @@ export async function searchOrders(q: string): Promise<SearchResult[]> {
 // COD ikut peraturan SAMA lewat COD_LINE_OK: baris bil kena cod_amount > 0.
 // Baris RM0 (caj Returned to Sender Ninja Van) bukan bukti duit masuk.
 const COD_LINE_OK = "cl.cod_amount > 0";
+// Senarai status dibina dari PREPAID_SUCCESS_STATUS (dijana dari db.py), jadi ia
+// tak boleh lari dari sumber kebenaran. Nilai SQL kekal identik dengan literal
+// lama: IN ('paid','success',...,'captured').
 const PREPAID_OK =
-  "pp.amount > 0 AND LOWER(TRIM(pp.status)) IN " +
-  "('paid','success','successful','completed','settled','cleared','captured')";
+  "pp.amount > 0 AND LOWER(TRIM(pp.status)) IN (" +
+  PREPAID_SUCCESS_STATUS.map((s) => `'${s.replace(/'/g, "''")}'`).join(",") + ")";
 
 // Diekspot (bukan diubah) supaya lapisan tapis tarikh read-only di
 // lib/dashboardRange.ts boleh guna semula ungkapan "duit disahkan" yang SAMA.
